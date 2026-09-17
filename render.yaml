@@ -6,5 +6,7 @@ services:
     plan: free
     healthCheckPath: /api/ready
     envVars:
+      # 數據庫 release asset（build 階段下載焗入映像）
+      # 更新數據：上新 asset 後改呢條 URL 再 commit，Render 會自動重新部署
       - key: DB_URL
-        sync: false
+        value: https://github.com/carvensam/football-analysis/releases/download/db-20260918/football.db
