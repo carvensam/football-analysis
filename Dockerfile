@@ -16,10 +16,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# 足球資料庫（約 111MB）：build 階段由 GitHub Release 下載（DB_URL 由 render.yaml 提供）
-# 更新數據＝上傳新 release asset，改 render.yaml 嘅 DB_URL，然後重新部署
-RUN test -n "$DB_URL" && \
-      echo "Downloading database from $DB_URL" && \
+# 足球資料庫（約 111MB）：build 階段由 GitHub Release 下載焗入映像。
+# 公開數據，直接寫死 URL（Render 不支援 build-args；寫死最穩陣）。
+# 更新數據＝上新 release asset，改下面呢條 URL，push 後重新部署。
+ENV DB_URL=https://github.com/carvensam/football-analysis/releases/download/db-20260918/football.db
+RUN echo "Downloading database from $DB_URL" && \
       curl -fL --retry 3 -o /app/football.db "$DB_URL" && \
       ls -lh /app/football.db
 
