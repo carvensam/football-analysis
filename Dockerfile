@@ -16,16 +16,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-# 足球資料庫（約 111MB）喺 build 階段由 GitHub Release 下載，焗入映像
-# 更新數據＝上傳新 release asset，然後重新部署
-ARG DB_URL
-RUN if [ -n "$DB_URL" ]; then \
+# 足球資料庫（約 111MB）：build 階段由 GitHub Release 下載（DB_URL 由 render.yaml 提供）
+# 更新數據＝上傳新 release asset，改 render.yaml 嘅 DB_URL，然後重新部署
+RUN test -n "$DB_URL" && \
       echo "Downloading database from $DB_URL" && \
       curl -fL --retry 3 -o /app/football.db "$DB_URL" && \
-      ls -lh /app/football.db ; \
-    else \
-      echo "WARNING: DB_URL not set; build without database" ; \
-    fi
+      ls -lh /app/football.db
 
 EXPOSE 10000
 CMD ["python", "app.py"]
