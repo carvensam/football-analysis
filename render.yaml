@@ -1,0 +1,10 @@
+# Render Blueprint： football-analysis
+services:
+  - type: web
+    name: football-analysis
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/ready
+    envVars:
+      - key: DB_URL
+        sync: false

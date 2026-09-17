@@ -1,0 +1,13 @@
+{
+  "db_path": "football.db",
+  "company_id": 12,
+  "company_name": "易胜博",
+  "seasons_complete": 5,
+  "include_current_season": true,
+  "request_delay_sec": 0.7,
+  "max_requests_before_rest": 1200,
+  "rest_minutes": 8,
+  "blocked_retry_times": 3,
+  "discover_sub_leagues": true,
+  "log_file": "logs/crawler.log"
+}

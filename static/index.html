@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FootballAnalysis</title>
+<link rel="icon" type="image/png" href="/static/icon.png">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1><img src="/static/icon.png" style="width:26px;height:26px;vertical-align:-5px;margin-right:6px">FootballAnalysis</h1>
+  <div class="hdr-ctl">
+    <select id="hours">
+      <option value="24">未來24小時</option>
+      <option value="48" selected>未來48小時</option>
+    </select>
+    <button id="btnRefresh" class="btn">重新整理賽事</button>
+    <button id="btnFetchAll" class="btn accent">獲取全部賠率</button>
+    <span id="status" class="status"></span>
+  </div>
+</header>
+
+<main>
+  <section id="listPane">
+    <details id="picksPanel">
+      <summary><span id="picksSum">我的選擇</span></summary>
+      <div id="picksBox">載入中…</div>
+    </details>
+    <h2>即將開賽</h2>
+    <div id="matchList"><div class="empty">載入中…</div></div>
+  </section>
+  <section id="resultPane">
+    <div id="placeholder" class="empty big">← 點選一場賽事開始篩查<br><small>未有賠率的場次請先按「獲取賠率」</small></div>
+    <div id="result" style="display:none"></div>
+  </section>
+</main>
+<script src="/static/app.js"></script>
+</body>
+</html>

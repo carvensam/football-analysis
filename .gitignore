@@ -1,0 +1,8 @@
+# 資料庫同大檔唔入 git（release asset 上載）
+football.db
+*.db
+tools/
+android_app/
+__pycache__/
+*.log
+node_modules/
