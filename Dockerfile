@@ -3,7 +3,8 @@ FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 \
     TZ=Asia/Hong_Kong \
     HOST=0.0.0.0 \
-    PORT=10000
+    PORT=10000 \
+    DB_PATH=/app/football.db
 
 WORKDIR /app
 
