@@ -371,26 +371,43 @@ def dist_table(sub, min_n=1):
 
 
 def gap_text(ref_h, ref_g, T_close):
-    """參照盤 vs 今場尾盤 的淨差距，以【今場】角度表達（今場讓深咗／讓淺咗）"""
+    """參照盤 vs 今場尾盤 的淨差距。
+    以【今場讓球方】角度表達：主讓→主讓深/淺咗；客讓→客讓深/淺咗；
+    今場平手→主/客兩個角度都列出。數值寫法：1/4格(0.25)、半球(0.5)、3/4格(0.75)…
+    （2026-09-19 依用戶八個例子修正表達邏輯）"""
     if T_close is None:
         return None
     cur_h, cur_g = T_close['h'], T_close.get('g')
-    # 帶符號：主讓=+h，客讓=-h
+    # 帶符號：主讓=+h，客讓=-h，平手=0
     def signed(h, g):
         if h == 0 or g is None:
             return 0.0
         return h if g == 'home' else -h
-    rs, cs = signed(ref_h, ref_g), signed(cur_h, cur_g)
-    gap = rs - cs
     ref_line = fmt_line(ref_h, ref_g)
     cur_line = fmt_line(cur_h, cur_g)
-    if abs(gap) < 1e-9:
-        desc = f'與今場相同（{ref_line}）'
-    elif gap > 0:
-        desc = f'今場讓淺咗{gap:g}（參照：{ref_line}；今場：{cur_line}）'
-    else:
-        desc = f'今場讓深咗{-gap:g}（參照：{ref_line}；今場：{cur_line}）'
-    return {'gap': gap, 'text': desc, 'ref_line': ref_line, 'note': ''}
+    rs, cs = signed(ref_h, ref_g), signed(cur_h, cur_g)
+    delta = cs - rs   # >0：今場主隊讓多咗（=客隊讓少咗）；<0：相反
+    if abs(delta) < 1e-9:
+        return {'gap': 0.0, 'text': f'與今場相同（{ref_line}）',
+                'ref_line': ref_line, 'note': ''}
+
+    def v(x):
+        m = {0.25: '1/4格', 0.5: '半球', 0.75: '3/4格', 1.0: '一球',
+             1.25: '1¼格', 1.5: '球半', 1.75: '1¾格', 2.0: '兩球',
+             2.25: '2¼格', 2.5: '兩球半', 2.75: '2¾格', 3.0: '三球'}
+        return m.get(round(x, 2), f'{x:g}')
+
+    x = abs(delta)
+    xs = f'{v(x)}({x:g})'
+    if cur_g == 'home':
+        desc = f'主讓深咗{xs}' if delta > 0 else f'主讓淺咗{xs}'
+    elif cur_g == 'away':
+        desc = f'客讓深咗{xs}' if delta < 0 else f'客讓淺咗{xs}'
+    else:   # 今場平手盤：兩個角度都列出
+        desc = (f'主讓深咗{xs}／客讓淺咗{xs}' if delta > 0
+                else f'主讓淺咗{xs}／客讓深咗{xs}')
+    desc += f'（參照：{ref_line}；今場：{cur_line}）'
+    return {'gap': delta, 'text': desc, 'ref_line': ref_line, 'note': ''}
 
 
 def screen(conn, t, sel=None):
@@ -734,8 +751,21 @@ def screen(conn, t, sel=None):
                            'all': outcome_counts(sub),
                            'league': outcome_counts(sub[sub['league'] == lg]) if lg else None,
                            'cat': outcome_counts(sub[sub['cat'] == cat]) if cat else None}
+    hr = t['pre'].get('home_total_rank')
+    ar = t['pre'].get('away_total_rank')
+    if not hr:
+        r = conn.execute("SELECT rank FROM standings WHERE season_id=? AND team_id=? "
+                         "AND scope='total' AND grp=''",
+                         (t['season_id'], t['home_id'])).fetchone()
+        hr = r[0] if r else None
+    if not ar:
+        r = conn.execute("SELECT rank FROM standings WHERE season_id=? AND team_id=? "
+                         "AND scope='total' AND grp=''",
+                         (t['season_id'], t['away_id'])).fetchone()
+        ar = r[0] if r else None
     return {
         'target': {'id': t['id'], 'home': t['home'], 'away': t['away'],
+                   'rank_home': hr, 'rank_away': ar,
                    'league': lg, 'category': cat, 'kickoff': t['kickoff'],
                    'close': ({'line': fmt_line(T_close['h'], T_close['g']),
                               'ho': T_close['ho'], 'ao': T_close['ao']} if T_close else None),
