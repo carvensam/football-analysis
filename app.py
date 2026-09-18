@@ -338,7 +338,7 @@ def _screen_brief(mid):
             return None
         res = screen_engine.screen(conn, t)
         items = res.get('items', {})
-        close = t.get('close') or {}
+        close = screen_engine.tline(t.get('odds') or {}, 'closing') or {}
         g = close.get('g')
         if g == 'home':
             up_water = close.get('ho')
