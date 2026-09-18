@@ -467,10 +467,11 @@ _feat_scan = {'running': False, 'done': 0, 'total': 0, 'added': 0,
 
 
 def _featured_direction(b):
-    """七重準則（2026-09-19 更新）：每項【全庫或同聯賽其中一個】同方向 ≥50% 即合格。
-    方向由第①項揀：全庫上盤≥50%→up；否則全庫下盤≥50%→down；
-    否則同聯賽上盤≥50%→up；否則同聯賽下盤≥50%→down；全部唔夠→唔入選。
-    ①⑤⑧⑫⑮⑱ 全部通過返回 'up'/'down'，任何一項不達標返回 None。"""
+    """七重準則（2026-09-19 最終版）：
+    方向揀選：第①⑤項一齊睇——「上」：①⑤ 全部已存在範圍（全庫及同聯賽）上盤率≥50%；
+    否則「下」：①⑤ 全部已存在範圍下盤率≥50%；上→下順序，兩者都唔得→唔入選。
+    跟住 ①⑤⑧⑫⑮⑱：每項【全庫或同聯賽其中一個】同方向 ≥50% 即合格。
+    全部通過返回 'up'/'down'，任何一項不達標返回 None。"""
     if not b:
         return None
 
@@ -487,15 +488,22 @@ def _featured_direction(b):
                 return True
         return False
 
-    i1 = b.get('i1') or {}
-    a1, l1 = i1.get('all'), i1.get('lg')
-    if rate(a1, 'up') is not None and rate(a1, 'up') >= 0.5:
+    def dir_pick(d):
+        # ①⑤：全部已存在嘅範圍都要同方向 ≥50%（範圍冇數據就略過）
+        found = False
+        for k in ('i1', 'i5'):
+            it = b.get(k) or {}
+            for oc in (it.get('all'), it.get('lg')):
+                r = rate(oc, d)
+                if r is not None:
+                    found = True
+                    if r < 0.5:
+                        return False
+        return found
+
+    if dir_pick('up'):
         d = 'up'
-    elif rate(a1, 'down') is not None and rate(a1, 'down') >= 0.5:
-        d = 'down'
-    elif rate(l1, 'up') is not None and rate(l1, 'up') >= 0.5:
-        d = 'up'
-    elif rate(l1, 'down') is not None and rate(l1, 'down') >= 0.5:
+    elif dir_pick('down'):
         d = 'down'
     else:
         return None
@@ -767,10 +775,18 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/featured/scan':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
             try:
+                if body.get('reset'):
+                    conn = db()
+                    conn.execute('DELETE FROM featured')
+                    conn.commit()
+                    conn.close()
                 if not _feat_scan['running']:
                     threading.Thread(target=_featured_scan_job, daemon=True).start()
-                self._send(200, json.dumps({'started': True, 'running': True},
+                self._send(200, json.dumps({'started': True, 'running': True,
+                                            'reset': bool(body.get('reset'))},
                                            ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
