@@ -72,7 +72,7 @@ async function loadList() {
   const list = await jget('/api/upcoming?hours='+hours);
   const box = $('#matchList');
   box.innerHTML = '';
-  if (!list.length) { box.innerHTML = '<div class="empty">未來'+hours+'小時無賽事</div>'; listCount = 0; lastList = []; listUpdatedAt = new Date(); updateStatus(); return; }
+  if (!list.length) { box.innerHTML = '<div class="empty">' + (hours === '0' ? '無即將開賽賽事' : '未來'+hours+'小時無賽事') + '</div>'; listCount = 0; lastList = []; listUpdatedAt = new Date(); updateStatus(); return; }
   lastList = list;
   listUpdatedAt = new Date();
   let lastDate = '';
@@ -633,14 +633,17 @@ $('#btnFetchAll').onclick = async () => {
   const rows = [...document.querySelectorAll('.mrow')];
   const need = rows.filter(r => !r.querySelector('.badge.ok'));
   if (!need.length) { setStatus('全部已有賠率'); return; }
+  const CAP = 300;   // 防止一次過幾千場跑幾個鐘
+  const todo = need.slice(0, CAP);
   $('#btnFetchAll').disabled = true;
-  for (const r of need) {
-    setStatus(`獲取賠率中… ${r.querySelector('.mid').textContent}`);
+  for (const r of todo) {
+    setStatus(`獲取賠率中… ${r.querySelector('.mid').textContent}` +
+              (need.length > CAP ? `（${todo.indexOf(r) + 1}/${todo.length}，其餘 ${need.length - CAP} 場未處理）` : ''));
     await fetchOdds(r.dataset.id, true);
     await loadList();
   }
   $('#btnFetchAll').disabled = false;
-  setStatus('全部獲取完成');
+  setStatus(need.length > CAP ? `已獲取前 ${CAP} 場（其餘 ${need.length - CAP} 場請篩時段後再撳）` : '全部獲取完成');
 };
 
 loadList();

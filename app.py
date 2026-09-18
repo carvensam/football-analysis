@@ -59,29 +59,26 @@ def db():
 
 def upcoming(hours=48):
     conn = db()
+    # hours=0 → 不設時限上限，列出全部即將開賽賽事
+    cap = "AND m.kickoff <= datetime('now','localtime', ?) " if hours else ""
+    args = (f'+{hours} hours',) if hours else ()
     rows = conn.execute(
-        "SELECT m.id, c.req_name, m.kickoff, ht.name_tc, at.name_tc, m.odds_done "
+        "SELECT m.id, c.req_name, m.kickoff, ht.name_tc, at.name_tc, m.odds_done, "
+        "EXISTS(SELECT 1 FROM odds_asian oa WHERE oa.match_id=m.id AND oa.company_id=12), "
+        "oc.handicap, oc.giver, oc.home_odds, oc.away_odds "
         "FROM matches m JOIN seasons s ON s.id=m.season_id "
         "JOIN competitions c ON c.titan_id=s.titan_id "
         "JOIN teams ht ON ht.titan_id=m.home_id "
         "JOIN teams at ON at.titan_id=m.away_id "
+        "LEFT JOIN odds_asian oc ON oc.match_id=m.id AND oc.company_id=12 "
+        "AND oc.label='closing' "
         "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','localtime') "
-        "AND m.kickoff <= datetime('now','localtime', ?) ORDER BY m.kickoff",
-        (f'+{hours} hours',)).fetchall()
+        + cap + "ORDER BY m.kickoff", args).fetchall()
     out = []
-    for mid, lg, ko, h, a, od in rows:
-        has = conn.execute(
-            "SELECT COUNT(*) FROM odds_asian WHERE match_id=? AND company_id=12",
-            (mid,)).fetchone()[0]
+    for mid, lg, ko, h, a, od, has, hc, gv, ho, ao in rows:
         line = None
-        if has:
-            r = conn.execute(
-                "SELECT handicap, giver, home_odds, away_odds FROM odds_asian "
-                "WHERE match_id=? AND company_id=12 AND label='closing'",
-                (mid,)).fetchone()
-            if r and r[0] is not None:
-                line = {'line': screen_engine.fmt_line(r[0], r[1]),
-                        'ho': r[2], 'ao': r[3]}
+        if hc is not None:
+            line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao}
         out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
                     'has_odds': bool(has), 'line': line,
                     'fetched_ago': int(time.time() - _last_fetch[mid]) if mid in _last_fetch else None})
