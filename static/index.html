@@ -20,6 +20,7 @@
     <button id="btnRefresh" class="btn">重新整理賽事</button>
     <button id="btnFetchAll" class="btn accent">獲取全部賠率</button>
     <button id="btnUpdate" class="btn" title="更新賽果＋新場次＋最近三日盤口（只爬近期，約 2-5 分鐘）">⟳ 更新賽事</button>
+    <button id="btnFeatured" class="btn gold" title="七重準則全通過嘅精選場次">★ 精選</button>
     <span id="status" class="status"></span>
   </div>
 </header>
@@ -44,6 +45,15 @@
     <button id="pkOvClose" class="btn">✕ 關閉</button>
   </div>
   <div class="pk-ov-body" id="pkOvBody">載入中…</div>
+</div>
+<div id="ftOverlay" style="display:none">
+  <div class="pk-ov-head">
+    <b id="ftOvTitle">精選</b>
+    <span id="ftScanInfo" class="ft-scan-info"></span>
+    <button id="btnFtScan" class="btn">🔍 掃描精選</button>
+    <button id="ftOvClose" class="btn">✕ 關閉</button>
+  </div>
+  <div class="pk-ov-body" id="ftOvBody">載入中…</div>
 </div>
 <script src="/static/app.js"></script>
 </body>

@@ -215,6 +215,7 @@ function _pkCard(p) {
   const i15v = !i15 ? '不適用'
     : `n=${i15.n}` + (i15.zone ? `<br>今場水位區【${esc(i15.zone.zone)}】上${pct(i15.zone.up_r)} 下${pct(i15.zone.down_r)} 走${pct(i15.zone.push_r)}` : '');
   const del = !p.played ? `<button class="btn pk-del" data-id="${p.id}">✕</button>` : '';
+  const again = `<button class="btn pk-again" data-id="${p.id}" data-choice="${p.choice}">⇄ 照揀</button>`;
   return `<div class="pk-card">
     <div class="pk-top">
       <span class="pk-time">${esc(p.kickoff.slice(5, 16))}　${esc(p.league)}</span>
@@ -223,7 +224,7 @@ function _pkCard(p) {
       <span class="pk-tag ${p.choice}">${p.choice === 'up' ? '上盤' : '下盤'}</span>
       <span class="pk-res">${res}</span>
       <span style="color:var(--dim);font-size:12px">尾盤 ${esc(p.line || '—')}${p.odds ? ' ' + esc(p.odds) : ''}</span>
-      ${del}
+      ${again}${del}
     </div>
     <div class="pk-items">
       <div class="pk-it"><div class="t">① 同初盤及尾盤</div><div class="v">${_pairTxt(b.i1)}</div></div>
@@ -267,6 +268,21 @@ async function renderPicksOverlay() {
       renderPicksOverlay();
     };
   });
+  body.querySelectorAll('.pk-again').forEach(btn => {
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        await jpost('/api/pick', {id: parseInt(btn.dataset.id, 10),
+                                  choice: btn.dataset.choice});
+        btn.textContent = '✓ 已照揀';
+        loadPicks();
+        if (curMatch) updatePkButtons(curMatch);
+      } catch (e) {
+        btn.textContent = '✗ 失敗';
+      }
+      setTimeout(() => { btn.disabled = false; btn.textContent = '⇄ 照揀'; }, 2000);
+    };
+  });
 }
 
 function openPicksOverlay() {
@@ -282,6 +298,205 @@ function closePicksOverlay() {
   document.getElementById('pkOverlay').style.display = 'none';
   clearInterval(pkOvTimer);
   pkOvTimer = null;
+}
+
+// ===== 精選（七重準則全通過，永久保留＋自動結算）=====
+let ftOvTimer = null;
+let ftScanTimer = null;
+
+function _ocLine(o) {
+  if (!o) return '無數據';
+  return `上${pct(o.up_r)} 下${pct(o.down_r)}` + (o.push_r != null ? ` 走${pct(o.push_r)}` : '') + `（n=${o.n}）`;
+}
+
+function _ftShareText(p) {
+  const b = p.brief || {};
+  const dName = p.direction === 'up' ? '上盤' : '下盤';
+  const L = [];
+  L.push('⚽ FootballAnalysis 精選');
+  L.push(p.league);
+  L.push(`${p.home} vs ${p.away}`);
+  L.push(`開賽：${p.kickoff}`);
+  if (p.line) L.push(`尾盤：${p.line}${p.odds ? ' ' + p.odds : ''}`);
+  L.push(`方向：${dName}（①⑤⑧⑫⑮⑱ 同方向全部≥50%）`);
+  const i1 = b.i1 || {}, i5 = b.i5 || {}, i8 = b.i8 || {};
+  if (i1.all) L.push(`① 同初盤及尾盤：全庫 ${_ocLine(i1.all)}`);
+  if (i5.all) L.push(`⑤ 對上對賽尾盤：全庫 ${_ocLine(i5.all)}`);
+  if (i8.all) L.push(`⑧ 主客入失球±3：全庫 ${_ocLine(i8.all)}`);
+  const i12 = b.i12 || {}, i15 = b.i15 || {};
+  if (i12.cur) L.push(`⑫ 主場客場排名±2·同尾盤：全庫 ${_ocLine(i12.cur)}`);
+  if (i15.zone) L.push(`⑮ 排名±2＋同尾盤·今場水位區【${i15.zone.zone}】：全庫 ${_ocLine(i15.zone)}`);
+  const g14 = _gapPlain(b.g14, b.cur_line), g17 = _gapPlain(b.g17, b.cur_line);
+  if (g14) L.push(`⑭ 差距：${g14}`);
+  if (g17) L.push(`⑰ 差距：${g17}`);
+  if (p.played && p.score) {
+    L.push(`賽果：${p.score}（${p.result === 'W' ? '✅ 方向命中' : p.result === 'L' ? '❌ 方向未中' : '➖ 走盤'}）`);
+  }
+  return L.join('\n');
+}
+
+function _gapPlain(g, curLine) {   // 純文字版（分享用）
+  if (!g) return null;
+  const scope = g.all || g.lg;
+  if (!scope) return null;
+  const parts = [];
+  const gt = gd => (gd && (gd.text || gd.gap != null)) ? (gd.text || String(gd.gap)) : null;
+  if (scope.d50) {
+    parts.push(`現時盤【${curLine || '—'}】 vs 最接近50%盤【${scope.d50.line}】（上${pct(scope.d50.up_r)}）` +
+      (gt(scope.d50.gap) ? ` → ${gt(scope.d50.gap)}` : ''));
+  }
+  if (scope.mode) {
+    parts.push(`分佈最多盤【${scope.mode.line}】（n=${scope.mode.n}｜上${pct(scope.mode.up_r)}）` +
+      (gt(scope.mode.gap) ? ` → ${gt(scope.mode.gap)}` : ''));
+  }
+  return parts.join('；') || null;
+}
+
+async function _ftShare(p, btn) {
+  const text = _ftShareText(p);
+  const menu = btn.parentElement.querySelector('.ft-menu');
+  if (menu) { menu.remove(); return; }
+  const m = document.createElement('div');
+  m.className = 'ft-menu';
+  const wa = 'https://wa.me/?text=' + encodeURIComponent(text);
+  const line = 'https://line.me/R/share/text?text=' + encodeURIComponent(text);
+  m.innerHTML = `<a class="btn" href="${wa}" target="_blank" rel="noopener">WhatsApp</a>
+    <a class="btn" href="${line}" target="_blank" rel="noopener">LINE</a>
+    <button class="btn" data-act="copy">複製文字</button>`;
+  btn.parentElement.appendChild(m);
+  m.querySelector('[data-act="copy"]').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      m.querySelector('[data-act="copy"]').textContent = '✓ 已複製';
+    } catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+      m.querySelector('[data-act="copy"]').textContent = '✓ 已複製';
+    }
+  };
+}
+
+function _ftCard(p) {
+  const b = p.brief || {};
+  const dName = p.direction === 'up' ? '上盤' : '下盤';
+  const res = !p.played ? '<span style="color:var(--dim)">未開賽</span>'
+    : (p.result === 'W' ? '<b class="r-up">✅ 命中</b>'
+      : p.result === 'L' ? '<b class="r-down">❌ 未中</b>'
+      : p.result === 'P' ? '<b>➖ 走盤</b>' : '<span style="color:var(--dim)">待結算</span>');
+  const i12 = b.i12, i15 = b.i15, i18 = b.i18;
+  const i12v = !i12 ? '不適用'
+    : `n=${i12.n}` + (i12.top ? `<br>最多【${esc(i12.top.line || '')}】上${pct(i12.top.up_r)} 下${pct(i12.top.down_r)}` : '');
+  const i15v = !i15 ? '不適用'
+    : `n=${i15.n}` + (i15.zone ? `<br>今場水位區【${esc(i15.zone.zone)}】上${pct(i15.zone.up_r)} 下${pct(i15.zone.down_r)} 走${pct(i15.zone.push_r)}` : '');
+  const i18v = !i18 ? '不適用' : `全庫 ${_ocTxt(i18.all)}<br><span style="opacity:.75">同聯賽 ${_ocTxt(i18.lg)}</span>`;
+  return `<div class="pk-card ft-card">
+    <div class="pk-top">
+      <span class="pk-time">${esc(p.kickoff.slice(5, 16))}　${esc(p.league)}</span>
+      <span class="pk-teams">${esc(p.home)} vs ${esc(p.away)}</span>
+      ${p.score ? `<span class="pk-score">${esc(p.score)}</span>` : ''}
+      <span class="pk-tag ${p.direction}">${dName}</span>
+      <span class="pk-res">${res}</span>
+      <span style="color:var(--dim);font-size:12px">尾盤 ${esc(p.line || '—')}${p.odds ? ' ' + esc(p.odds) : ''}</span>
+      <button class="btn ft-share">⇗ 分享</button>
+    </div>
+    <div class="pk-items">
+      <div class="pk-it"><div class="t">① 同初盤及尾盤</div><div class="v">${_pairTxt(b.i1)}</div></div>
+      <div class="pk-it"><div class="t">⑤ 對上對賽尾盤</div><div class="v">${_pairTxt(b.i5)}</div></div>
+      <div class="pk-it"><div class="t">⑧ 主客入失球±3</div><div class="v">${_pairTxt(b.i8)}</div></div>
+      <div class="pk-it"><div class="t">⑫ 主場客場排名±2</div><div class="v">${i12v}</div></div>
+      <div class="pk-it"><div class="t">⑮ 排名±2＋同尾盤</div><div class="v">${i15v}</div></div>
+      <div class="pk-it"><div class="t">⑱ 排名差距±1＋同尾盤</div><div class="v">${i18v}</div></div>
+    </div>
+    <div class="pk-gap"><span class="lab">⑭ 差距</span>${_gapTxt(b.g14, b.cur_line)}</div>
+    <div class="pk-gap"><span class="lab">⑰ 差距</span>${_gapTxt(b.g17, b.cur_line)}</div>
+  </div>`;
+}
+
+async function renderFeaturedOverlay() {
+  const body = document.getElementById('ftOvBody');
+  let d;
+  try { d = await jget('/api/featured/full'); }
+  catch (e) { body.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  const s = d.stats || {};
+  const rate = s.hit_rate != null ? (s.hit_rate * 100).toFixed(1) + '%' : '—';
+  document.getElementById('ftOvTitle').textContent =
+    `★ 精選｜${s.total || 0} 場（未開賽 ${s.pending || 0}｜已完場 ${s.played || 0}）｜命中 ${s.wins || 0} 場｜命中率 ${rate}`;
+  const scan = d.scan || {};
+  document.getElementById('ftScanInfo').textContent =
+    scan.running ? `掃描中 ${scan.done}/${scan.total}…` :
+    (scan.last ? `上次掃描：${scan.last}（+${scan.added} 場）` : '從未掃描');
+  let h = '';
+  if ((d.pending || []).length) {
+    h += `<div class="pk-sec-t">未開賽（順開賽時間排）</div>` + d.pending.map(_ftCard).join('');
+  }
+  const played = d.played || [];
+  if (played.length) {
+    h += `<div class="pk-sec-t">已完場（${played.length} 場${played.length > 20 ? '，按日子分類' : ''}）</div>`;
+    if (played.length > 20) {
+      let lastDate = '';
+      for (const p of played) {
+        const dd = p.kickoff.slice(0, 10);
+        if (dd !== lastDate) {
+          h += `<div class="ft-date">${esc(dd)}</div>`;
+          lastDate = dd;
+        }
+        h += _ftCard(p);
+      }
+    } else {
+      h += played.map(_ftCard).join('');
+    }
+  }
+  if (!h) h = '<div class="note">暫無精選場次。撳「🔍 掃描精選」喺全部即將開賽嘅場次入面搵（約 1-3 分鐘）。</div>';
+  body.innerHTML = h;
+  body.querySelectorAll('.ft-share').forEach((btn, i) => {
+    const all = [...(d.pending || []), ...played];
+    btn.onclick = () => _ftShare(all[i], btn);
+  });
+}
+
+async function pollFtScan() {
+  const s = await jget('/api/featured/scan-status');
+  if (s.running) {
+    document.getElementById('ftScanInfo').textContent = `掃描中 ${s.done}/${s.total}…`;
+    ftScanTimer = setTimeout(pollFtScan, 3000);
+    return;
+  }
+  document.getElementById('ftScanInfo').textContent =
+    (s.last ? `上次掃描：${s.last}（+${s.added} 場）` : '從未掃描') +
+    (s.error ? '｜出錯：' + s.error : '');
+  document.getElementById('btnFtScan').disabled = false;
+  renderFeaturedOverlay();
+}
+
+async function startFtScan() {
+  const btn = document.getElementById('btnFtScan');
+  btn.disabled = true;
+  await jpost('/api/featured/scan', {});
+  pollFtScan();
+}
+
+function openFeaturedOverlay() {
+  document.getElementById('ftOverlay').style.display = 'flex';
+  renderFeaturedOverlay();
+  // 超過 30 分鐘無掃描過 → 自動掃描
+  jget('/api/featured/scan-status').then(s => {
+    if (!s.running && (!s.last || (Date.now() - new Date(s.last.replace(' ', 'T')).getTime()) > 30 * 60 * 1000)) {
+      startFtScan();
+    }
+  }).catch(() => {});
+  clearInterval(ftOvTimer);
+  ftOvTimer = setInterval(() => {
+    if (!document.hidden) renderFeaturedOverlay();
+  }, 60 * 1000);
+}
+
+function closeFeaturedOverlay() {
+  document.getElementById('ftOverlay').style.display = 'none';
+  clearInterval(ftOvTimer);
+  clearTimeout(ftScanTimer);
+  ftOvTimer = null;
+  ftScanTimer = null;
 }
 
 async function fetchOdds(id, quiet) {
@@ -591,6 +806,11 @@ $('#hours').onchange = loadList;
 // ===== 我的選擇 · 大版面 =====
 $('#btnPicksBig').onclick = openPicksOverlay;
 $('#pkOvClose').onclick = closePicksOverlay;
+
+// ===== 精選 · 大版面 =====
+$('#btnFeatured').onclick = openFeaturedOverlay;
+$('#ftOvClose').onclick = closeFeaturedOverlay;
+$('#btnFtScan').onclick = startFtScan;
 
 // ===== 一鍵更新賽事（賽果＋新場次＋最近三日盤口）=====
 async function pollUpdate() {

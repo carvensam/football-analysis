@@ -171,6 +171,9 @@ def init_picks():
     conn = db()
     conn.execute('''CREATE TABLE IF NOT EXISTS user_picks(
         match_id INTEGER PRIMARY KEY, choice TEXT NOT NULL, created REAL)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS featured(
+        match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
+        added_at TEXT, result TEXT, settled_at TEXT)''')
     conn.commit()
     conn.close()
 
@@ -274,32 +277,45 @@ def _pair_brief(it):
     return {'all': _oc_brief(it.get('all')), 'lg': _oc_brief(it.get('league'))}
 
 
-def _dist_brief(it):
-    """第 12 項：樣本數＋分佈最多盤口"""
+def _dist_brief(it, cur_line=None):
+    """第 12 項：樣本數＋分佈最多盤口＋今場同盤口列（全庫及同聯賽）"""
     if not it or it.get('error') or not it.get('all'):
         return None
-    a = it['all']
-    top = None
-    for r in (a.get('dist') or []):
-        if top is None or r.get('n', 0) > top.get('n', 0):
-            top = r
-    return {'n': a.get('n'), 'top': top}
+
+    def scope_brief(s):
+        if not s:
+            return None
+        dist = s.get('dist') or []
+        top, cur = None, None
+        for r in dist:
+            if top is None or r.get('n', 0) > top.get('n', 0):
+                top = r
+            if cur_line and r.get('line') == cur_line:
+                cur = r
+        return {'n': s.get('n'), 'top': top, 'cur': cur}
+
+    return scope_brief(it.get('all')) | {'lg': scope_brief(it.get('league'))}
 
 
 def _zone_brief(it, up_water):
-    """第 15 項：樣本數＋今場上盤水位所屬水位區"""
+    """第 15 項：樣本數＋今場上盤水位所屬水位區（全庫及同聯賽）"""
     if not it or it.get('error') or not it.get('all'):
         return None
-    a = it['all']
-    cur = None
+    name = None
     if up_water is not None:
         zi = screen_engine.zone_idx(up_water)
         name = screen_engine.ZONES[zi]
-        for r in (a.get('zones') or []):
+
+    def find_zone(s):
+        if not s or name is None:
+            return None
+        for r in (s.get('zones') or []):
             if r.get('zone') == name:
-                cur = r
-                break
-    return {'n': a.get('n'), 'zone': cur}
+                return r
+        return None
+
+    return {'n': it['all'].get('n'), 'zone': find_zone(it['all']),
+            'lg_zone': find_zone(it.get('league'))}
 
 
 def _gap_scope(scope):
@@ -323,6 +339,15 @@ def _gap_brief(it):
     return {'all': _gap_scope(it.get('all')), 'lg': _gap_scope(it.get('league'))}
 
 
+def _i18_brief(it):
+    """第 18 項：結果上/下/走 率（全庫＋同聯賽）；結構係 all.oc / league.oc"""
+    if not it or it.get('error'):
+        return None
+    def oc(scope):
+        return _oc_brief(scope.get('oc')) if scope else None
+    return {'all': oc(it.get('all')), 'lg': oc(it.get('league'))}
+
+
 def _screen_brief(mid):
     """對單場跑篩查，抽出 1/5/8/12/15 摘要 及 14/17 差距（5 分鐘快取）"""
     ts, data = _pk_full_cache.get(mid, (0, None))
@@ -344,15 +369,17 @@ def _screen_brief(mid):
         else:
             ho, ao = close.get('ho'), close.get('ao')
             up_water = min(ho, ao) if ho is not None and ao is not None else None
+        cur_line = screen_engine.fmt_line(close.get('h'), g) \
+            if close.get('h') is not None else None
         brief = {
-            'cur_line': screen_engine.fmt_line(close.get('h'), g)
-                        if close.get('h') is not None else None,
+            'cur_line': cur_line,
             'cur_water': up_water,
             'i1': _pair_brief(items.get('1')),
             'i5': _pair_brief(items.get('5')),
             'i8': _pair_brief(items.get('8')),
-            'i12': _dist_brief(items.get('12')),
+            'i12': _dist_brief(items.get('12'), cur_line),
             'i15': _zone_brief(items.get('15'), up_water),
+            'i18': _i18_brief(items.get('18')),
             'g14': _gap_brief(items.get('14')),
             'g17': _gap_brief(items.get('17')),
         }
@@ -412,6 +439,165 @@ def get_picks_full():
              'losses': losses, 'pushes': pushes,
              'win_rate': wins / (wins + losses) if (wins + losses) else None}
     return {'stats': stats, 'pending': pending, 'played': played}
+
+
+# ============ 精選（七重準則全通過嘅場次，永久保留＋自動結算） ============
+
+_feat_scan = {'running': False, 'done': 0, 'total': 0, 'added': 0,
+              'last': None, 'error': None}
+
+
+def _featured_direction(b):
+    """七重準則：①⑤⑧ 全庫同方向≥50%；⑫⑮⑱ 全庫+同聯賽同方向≥50%。
+    方向由第①項（全庫）揀：上盤率≥50%→'up'，否則下盤率≥50%→'down'，否則唔入選。
+    通過全部返回 'up'/'down'，任何一項不達標返回 None。"""
+    if not b:
+        return None
+
+    def rate(oc, d):
+        if not oc:
+            return None
+        return oc.get('up_r') if d == 'up' else oc.get('down_r')
+
+    a1 = (b.get('i1') or {}).get('all')
+    if not a1:
+        return None
+    if (a1.get('up_r') or 0) >= 0.5:
+        d = 'up'
+    elif (a1.get('down_r') or 0) >= 0.5:
+        d = 'down'
+    else:
+        return None
+    # ①⑤⑧：全庫同方向 ≥50%
+    for k in ('i1', 'i5', 'i8'):
+        r = rate((b.get(k) or {}).get('all'), d)
+        if r is None or r < 0.5:
+            return None
+    # ⑫：同尾盤盤口（全庫 + 同聯賽）
+    i12 = b.get('i12') or {}
+    for row in (i12.get('cur'), (i12.get('lg') or {}).get('cur')):
+        r = rate(row, d)
+        if r is None or r < 0.5:
+            return None
+    # ⑮：同尾盤＋今場水位區（全庫 + 同聯賽）
+    i15 = b.get('i15') or {}
+    for row in (i15.get('zone'), i15.get('lg_zone')):
+        r = rate(row, d)
+        if r is None or r < 0.5:
+            return None
+    # ⑱：排名差距淨值±1＋同尾盤（全庫 + 同聯賽）
+    i18 = b.get('i18') or {}
+    for row in (i18.get('all'), i18.get('lg')):
+        r = rate(row, d)
+        if r is None or r < 0.5:
+            return None
+    return d
+
+
+def _featured_scan_job():
+    global _feat_scan
+    if _feat_scan['running']:
+        return
+    _feat_scan.update(running=True, done=0, added=0, error=None)
+    conn = db()
+    try:
+        # 所有未開賽且有尾盤嘅場次
+        rows = conn.execute(
+            "SELECT DISTINCT m.id FROM matches m "
+            "JOIN odds_asian oc ON oc.match_id=m.id "
+            "AND oc.label='closing' AND oc.company_id=12 AND oc.handicap IS NOT NULL "
+            "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','localtime') "
+            "ORDER BY m.kickoff").fetchall()
+        _feat_scan['total'] = len(rows)
+        screen_engine.load_pool(conn)   # 預熱數據池
+        added = 0
+        for (mid,) in rows:
+            try:
+                d = _featured_direction(_screen_brief(mid))
+                if d and not conn.execute(
+                        'SELECT 1 FROM featured WHERE match_id=?', (mid,)).fetchone():
+                    conn.execute(
+                        'INSERT INTO featured(match_id, direction, added_at) '
+                        'VALUES(?,?,?)',
+                        (mid, d, time.strftime('%Y-%m-%d %H:%M:%S')))
+                    conn.commit()
+                    added += 1
+            except Exception:
+                pass
+            _feat_scan['done'] += 1
+        _feat_scan['added'] = added
+        _feat_scan['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception as e:
+        _feat_scan['error'] = str(e)
+    finally:
+        conn.close()
+        _feat_scan['running'] = False
+
+
+def get_featured_full():
+    """精選全量：未開賽順時間排先；已完場最新排先（永不刪除）。
+    順便結算新完場場次（以入選方向計 贏/輸/走）。"""
+    conn = db()
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    pending_rows = conn.execute(
+        'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
+        'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
+        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
+        'FROM featured f JOIN matches m ON m.id=f.match_id '
+        'JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        'JOIN teams ht ON ht.titan_id=m.home_id '
+        'JOIN teams at ON at.titan_id=m.away_id '
+        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+        "AND oc.label='closing' AND oc.company_id=12 "
+        'WHERE m.home_score IS NULL ORDER BY m.kickoff').fetchall()
+    played_rows = conn.execute(
+        'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
+        'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
+        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
+        'FROM featured f JOIN matches m ON m.id=f.match_id '
+        'JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        'JOIN teams ht ON ht.titan_id=m.home_id '
+        'JOIN teams at ON at.titan_id=m.away_id '
+        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+        "AND oc.label='closing' AND oc.company_id=12 "
+        'WHERE m.home_score IS NOT NULL ORDER BY m.kickoff DESC').fetchall()
+    conn.close()
+
+    def build(row):
+        (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao) = row
+        rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
+               'home': h, 'away': a, 'league': lg,
+               'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+               'odds': f'主{ho}/客{ao}' if ho is not None else None,
+               'played': hs is not None}
+        if hs is not None:
+            r = pick_result(hc, gv, hs, aws)
+            if res is None and r is not None:
+                # 自動結算（以入選方向計）
+                res = 'P' if r == 'P' else ('W' if (r == 'A') == (d == 'up') else 'L')
+                c2 = db()
+                c2.execute('UPDATE featured SET result=?, settled_at=? WHERE match_id=?',
+                           (res, now, mid))
+                c2.commit()
+                c2.close()
+            rec['score'] = f'{hs}-{aws}'
+            rec['result'] = res
+        rec['brief'] = _screen_brief(mid)
+        return rec
+
+    pending = [build(r) for r in pending_rows]
+    played = [build(r) for r in played_rows]
+    wins = sum(1 for r in played if r.get('result') == 'W')
+    losses = sum(1 for r in played if r.get('result') == 'L')
+    pushes = sum(1 for r in played if r.get('result') == 'P')
+    stats = {'total': len(pending) + len(played), 'pending': len(pending),
+             'played': len(played), 'wins': wins, 'losses': losses,
+             'pushes': pushes,
+             'hit_rate': wins / (wins + losses) if (wins + losses) else None}
+    return {'stats': stats, 'pending': pending, 'played': played,
+            'scan': {k: _feat_scan[k] for k in ('running', 'done', 'total', 'added', 'last', 'error')}}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -493,6 +679,17 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/featured/full':
+            try:
+                self._send(200, json.dumps(get_featured_full(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/featured/scan-status':
+            self._send(200, json.dumps(_feat_scan, ensure_ascii=False))
+            return
         self._send(404, '{}')
 
     def do_POST(self):
@@ -530,6 +727,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback
                 traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/featured/scan':
+            try:
+                if not _feat_scan['running']:
+                    threading.Thread(target=_featured_scan_job, daemon=True).start()
+                self._send(200, json.dumps({'started': True, 'running': True},
+                                           ensure_ascii=False))
+            except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/pick/delete':
