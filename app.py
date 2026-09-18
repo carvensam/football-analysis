@@ -25,6 +25,7 @@ if PARENT_DIR not in sys.path:
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+import numpy as np
 import screen_engine
 
 _fetch_lock = threading.Lock()
@@ -181,6 +182,9 @@ def init_picks():
     conn.execute('''CREATE TABLE IF NOT EXISTS featured(
         match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
         added_at TEXT, result TEXT, settled_at TEXT)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS check_rows(
+        match_id INTEGER PRIMARY KEY, direction TEXT,
+        g14 TEXT, g17 TEXT, res TEXT)''')
     conn.commit()
     conn.close()
 
@@ -466,11 +470,12 @@ _feat_scan = {'running': False, 'done': 0, 'total': 0, 'added': 0,
               'last': None, 'error': None}
 
 
-def _featured_direction(b):
+def _featured_direction(b, gates=True):
     """七重準則（2026-09-19 最終版）：
     方向揀選：第①⑤項一齊睇——「上」：①⑤ 全部已存在範圍（全庫及同聯賽）上盤率≥50%；
     否則「下」：①⑤ 全部已存在範圍下盤率≥50%；上→下順序，兩者都唔得→唔入選。
-    跟住 ①⑤⑧⑫⑮⑱：每項【全庫或同聯賽其中一個】同方向 ≥50% 即合格。
+    gates=True 時跟住 ①⑤⑧⑫⑮⑱：每項【全庫或同聯賽其中一個】同方向 ≥50% 即合格。
+    gates=False 只揀方向（Check 下先用）。
     全部通過返回 'up'/'down'，任何一項不達標返回 None。"""
     if not b:
         return None
@@ -507,6 +512,8 @@ def _featured_direction(b):
         d = 'down'
     else:
         return None
+    if not gates:
+        return d
     # ①⑤⑧：全庫或同聯賽其中一個同方向 ≥50%
     for k in ('i1', 'i5', 'i8'):
         it = b.get(k) or {}
@@ -645,6 +652,210 @@ def get_featured_full():
             'scan': {k: _feat_scan[k] for k in ('running', 'done', 'total', 'added', 'last', 'error')}}
 
 
+# ============ Check 下先（8 組合回測：①⑤⑧⑫⑮⑱方向 × ⑭深淺 × ⑰深淺） ============
+
+_check_scan = {'running': False, 'done': 0, 'total': 0, 'kept': 0,
+               'last': None, 'error': None}
+
+_GMAP = {'home': 1, 'away': -1, 'none': 0}
+
+
+def _rates_of(m, res):
+    """mask → {n, up_r, down_r}（分母剔除走盤），n=0 返回 None"""
+    n = int(m.sum())
+    if n == 0:
+        return None
+    r = res[m]
+    a = int((r == 1).sum())
+    p = int((r == 0).sum())
+    eff = n - p
+    return {'n': n,
+            'up_r': a / eff if eff else None,
+            'down_r': (eff - a) / eff if eff else None}
+
+
+def _d50_dir(m, c_h, c_gc, res, t_h, t_gc):
+    """樣本 mask → 最接近50%盤口（n>=5，冇就用分佈最多）對今場尾盤嘅方向：
+    'deep'=上盤(讓球方)深咗，'shallow'=上盤淺咗，None=無樣本或同盤"""
+    idx = np.nonzero(m)[0]
+    if idx.size == 0:
+        return None
+    q = np.round(c_h[idx] * 4).astype(np.int32)      # 讓球數×4（整數）
+    key = q * 4 + (c_gc[idx] + 1)                     # 複合鍵：讓球數+讓球方
+    uk, inv = np.unique(key, return_inverse=True)
+    cnt = np.bincount(inv)
+    up = np.bincount(inv, weights=(res[idx] == 1))
+    push = np.bincount(inv, weights=(res[idx] == 0))
+    eff = cnt - push
+    with np.errstate(invalid='ignore', divide='ignore'):
+        up_r = np.where(eff > 0, up / np.maximum(eff, 1), np.nan)
+    cand = np.where((cnt >= 5) & (eff > 0))[0]
+    if cand.size:
+        j = int(cand[np.nanargmin(np.abs(up_r[cand] - 0.5))])
+    else:
+        j = int(np.argmax(cnt))
+    rq = (uk[j] // 4) / 4.0
+    rg = uk[j] % 4 - 1
+    rs_ = 0.0 if (rq == 0 or rg == 0) else (rq if rg == 1 else -rq)
+    cs_ = 0.0 if (t_h == 0 or t_gc == 0) else (t_h if t_gc == 1 else -t_h)
+    delta = cs_ - rs_
+    if abs(delta) < 1e-9:
+        return None
+    gv = 1.0 if (t_gc == 1 or t_gc == 0) else -1.0   # 平手當主=上盤
+    return 'deep' if delta * gv > 0 else 'shallow'
+
+
+def _check_scan_job():
+    """全庫回測：每場計 ①⑤⑧⑫⑮⑱ 方向（同精選一致）＋⑭⑰ 最接近50%盤嘅上盤深淺。
+    結果落 check_rows 表（可中斷續跑）。約 7 萬場，需時 30-90 分鐘。"""
+    global _check_scan
+    if _check_scan['running']:
+        return
+    _check_scan.update(running=True, error=None)
+    conn = db()
+    try:
+        df, _prev = screen_engine.load_pool(conn)
+        n_total = len(df)
+        _check_scan['total'] = n_total
+        ids = df['id'].to_numpy()
+        lg = df['league'].astype('category').cat.codes.to_numpy()
+        res = df['res'].map({'A': 1, 'B': -1, 'P': 0}).to_numpy()
+        i_h = df['i_h'].to_numpy(); i_ho = df['i_ho'].to_numpy(); i_ao = df['i_ao'].to_numpy()
+        c_h = df['c_h'].to_numpy(); c_ho = df['c_ho'].to_numpy(); c_ao = df['c_ao'].to_numpy()
+        i_gc = df['i_g'].fillna('none').map(_GMAP).to_numpy()
+        c_gc = df['c_g'].fillna('none').map(_GMAP).to_numpy()
+        pv_h = df['pv_h'].to_numpy(); pv_ho = df['pv_ho'].to_numpy(); pv_ao = df['pv_ao'].to_numpy()
+        pv_gc = df['pv_g'].fillna('none').map(_GMAP).to_numpy()
+        hhr = df['home_home_rank'].to_numpy(); aar = df['away_away_rank'].to_numpy()
+        hh_p = df['home_home_p'].to_numpy(); aa_p = df['away_away_p'].to_numpy()
+        hh_gf = df['home_home_gf'].to_numpy(); hh_ga = df['home_home_ga'].to_numpy()
+        hh_gd = df['home_home_gd'].to_numpy()
+        aa_gf = df['away_away_gf'].to_numpy(); aa_ga = df['away_away_ga'].to_numpy()
+        aa_gd = df['away_away_gd'].to_numpy()
+        hp_h = df['hp_h'].to_numpy()
+        hp_gc = df['hp_g'].fillna('none').map(_GMAP).to_numpy()
+        hp_rc = df['hp_role'].map({'home': 1, 'away': 0}).fillna(-1).to_numpy()
+        zone = df['up_zone'].to_numpy()
+
+        existing = set(r[0] for r in conn.execute('SELECT match_id FROM check_rows'))
+        _check_scan['done'] = len(existing)
+        kept = int(conn.execute('SELECT COUNT(*) FROM check_rows').fetchone()[0])
+        _check_scan['kept'] = kept
+        batch = []
+        for k in range(n_total):
+            mid = int(ids[k])
+            if mid in existing:
+                continue
+            try:
+                t_h, t_g = float(c_h[k]), int(c_gc[k])
+                t_ho, t_ao = float(c_ho[k]), float(c_ao[k])
+                t_lg = lg[k]
+                # ① 同初盤及尾盤（盤口100%同，水位±0.03）
+                m1 = (i_h == t_h) & (i_gc == t_g) & (c_h == t_h) & (c_gc == t_g) & \
+                     (np.abs(i_ho - t_ho) <= 0.03) & (np.abs(i_ao - t_ao) <= 0.03) & \
+                     (np.abs(c_ho - t_ho) <= 0.03) & (np.abs(c_ao - t_ao) <= 0.03)
+                m1l = m1 & (lg == t_lg)
+                # ⑤ 對上一次對賽尾盤 vs 今場尾盤
+                m5 = (pv_h == t_h) & (pv_gc == t_g) & \
+                     (np.abs(pv_ho - t_ho) <= 0.03) & (np.abs(pv_ao - t_ao) <= 0.03)
+                m5l = m5 & (lg == t_lg)
+                brief = {
+                    'i1': {'all': _rates_of(m1, res), 'lg': _rates_of(m1l, res)},
+                    'i5': {'all': _rates_of(m5, res), 'lg': _rates_of(m5l, res)},
+                }
+                d = _featured_direction(brief, gates=False)
+                if d:
+                    # ⑧ 主隊主場/客隊客場 入失球差 ±3
+                    if hh_p[k] > 0 and aa_p[k] > 0:
+                        m8 = (hh_p > 0) & (aa_p > 0) & \
+                             (np.abs(hh_gf - hh_gf[k]) <= 3) & \
+                             (np.abs(hh_ga - hh_ga[k]) <= 3) & \
+                             (np.abs(hh_gd - hh_gd[k]) <= 3) & \
+                             (np.abs(aa_gf - aa_gf[k]) <= 3) & \
+                             (np.abs(aa_ga - aa_ga[k]) <= 3) & \
+                             (np.abs(aa_gd - aa_gd[k]) <= 3)
+                        brief['i8'] = {'all': _rates_of(m8, res),
+                                       'lg': _rates_of(m8 & (lg == t_lg), res)}
+                    # ⑫ 主場/客場排名±2；i12.cur = 樣本入面同今場尾盤嗰行
+                    if not np.isnan(hhr[k]) and not np.isnan(aar[k]):
+                        m12 = (np.abs(hhr - hhr[k]) <= 2) & (np.abs(aar - aar[k]) <= 2)
+                        m15 = m12 & (c_h == t_h) & (c_gc == t_g)
+                        brief['i12'] = {'n': int(m12.sum()),
+                                        'cur': _rates_of(m15, res),
+                                        'lg': {'cur': _rates_of(m15 & (lg == t_lg), res)}}
+                        # ⑮ = ⑫＋同尾盤，再按今場上盤水位區
+                        t_zone = int(zone[k])
+                        m15z = m15 & (zone == t_zone)
+                        brief['i15'] = {'zone': _rates_of(m15z, res),
+                                        'lg_zone': _rates_of(m15z & (lg == t_lg), res)}
+                        # ⑱ 排名差距淨值±1＋同尾盤
+                        m18 = (np.abs((hhr - aar) - (hhr[k] - aar[k])) <= 1) & \
+                              (c_h == t_h) & (c_gc == t_g)
+                        brief['i18'] = {'all': _rates_of(m18, res),
+                                        'lg': _rates_of(m18 & (lg == t_lg), res)}
+                    d = _featured_direction(brief)
+                if d:
+                    g14 = (_d50_dir(m12, c_h, c_gc, res, t_h, t_g)
+                           if 'i12' in brief else None)
+                    g17 = None
+                    if hp_h[k] == hp_h[k] and hp_rc[k] >= 0:   # hp 有效
+                        m16 = (hp_rc == hp_rc[k]) & (hp_h == hp_h[k]) & \
+                              (hp_gc == hp_gc[k])
+                        g17 = _d50_dir(m16, c_h, c_gc, res, t_h, t_g)
+                    r = res[k]
+                    batch.append((mid, d, g14, g17,
+                                  'A' if r == 1 else ('B' if r == -1 else 'P')))
+                    if g14 and g17:
+                        kept += 1
+            except Exception:
+                pass
+            _check_scan['done'] += 1
+            if len(batch) >= 500:
+                conn.executemany(
+                    'INSERT OR IGNORE INTO check_rows(match_id, direction, g14, g17, res) '
+                    'VALUES(?,?,?,?,?)', batch)
+                conn.commit()
+                batch.clear()
+                _check_scan['kept'] = kept
+        if batch:
+            conn.executemany(
+                'INSERT OR IGNORE INTO check_rows(match_id, direction, g14, g17, res) '
+                'VALUES(?,?,?,?,?)', batch)
+            conn.commit()
+        _check_scan['kept'] = kept
+        _check_scan['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception as e:
+        _check_scan['error'] = str(e)
+    finally:
+        conn.close()
+        _check_scan['running'] = False
+
+
+def get_check():
+    """8 組合開出上/下盤比例（g14/g17 以『上盤』深淺編碼；顯示時下方向換算）"""
+    conn = db()
+    rows = conn.execute(
+        "SELECT direction, g14, g17, res, COUNT(*) FROM check_rows "
+        "WHERE direction IS NOT NULL AND g14 IS NOT NULL AND g17 IS NOT NULL "
+        "GROUP BY direction, g14, g17, res").fetchall()
+    n_rows = conn.execute('SELECT COUNT(*) FROM check_rows').fetchone()[0]
+    conn.close()
+    combos = {}
+    for d, g14, g17, r, n in rows:
+        c = combos.setdefault((d, g14, g17), {'n': 0, 'up': 0, 'down': 0, 'push': 0})
+        c['n'] += n
+        c['up' if r == 'A' else ('down' if r == 'B' else 'push')] += n
+    out = []
+    for (d, g14, g17), c in combos.items():
+        eff = c['up'] + c['down']
+        out.append({'direction': d, 'g14': g14, 'g17': g17, **c,
+                    'up_r': c['up'] / eff if eff else None,
+                    'down_r': c['down'] / eff if eff else None})
+    return {'combos': out, 'rows': n_rows,
+            'scan': {k: _check_scan[k] for k in
+                     ('running', 'done', 'total', 'kept', 'last', 'error')}}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -735,6 +946,17 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/featured/scan-status':
             self._send(200, json.dumps(_feat_scan, ensure_ascii=False))
             return
+        if u.path == '/api/check/full':
+            try:
+                self._send(200, json.dumps(get_check(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/check/scan-status':
+            self._send(200, json.dumps(_check_scan, ensure_ascii=False))
+            return
         self._send(404, '{}')
 
     def do_POST(self):
@@ -787,6 +1009,15 @@ class Handler(BaseHTTPRequestHandler):
                     threading.Thread(target=_featured_scan_job, daemon=True).start()
                 self._send(200, json.dumps({'started': True, 'running': True,
                                             'reset': bool(body.get('reset'))},
+                                           ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/check/scan':
+            try:
+                if not _check_scan['running']:
+                    threading.Thread(target=_check_scan_job, daemon=True).start()
+                self._send(200, json.dumps({'started': True, 'running': True},
                                            ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))

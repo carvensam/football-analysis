@@ -6,6 +6,9 @@ let curMatch = null;
 
 function setStatus(t) { $('#status').textContent = t; }
 
+// 球隊名前加「(排名)」；無排名則原樣
+function rn(name, rank) { return rank ? `(${rank}) ${name}` : name; }
+
 let poolReady = false;
 let poolErr = null;
 let listCount = null;
@@ -94,7 +97,7 @@ async function loadList() {
     const line = m.line ? `<span class="line-tag">${esc(m.line.line)} 主${m.line.ho}/客${m.line.ao}</span>` : '';
     row.innerHTML = `
       <div class="top"><span>${esc(m.league)}</span><span>${m.kickoff.slice(11,16)}</span></div>
-      <div class="mid">${esc(m.home)} <span style="color:var(--dim)">vs</span> ${esc(m.away)}</div>
+      <div class="mid">${esc(rn(m.home, m.rank_home))} <span style="color:var(--dim)">vs</span> ${esc(rn(m.away, m.rank_away))}</div>
       <div class="bot">${line} ${badge}</div>`;
     row.onclick = () => openMatch(m.id, row);
     box.appendChild(row);
@@ -156,7 +159,7 @@ async function loadPicks() {
       : (RES_TAG[p.result] || p.result);
     const del = p.result == null
       ? `<button class="btn pk-del" data-id="${p.id}">✕</button>` : '';
-    h += `<tr><td class="l">${esc(p.kickoff.slice(5, 16))} ${esc(p.home)} vs ${esc(p.away)}`
+    h += `<tr><td class="l">${esc(p.kickoff.slice(5, 16))} ${esc(rn(p.home, p.rank_home))} vs ${esc(rn(p.away, p.rank_away))}`
        + (p.score ? ` <span style="color:var(--dim)">${p.score}</span>` : '') + `</td>`
        + `<td class="l">${esc(p.line || '—')}${p.odds ? ' ' + esc(p.odds) : ''}</td>`
        + `<td>${p.choice === 'up' ? '<b class="r-up">上盤</b>' : '<b class="r-down">下盤</b>'}</td>`
@@ -219,7 +222,7 @@ function _pkCard(p) {
   return `<div class="pk-card">
     <div class="pk-top">
       <span class="pk-time">${esc(p.kickoff.slice(5, 16))}　${esc(p.league)}</span>
-      <span class="pk-teams">${esc(p.home)} vs ${esc(p.away)}</span>
+      <span class="pk-teams">${esc(rn(p.home, p.rank_home))} vs ${esc(rn(p.away, p.rank_away))}</span>
       ${p.score ? `<span class="pk-score">${esc(p.score)}</span>` : ''}
       <span class="pk-tag ${p.choice}">${p.choice === 'up' ? '上盤' : '下盤'}</span>
       <span class="pk-res">${res}</span>
@@ -315,7 +318,7 @@ function _ftShareText(p) {
   const L = [];
   L.push('⚽ FootballAnalysis 精選');
   L.push(p.league);
-  L.push(`${p.home} vs ${p.away}`);
+  L.push(`${rn(p.home, p.rank_home)} vs ${rn(p.away, p.rank_away)}`);
   L.push(`開賽：${p.kickoff}`);
   if (p.line) L.push(`尾盤：${p.line}${p.odds ? ' ' + p.odds : ''}`);
   L.push(`方向：${dName}（①⑤⑧⑫⑮⑱ 同方向全部≥50%）`);
@@ -393,7 +396,7 @@ function _ftCard(p) {
   return `<div class="pk-card ft-card">
     <div class="pk-top">
       <span class="pk-time">${esc(p.kickoff.slice(5, 16))}　${esc(p.league)}</span>
-      <span class="pk-teams">${esc(p.home)} vs ${esc(p.away)}</span>
+      <span class="pk-teams">${esc(rn(p.home, p.rank_home))} vs ${esc(rn(p.away, p.rank_away))}</span>
       ${p.score ? `<span class="pk-score">${esc(p.score)}</span>` : ''}
       <span class="pk-tag ${p.direction}">${dName}</span>
       <span class="pk-res">${res}</span>
@@ -497,6 +500,101 @@ function closeFeaturedOverlay() {
   clearTimeout(ftScanTimer);
   ftOvTimer = null;
   ftScanTimer = null;
+}
+
+// ===== Check 下先（8 組合回測）=====
+let ckOvTimer = null;
+let ckScanTimer = null;
+
+// 8 組合顯示定義：dir=入選方向；g14s/g17s 以「該方向角度」嘅深/淺顯示
+const CK_COMBOS = [
+  {dir: 'up',   g14s: 'deep',    g17s: 'deep',    label: '①⑤⑧⑫⑮⑱：上 ＋ ⑭上盤深咗 ＋ ⑰上盤深咗'},
+  {dir: 'up',   g14s: 'shallow', g17s: 'deep',    label: '①⑤⑧⑫⑮⑱：上 ＋ ⑭上盤淺咗 ＋ ⑰上盤深咗'},
+  {dir: 'up',   g14s: 'deep',    g17s: 'shallow', label: '①⑤⑧⑫⑮⑱：上 ＋ ⑭上盤深咗 ＋ ⑰上盤淺咗'},
+  {dir: 'up',   g14s: 'shallow', g17s: 'shallow', label: '①⑤⑧⑫⑮⑱：上 ＋ ⑭上盤淺咗 ＋ ⑰上盤淺咗'},
+  {dir: 'down', g14s: 'shallow', g17s: 'shallow', label: '①⑤⑧⑫⑮⑱：下 ＋ ⑭下盤深咗 ＋ ⑰下盤深咗'},
+  {dir: 'down', g14s: 'deep',    g17s: 'shallow', label: '①⑤⑧⑫⑮⑱：下 ＋ ⑭下盤淺咗 ＋ ⑰下盤深咗'},
+  {dir: 'down', g14s: 'shallow', g17s: 'deep',    label: '①⑤⑧⑫⑮⑱：下 ＋ ⑭下盤深咗 ＋ ⑰下盤淺咗'},
+  {dir: 'down', g14s: 'deep',    g17s: 'deep',    label: '①⑤⑧⑫⑮⑱：下 ＋ ⑭下盤淺咗 ＋ ⑰下盤淺咗'},
+];
+// 換算：後端 g14/g17 以「上盤」角度編碼；方向=下時，下盤深咗=上盤淺咗（deep<->shallow 對調）
+
+async function renderCheckOverlay() {
+  const body = document.getElementById('ckOvBody');
+  let d;
+  try { d = await jget('/api/check/full'); }
+  catch (e) { body.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  const scan = d.scan || {};
+  const totalN = (d.combos || []).reduce((s, c) => s + c.n, 0);
+  document.getElementById('ckOvTitle').textContent =
+    `✓ Check 下先｜已回測 ${scan.done || 0}/${scan.total || 0} 場｜入組合 ${totalN} 場`;
+  document.getElementById('ckScanInfo').textContent =
+    scan.running ? `回測中 ${scan.done}/${scan.total}…` :
+    (scan.last ? `上次回測：${scan.last}` : '從未回測（約 30-90 分鐘，可中斷續跑）');
+  const map = {};
+  for (const c of (d.combos || [])) {
+    // 上盤角度 → 該組合顯示角度：方向 up 照用；方向 down 時 deep/shallow 對調
+    map[c.direction + '|' + c.g14 + '|' + c.g17] = c;
+  }
+  let h = '<table class="ck-table"><thead><tr>' +
+    '<th>組合</th><th>場數</th><th>開出上盤</th><th>開出下盤</th><th>走盤</th>' +
+    '<th>上盤率</th><th>下盤率</th></tr></thead><tbody>';
+  for (const cb of CK_COMBOS) {
+    let key = cb.dir + '|' + cb.g14s + '|' + cb.g17s;
+    if (cb.dir === 'down') {
+      const sw = s => s === 'deep' ? 'shallow' : 'deep';
+      key = 'down|' + sw(cb.g14s) + '|' + sw(cb.g17s);
+    }
+    const c = map[key];
+    h += '<tr' + (c && c.n >= 20 ? '' : ' class="dim"') + '>' +
+      `<td>${esc(cb.label)}</td>` +
+      (c ? `<td>${c.n}</td><td>${c.up}</td><td>${c.down}</td><td>${c.push}</td>` +
+           `<td>${pct(c.up_r)}</td><td>${pct(c.down_r)}</td>`
+         : '<td colspan="6">無數據</td>') +
+      '</tr>';
+  }
+  h += '</tbody></table>';
+  h += '<div class="note" style="margin-top:10px">口径：只計①⑤⑧⑫⑮⑱全部通過嘅歷史場次；' +
+       '⑭／⑰ 用「上盤勝率最接近 50% 嘅盤口」（不足5場用分佈最多盤）；' +
+       '上盤率／下盤率分母已剔除走盤；回測可隨時停止，下次會由停低位繼續。</div>';
+  body.innerHTML = h;
+}
+
+async function pollCkScan() {
+  const s = await jget('/api/check/scan-status');
+  if (s.running) {
+    document.getElementById('ckScanInfo').textContent = `回測中 ${s.done}/${s.total}…`;
+    ckScanTimer = setTimeout(pollCkScan, 5000);
+    return;
+  }
+  document.getElementById('ckScanInfo').textContent =
+    (s.last ? `上次回測：${s.last}` : '從未回測') + (s.error ? '｜出錯：' + s.error : '');
+  document.getElementById('btnCkScan').disabled = false;
+  renderCheckOverlay();
+}
+
+async function startCkScan() {
+  const btn = document.getElementById('btnCkScan');
+  btn.disabled = true;
+  await jpost('/api/check/scan', {});
+  pollCkScan();
+}
+
+function openCheckOverlay() {
+  document.getElementById('ckOverlay').style.display = 'flex';
+  renderCheckOverlay();
+  clearInterval(ckOvTimer);
+  ckOvTimer = setInterval(() => {
+    if (!document.hidden) renderCheckOverlay();
+  }, 60 * 1000);
+}
+
+function closeCheckOverlay() {
+  document.getElementById('ckOverlay').style.display = 'none';
+  clearInterval(ckOvTimer);
+  clearTimeout(ckScanTimer);
+  ckOvTimer = null;
+  ckScanTimer = null;
 }
 
 async function fetchOdds(id, quiet) {
@@ -678,7 +776,7 @@ function renderResult(res) {
   ZONES.length = 0; ZONES.push(...res.zones);
   const myPick = picksMap[t.id] || '';
   let h = `<div class="tcard">
-    <h2>${esc(t.home)} <span style="color:var(--dim)">vs</span> ${esc(t.away)}</h2>
+    <h2>${esc(rn(t.home, t.rank_home))} <span style="color:var(--dim)">vs</span> ${esc(rn(t.away, t.rank_away))}</h2>
     <div class="meta">${esc(t.league)}　${esc(t.kickoff)}</div>
     <div class="lines">
       ${lineBox('尾盤（檢查基準）', t.close)}
@@ -811,6 +909,11 @@ $('#pkOvClose').onclick = closePicksOverlay;
 $('#btnFeatured').onclick = openFeaturedOverlay;
 $('#ftOvClose').onclick = closeFeaturedOverlay;
 $('#btnFtScan').onclick = startFtScan;
+
+// ===== Check 下先 =====
+$('#btnCheck').onclick = openCheckOverlay;
+$('#ckOvClose').onclick = closeCheckOverlay;
+$('#btnCkScan').onclick = startCkScan;
 
 // ===== 一鍵更新賽事（賽果＋新場次＋最近三日盤口）=====
 async function pollUpdate() {
