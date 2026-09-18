@@ -1,0 +1,614 @@
+[
+ {
+  "req_name": "英格蘭超級聯賽",
+  "category": "聯賽",
+  "titan_id": 36,
+  "name_tc": "英超",
+  "name_sc": "英超",
+  "name_en": "ENG PR",
+  "enabled": true
+ },
+ {
+  "req_name": "英格蘭冠軍聯賽",
+  "category": "聯賽",
+  "titan_id": 37,
+  "name_tc": "英冠",
+  "name_sc": "英冠",
+  "name_en": "ENG LCH",
+  "enabled": true
+ },
+ {
+  "req_name": "英格蘭甲組聯賽",
+  "category": "聯賽",
+  "titan_id": 39,
+  "name_tc": "英甲",
+  "name_sc": "英甲",
+  "name_en": "ENG L1",
+  "enabled": true
+ },
+ {
+  "req_name": "英格蘭乙組聯賽",
+  "category": "聯賽",
+  "titan_id": 35,
+  "name_tc": "英乙",
+  "name_sc": "英乙",
+  "name_en": "ENG L2",
+  "enabled": true
+ },
+ {
+  "req_name": "英格蘭足總盃",
+  "category": "杯賽",
+  "titan_id": 90,
+  "name_tc": "英足總盃",
+  "name_sc": "英足总杯",
+  "name_en": "ENG FAC",
+  "enabled": true
+ },
+ {
+  "req_name": "英格蘭聯賽盃",
+  "category": "杯賽",
+  "titan_id": 84,
+  "name_tc": "英聯盃",
+  "name_sc": "英联杯",
+  "name_en": "ENG LC",
+  "enabled": true
+ },
+ {
+  "req_name": "意大利甲組聯賽",
+  "category": "聯賽",
+  "titan_id": 34,
+  "name_tc": "意甲",
+  "name_sc": "意甲",
+  "name_en": "ITA D1",
+  "enabled": true
+ },
+ {
+  "req_name": "西班牙甲組聯賽",
+  "category": "聯賽",
+  "titan_id": 31,
+  "name_tc": "西甲",
+  "name_sc": "西甲",
+  "name_en": "SPA D1",
+  "enabled": true
+ },
+ {
+  "req_name": "西班牙乙組聯賽",
+  "category": "聯賽",
+  "titan_id": 33,
+  "name_tc": "西乙",
+  "name_sc": "西乙",
+  "name_en": "SPA D2",
+  "enabled": true
+ },
+ {
+  "req_name": "西班牙國王盃",
+  "category": "杯賽",
+  "titan_id": 81,
+  "name_tc": "西盃",
+  "name_sc": "西杯",
+  "name_en": "SPA CUP",
+  "enabled": true
+ },
+ {
+  "req_name": "德國甲組聯賽",
+  "category": "聯賽",
+  "titan_id": 8,
+  "name_tc": "德甲",
+  "name_sc": "德甲",
+  "name_en": "GER D1",
+  "enabled": true
+ },
+ {
+  "req_name": "德國乙組聯賽",
+  "category": "聯賽",
+  "titan_id": 9,
+  "name_tc": "德乙",
+  "name_sc": "德乙",
+  "name_en": "GER D2",
+  "enabled": true
+ },
+ {
+  "req_name": "德國足協盃",
+  "category": "杯賽",
+  "titan_id": 51,
+  "name_tc": "德國盃",
+  "name_sc": "德国杯",
+  "name_en": "GERC",
+  "enabled": true
+ },
+ {
+  "req_name": "法國甲組聯賽",
+  "category": "聯賽",
+  "titan_id": 11,
+  "name_tc": "法甲",
+  "name_sc": "法甲",
+  "name_en": "FRA D1",
+  "enabled": true
+ },
+ {
+  "req_name": "法國乙組聯賽",
+  "category": "聯賽",
+  "titan_id": 12,
+  "name_tc": "法乙",
+  "name_sc": "法乙",
+  "name_en": "FRA D2",
+  "enabled": true
+ },
+ {
+  "req_name": "法國盃",
+  "category": "杯賽",
+  "titan_id": 54,
+  "name_tc": "法國盃",
+  "name_sc": "法国杯",
+  "name_en": "FRAC",
+  "enabled": true
+ },
+ {
+  "req_name": "葡萄牙超級聯賽",
+  "category": "聯賽",
+  "titan_id": 23,
+  "name_tc": "葡超",
+  "name_sc": "葡超",
+  "name_en": "POR D1",
+  "enabled": true
+ },
+ {
+  "req_name": "蘇格蘭超級聯賽",
+  "category": "聯賽",
+  "titan_id": 29,
+  "name_tc": "蘇超",
+  "name_sc": "苏超",
+  "name_en": "SCO PR",
+  "enabled": true
+ },
+ {
+  "req_name": "荷蘭甲組聯賽",
+  "category": "聯賽",
+  "titan_id": 16,
+  "name_tc": "荷甲",
+  "name_sc": "荷甲",
+  "name_en": "HOL D1",
+  "enabled": true
+ },
+ {
+  "req_name": "荷蘭乙組聯賽",
+  "category": "聯賽",
+  "titan_id": 17,
+  "name_tc": "荷乙",
+  "name_sc": "荷乙",
+  "name_en": "HOL D2",
+  "enabled": true
+ },
+ {
+  "req_name": "荷蘭盃",
+  "category": "杯賽",
+  "titan_id": 59,
+  "name_tc": "荷蘭盃",
+  "name_sc": "荷兰杯",
+  "name_en": "HOLC",
+  "enabled": true
+ },
+ {
+  "req_name": "比利時甲組聯賽",
+  "category": "聯賽",
+  "titan_id": 5,
+  "name_tc": "比甲",
+  "name_sc": "比甲",
+  "name_en": "BEL D1",
+  "enabled": true
+ },
+ {
+  "req_name": "瑞典超級聯賽",
+  "category": "聯賽",
+  "titan_id": 26,
+  "name_tc": "瑞典超",
+  "name_sc": "瑞典超",
+  "name_en": "SWE D1",
+  "enabled": true
+ },
+ {
+  "req_name": "瑞典盃",
+  "category": "杯賽",
+  "titan_id": 73,
+  "name_tc": "瑞典盃",
+  "name_sc": "瑞典杯",
+  "name_en": "SWE Cup",
+  "enabled": true
+ },
+ {
+  "req_name": "芬蘭超級聯賽",
+  "category": "聯賽",
+  "titan_id": 13,
+  "name_tc": "芬超",
+  "name_sc": "芬超",
+  "name_en": "FIN D1",
+  "enabled": true
+ },
+ {
+  "req_name": "芬蘭盃",
+  "category": "杯賽",
+  "titan_id": 226,
+  "name_tc": "芬蘭盃",
+  "name_sc": "芬兰杯",
+  "name_en": "FIN CUP",
+  "enabled": true
+ },
+ {
+  "req_name": "挪威超級聯賽",
+  "category": "聯賽",
+  "titan_id": 22,
+  "name_tc": "挪超",
+  "name_sc": "挪超",
+  "name_en": "NOR D1",
+  "enabled": true
+ },
+ {
+  "req_name": "挪威盃赛",
+  "category": "杯賽",
+  "titan_id": 64,
+  "name_tc": "挪威盃",
+  "name_sc": "挪威杯",
+  "name_en": "NORC",
+  "enabled": true
+ },
+ {
+  "req_name": "丹麥超級聯賽",
+  "category": "聯賽",
+  "titan_id": 7,
+  "name_tc": "丹麥超",
+  "name_sc": "丹麦超",
+  "name_en": "DEN SASL",
+  "enabled": true
+ },
+ {
+  "req_name": "奧地利甲組聯賽",
+  "category": "聯賽",
+  "titan_id": 3,
+  "name_tc": "奧甲",
+  "name_sc": "奥甲",
+  "name_en": "AUT D1",
+  "enabled": true
+ },
+ {
+  "req_name": "瑞士超級聯賽",
+  "category": "聯賽",
+  "titan_id": 27,
+  "name_tc": "瑞士超",
+  "name_sc": "瑞士超",
+  "name_en": "SUI SL",
+  "enabled": true
+ },
+ {
+  "req_name": "俄羅斯超級聯賽",
+  "category": "聯賽",
+  "titan_id": 10,
+  "name_tc": "俄超",
+  "name_sc": "俄超",
+  "name_en": "RUS PR",
+  "enabled": true
+ },
+ {
+  "req_name": "南美解放者杯",
+  "category": "杯賽",
+  "titan_id": 89,
+  "name_tc": "解放者杯",
+  "name_sc": "解放者杯",
+  "name_en": "CON CLA",
+  "enabled": true
+ },
+ {
+  "req_name": "南美俱樂部盃",
+  "category": "杯賽",
+  "titan_id": 263,
+  "name_tc": "南美盃",
+  "name_sc": "南美杯",
+  "name_en": "CON CSA",
+  "enabled": true
+ },
+ {
+  "req_name": "中北美及加勒比聯賽冠軍盃",
+  "category": "杯賽",
+  "titan_id": 344,
+  "name_tc": "美冠盃",
+  "name_sc": "美冠杯",
+  "name_en": "CNCF CHL",
+  "enabled": true
+ },
+ {
+  "req_name": "美國職業大聯盟聯賽",
+  "category": "聯賽",
+  "titan_id": 21,
+  "name_tc": "美職業",
+  "name_sc": "美职业",
+  "name_en": "MLS",
+  "enabled": true
+ },
+ {
+  "req_name": "美國冠軍聯賽",
+  "category": "聯賽",
+  "titan_id": 448,
+  "name_tc": "美冠聯",
+  "name_sc": "美冠联",
+  "name_en": "USL CH",
+  "enabled": true
+ },
+ {
+  "req_name": "巴西甲組聯賽",
+  "category": "聯賽",
+  "titan_id": 4,
+  "name_tc": "巴西甲",
+  "name_sc": "巴西甲",
+  "name_en": "BRA D1",
+  "enabled": true
+ },
+ {
+  "req_name": "巴西聖保羅州錦標賽",
+  "category": "聯賽",
+  "titan_id": 178,
+  "name_tc": "巴聖錦標",
+  "name_sc": "巴圣锦标",
+  "name_en": "BRA SP",
+  "enabled": true
+ },
+ {
+  "req_name": "巴西盃",
+  "category": "杯賽",
+  "titan_id": 186,
+  "name_tc": "巴西盃",
+  "name_sc": "巴西杯",
+  "name_en": "Copa do Brasil",
+  "enabled": true
+ },
+ {
+  "req_name": "巴西乙級聯賽",
+  "category": "聯賽",
+  "titan_id": 358,
+  "name_tc": "巴西乙",
+  "name_sc": "巴西乙",
+  "name_en": "BRA D2",
+  "enabled": true
+ },
+ {
+  "req_name": "阿根廷甲級聯賽",
+  "category": "聯賽",
+  "titan_id": 2,
+  "name_tc": "阿甲",
+  "name_sc": "阿甲",
+  "name_en": "ARG D1",
+  "enabled": true
+ },
+ {
+  "req_name": "阿根廷盃",
+  "category": "杯賽",
+  "titan_id": 1183,
+  "name_tc": "阿根廷盃",
+  "name_sc": "阿根廷杯",
+  "name_en": "ARG C",
+  "enabled": true
+ },
+ {
+  "req_name": "智利甲组聯賽",
+  "category": "聯賽",
+  "titan_id": 415,
+  "name_tc": "智利甲",
+  "name_sc": "智利甲",
+  "name_en": "CHI D1",
+  "enabled": true
+ },
+ {
+  "req_name": "智利盃",
+  "category": "杯賽",
+  "titan_id": 714,
+  "name_tc": "智利盃",
+  "name_sc": "智利杯",
+  "name_en": "Chile Cup",
+  "enabled": true
+ },
+ {
+  "req_name": "墨西哥超級聯賽",
+  "category": "聯賽",
+  "titan_id": 140,
+  "name_tc": "墨西聯",
+  "name_sc": "墨西联",
+  "name_en": "MEX D1",
+  "enabled": true
+ },
+ {
+  "req_name": "墨西哥甲組聯賽",
+  "category": "聯賽",
+  "titan_id": 847,
+  "name_tc": "墨西甲",
+  "name_sc": "墨西甲",
+  "name_en": "MEX Lig2",
+  "enabled": true
+ },
+ {
+  "req_name": "烏拉圭甲組聯賽",
+  "category": "聯賽",
+  "titan_id": 240,
+  "name_tc": "烏拉甲",
+  "name_sc": "乌拉甲",
+  "name_en": "URU D1",
+  "enabled": true
+ },
+ {
+  "req_name": "日本職業聯賽J1",
+  "category": "聯賽",
+  "titan_id": 25,
+  "name_tc": "日職聯",
+  "name_sc": "日职联",
+  "name_en": "JPN D1",
+  "enabled": true
+ },
+ {
+  "req_name": "日本職業聯賽J2",
+  "category": "聯賽",
+  "titan_id": 284,
+  "name_tc": "日職乙",
+  "name_sc": "日职乙",
+  "name_en": "JPN D2",
+  "enabled": true
+ },
+ {
+  "req_name": "日本職業聯賽盃",
+  "category": "杯賽",
+  "titan_id": 72,
+  "name_tc": "日聯盃",
+  "name_sc": "日联杯",
+  "name_en": "JPN LC",
+  "enabled": true
+ },
+ {
+  "req_name": "日本天皇盃",
+  "category": "杯賽",
+  "titan_id": 162,
+  "name_tc": "日皇盃",
+  "name_sc": "日皇杯",
+  "name_en": "JE Cup",
+  "enabled": true
+ },
+ {
+  "req_name": "南韓K聯賽",
+  "category": "聯賽",
+  "titan_id": 15,
+  "name_tc": "韓K聯",
+  "name_sc": "韩K联",
+  "name_en": "KOR D1",
+  "enabled": true
+ },
+ {
+  "req_name": "南韓K2聯賽",
+  "category": "聯賽",
+  "titan_id": 1292,
+  "name_tc": "韓K2聯",
+  "name_sc": "韩K2联",
+  "name_en": "KOR D2",
+  "enabled": true
+ },
+ {
+  "req_name": "韓國杯",
+  "category": "杯賽",
+  "titan_id": 468,
+  "name_tc": "韓國杯",
+  "name_sc": "韩国杯",
+  "name_en": "KFAC",
+  "enabled": true
+ },
+ {
+  "req_name": "澳大利亞足球超級聯賽",
+  "category": "聯賽",
+  "titan_id": 273,
+  "name_tc": "澳超",
+  "name_sc": "澳超",
+  "name_en": "AUS D1",
+  "enabled": true
+ },
+ {
+  "req_name": "澳大利亞新南威爾士州超級聯賽",
+  "category": "聯賽",
+  "titan_id": 616,
+  "name_tc": "澳威超",
+  "name_sc": "澳威超",
+  "name_en": "AUS NSW",
+  "enabled": true
+ },
+ {
+  "req_name": "澳大利亞維多利亞州超級聯賽",
+  "category": "聯賽",
+  "titan_id": 436,
+  "name_tc": "澳維超",
+  "name_sc": "澳维超",
+  "name_en": "AUS VPL",
+  "enabled": true
+ },
+ {
+  "req_name": "澳洲布里斯本超級聯賽",
+  "category": "聯賽",
+  "titan_id": 774,
+  "name_tc": "澳布超",
+  "name_sc": "澳布超",
+  "name_en": "AUS BPL",
+  "enabled": true
+ },
+ {
+  "req_name": "澳洲南部超級聯賽",
+  "category": "聯賽",
+  "titan_id": 1029,
+  "name_tc": "澳南超",
+  "name_sc": "澳南超",
+  "name_en": "AUS SASL",
+  "enabled": true
+ },
+ {
+  "req_name": "澳大利亞西部超級聯賽",
+  "category": "聯賽",
+  "titan_id": 481,
+  "name_tc": "澳西超",
+  "name_sc": "澳西超",
+  "name_en": "WAUS D1",
+  "enabled": true
+ },
+ {
+  "req_name": "澳大利亞首都特區超級聯賽",
+  "category": "聯賽",
+  "titan_id": 1063,
+  "name_tc": "澳首超",
+  "name_sc": "澳首超",
+  "name_en": "NPLCF",
+  "enabled": true
+ },
+ {
+  "req_name": "澳洲昆士蘭州超級聯賽",
+  "category": "聯賽",
+  "titan_id": 1068,
+  "name_tc": "澳昆超",
+  "name_sc": "澳昆超",
+  "name_en": "AUS QSL",
+  "enabled": true
+ },
+ {
+  "req_name": "澳洲塔斯馬尼亞超級聯賽",
+  "category": "聯賽",
+  "titan_id": 1450,
+  "name_tc": "澳塔超",
+  "name_sc": "澳塔超",
+  "name_en": "TSA TPL",
+  "enabled": true
+ },
+ {
+  "req_name": "澳洲足總盃",
+  "category": "杯賽",
+  "titan_id": 1356,
+  "name_tc": "澳足總",
+  "name_sc": "澳足总",
+  "name_en": "AUS CUP",
+  "enabled": true
+ },
+ {
+  "req_name": "歐洲聯賽冠軍盃賽",
+  "category": "杯賽",
+  "titan_id": 103,
+  "name_tc": "歐冠盃",
+  "name_sc": "欧冠杯",
+  "name_en": "UEFA CL",
+  "enabled": true
+ },
+ {
+  "req_name": "歐霸盃",
+  "category": "杯賽",
+  "titan_id": 113,
+  "name_tc": "歐霸盃",
+  "name_sc": "欧霸杯",
+  "name_en": "UEFA EL",
+  "enabled": true
+ },
+ {
+  "req_name": "歐足聯協會聯賽( 盃賽)",
+  "category": "杯賽",
+  "titan_id": 2187,
+  "name_tc": "歐協聯",
+  "name_sc": "欧协联",
+  "name_en": "UEFA ECL",
+  "enabled": true
+ }
+]

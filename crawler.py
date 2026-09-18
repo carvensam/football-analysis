@@ -23,7 +23,10 @@ import traceback
 import requests
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.stdout.reconfigure(encoding='utf-8')
+try:
+    sys.stdout.reconfigure(encoding='utf-8')   # 無控制台環境（Hidden/服務）會是 None
+except (AttributeError, ValueError, OSError):
+    pass
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -258,12 +261,13 @@ def log(conn, level, msg):
 class Fetcher:
     """帶限流與被封偵測的抓取器"""
 
-    def __init__(self, conn, cfg):
+    def __init__(self, conn, cfg, state_prefix=''):
         self.conn = conn
         self.cfg = cfg
         self.s = requests.Session()
         self.s.headers.update(HEADERS)
-        self.req_count = int(self._state('req_count', '0'))
+        self.pk = f'{state_prefix}req_count'      # 計數鍵前綴（不同爬蟲分開計）
+        self.req_count = int(self._state(self.pk, '0'))
         self.last_req_time = 0.0
 
     def _state(self, k, default=None):
@@ -292,7 +296,7 @@ class Fetcher:
             if self.req_count >= max_req:
                 self._rest(self.cfg['rest_minutes'], f'已達 {max_req} 次請求（反爬蟲限流）')
                 self.req_count = 0
-                self._set_state('req_count', 0)
+                self._set_state(self.pk, 0)
             headers = {'Referer': referer} if referer else {}
             try:
                 r = self.s.get(url, headers=headers, timeout=30)
@@ -786,6 +790,86 @@ def run(cfg, args):
     log(conn, 'INFO', '本次爬取流程結束')
 
 
+def recent_update(conn, cfg, days=3, progress=None):
+    """快速每日更新：只刷新各聯賽【現行賽季】檔（賽果＋新場次＋排名），
+    補爬最近 days 日完場場次嘅盤口，最後重建開賽前對賽數據。
+    唔會重掃歷史賽季——歷史已入庫，無謂再爬。
+    progress(msg) 可傳回呼用嚟顯示進度。"""
+    fetcher = Fetcher(conn, cfg)
+    leagues = json.load(open(os.path.join(BASE_DIR, 'leagues.json'),
+                             encoding='utf-8'))
+    stats = {'leagues': 0, 'seasons': 0, 'odds': 0, 'odds_fail': 0}
+    cutoff = (dt.datetime.now() - dt.timedelta(days=days)
+              ).strftime('%Y-%m-%d %H:%M')
+    for lg in leagues:
+        if not lg.get('enabled'):
+            continue
+        conn.execute(
+            'INSERT INTO competitions(titan_id,req_name,name_tc,name_sc,name_en,'
+            'category,sub_of,enabled) VALUES(?,?,?,?,?,?,NULL,1) '
+            'ON CONFLICT(titan_id) DO NOTHING',
+            (lg['titan_id'], lg['req_name'], lg.get('name_tc'),
+             lg.get('name_sc'), lg.get('name_en'), lg.get('category')))
+        conn.commit()
+        ids = [lg['titan_id']] + [
+            r[0] for r in conn.execute(
+                'SELECT titan_id FROM competitions WHERE sub_of=?',
+                (lg['titan_id'],)).fetchall()]
+        for tid in ids:
+            try:
+                seasons = get_season_list(fetcher, tid)
+                if not seasons:
+                    continue
+                season_label = seasons[0]        # 只取現行賽季
+                if progress:
+                    progress(f'{lg["req_name"]}（{tid}）{season_label}')
+                prefix = resolve_prefix(fetcher, tid)
+                if not prefix:
+                    continue
+                url = (f'https://zq.titan007.com/jsData/matchResult/'
+                       f'{season_label}/{prefix}.js?version=1')
+                text = fetcher.get(url)
+                if not text or text.lstrip().startswith('<'):
+                    log(conn, 'WARN', f'賽季檔下載失敗 {tid} {season_label}')
+                    continue
+                parsed = parse_season_js(text)
+                save_season(conn, tid, season_label, 1, parsed)
+                stats['seasons'] += 1
+            except Exception:
+                log(conn, 'ERROR',
+                    f'快速更新失敗 {tid}\n' + traceback.format_exc())
+        stats['leagues'] += 1
+    # 最近 N 日完場但欠盤口嘅場次
+    todo = conn.execute(
+        "SELECT id, kickoff FROM matches WHERE status='finished' "
+        'AND odds_done=0 AND kickoff >= ? ORDER BY kickoff',
+        (cutoff,)).fetchall()
+    if progress:
+        progress(f'補爬最近{days}日盤口：{len(todo)} 場')
+    for mid, kickoff in todo:
+        try:
+            if crawl_odds_for_match(conn, fetcher, mid, kickoff,
+                                    cfg['company_id']):
+                stats['odds'] += 1
+            else:
+                stats['odds_fail'] += 1
+        except Exception:
+            stats['odds_fail'] += 1
+            log(conn, 'ERROR', f'補爬盤口失敗 {mid}\n' + traceback.format_exc())
+    if progress:
+        progress('重建開賽前對賽數據')
+    try:
+        import prematch
+        n = prematch.build_all(conn)
+        log(conn, 'INFO', f'開賽前對賽數據已重建：{n} 場')
+    except Exception:
+        log(conn, 'ERROR', '開賽前對賽數據重建失敗\n' + traceback.format_exc())
+    log(conn, 'INFO',
+        f"快速更新完成：賽季檔 {stats['seasons']} 個 / 聯賽 {stats['leagues']} 個 / "
+        f"補盤口 {stats['odds']} 場（失敗 {stats['odds_fail']}）")
+    return stats
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--league', type=int, default=None, help='只爬指定 titan007 聯賽ID')
@@ -798,6 +882,8 @@ def main():
                     help='爬取後不重建開賽前對賽數據')
     ap.add_argument('--resume', action='store_true',
                     help='斷點續爬（預設行為，此參數僅供桌面捷徑使用）')
+    ap.add_argument('--recent', action='store_true',
+                    help='快速每日更新：只刷現行賽季＋最近三日場次，唔掃歷史')
     args = ap.parse_args()
     cfg = json.load(open(os.path.join(BASE_DIR, 'config.json'), encoding='utf-8'))
     os.makedirs(os.path.join(BASE_DIR, 'logs'), exist_ok=True)
@@ -806,6 +892,11 @@ def main():
         import prematch
         n = prematch.build_all(conn)
         log(conn, 'INFO', f'開賽前對賽數據已重建：{n} 場')
+        return
+    if args.recent:
+        conn = db_connect(cfg)
+        recent_update(conn, cfg)
+        conn.close()
         return
     run(cfg, args)
 

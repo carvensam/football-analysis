@@ -10,12 +10,15 @@ let poolReady = false;
 let poolErr = null;
 let listCount = null;
 let serverVer = '';
+let lastList = [];            // 最近一次載入嘅賽事清單（自動更新賠率用）
+let listUpdatedAt = null;     // 最近一次清單刷新時間
 
 function updateStatus() {
   let t = poolErr ? '⚠ 數據池載入失敗（可按重試或重開APP）'
        : poolReady ? '✓ 數據池就緒' + (serverVer ? ' · v' + serverVer : '')
        : '⏳ 歷史數據池載入中…（首次約需 5-10 秒，之後極快）';
   if (listCount != null) t += '　共 ' + listCount + ' 場';
+  if (listUpdatedAt) t += '　清單更新於 ' + listUpdatedAt.toTimeString().slice(0, 5);
   $('#status').textContent = t;
 }
 
@@ -69,7 +72,9 @@ async function loadList() {
   const list = await jget('/api/upcoming?hours='+hours);
   const box = $('#matchList');
   box.innerHTML = '';
-  if (!list.length) { box.innerHTML = '<div class="empty">未來'+hours+'小時無賽事</div>'; listCount = 0; updateStatus(); return; }
+  if (!list.length) { box.innerHTML = '<div class="empty">未來'+hours+'小時無賽事</div>'; listCount = 0; lastList = []; listUpdatedAt = new Date(); updateStatus(); return; }
+  lastList = list;
+  listUpdatedAt = new Date();
   let lastDate = '';
   for (const m of list) {
     const d = m.kickoff.slice(5, 10);
@@ -467,6 +472,44 @@ function lineBox(title, o) {
 
 $('#btnRefresh').onclick = loadList;
 $('#hours').onchange = loadList;
+
+// ===== 一鍵更新賽事（賽果＋新場次＋最近三日盤口）=====
+async function pollUpdate() {
+  const s = await jget('/api/update-status');
+  if (s.running) {
+    setStatus('⟳ 更新中：' + (s.phase || '…') + '（賽果＋新場次＋盤口）');
+    setTimeout(pollUpdate, 3000);
+    return;
+  }
+  if (s.error) {
+    setStatus('更新出錯：' + s.error.split('\n')[0]);
+    return;
+  }
+  const r = s.last_result || {};
+  setStatus(`✓ 更新完成（賽季檔 ${r.seasons || 0} 個／補盤口 ${r.odds || 0} 場` +
+            (r.odds_fail ? `／失敗 ${r.odds_fail}` : '') + '）');
+  await loadList();
+  if (curMatch) openMatch(curMatch);   // 用新數據重新篩查已選場次
+}
+
+async function startUpdate(auto) {
+  try {
+    const r = await jpost('/api/update', {auto: !!auto});
+    if (r.skipped) return;                       // 30 分鐘內已自動更新過
+    if (r.running || r.started) { pollUpdate(); return; }
+    if (r.error) setStatus('更新：' + r.error);
+  } catch (e) { /* 伺服器舊版無此端點時靜默 */ }
+}
+
+$('#btnUpdate').onclick = async () => {
+  $('#btnUpdate').disabled = true;
+  try { await startUpdate(false); }
+  finally { setTimeout(() => { $('#btnUpdate').disabled = false; }, 1200); }
+};
+
+// 每次開 APP 自動更新一次（伺服器會節流：30 分鐘內只跑一次）
+setTimeout(() => startUpdate(true), 2500);
+
 $('#btnFetchAll').onclick = async () => {
   const rows = [...document.querySelectorAll('.mrow')];
   const need = rows.filter(r => !r.querySelector('.badge.ok'));
@@ -484,3 +527,32 @@ $('#btnFetchAll').onclick = async () => {
 loadList();
 loadPicks();
 pollReady();
+
+// ===== 自動更新（唔使人手撳 Refresh）=====
+// 每 5 分鐘自動刷新賽事清單（分頁唔活躍時暫停；已選場次狀態保留）
+setInterval(() => {
+  if (!document.hidden) loadList().catch(() => {});
+}, 5 * 60 * 1000);
+
+// 每 15 分鐘自動更新「2 小時內開賽」場次嘅賠率（只更新超過 10 分鐘未刷過嘅，逐場順序避免限流）
+let autoOddsBusy = false;
+setInterval(async () => {
+  if (document.hidden || autoOddsBusy || !lastList.length) return;
+  const now = Date.now();
+  const soon = lastList.filter(m => {
+    const t = new Date(m.kickoff.replace(' ', 'T')).getTime();
+    const stale = m.fetched_ago == null || m.fetched_ago > 600;
+    return t > now && t - now < 2 * 3600 * 1000 && stale;
+  });
+  if (!soon.length) return;
+  autoOddsBusy = true;
+  try {
+    for (const m of soon) {
+      await fetchOdds(m.id, true);
+      await new Promise(r => setTimeout(r, 800));
+    }
+    await loadList();   // 刷新「已有賠率 · N秒前更新」標記
+    if (curMatch) openMatch(curMatch);  // 已選場次一齊重篩，睇到最新盤
+  } catch (e) { /* 靜默，下次再試 */ }
+  autoOddsBusy = false;
+}, 15 * 60 * 1000);

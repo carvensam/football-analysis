@@ -39,7 +39,8 @@ def get_crawler():
     """每個執行緒建立自己的 Fetcher（sqlite 連線不可跨執行緒）"""
     if not hasattr(_local, 'crawler'):
         import crawler
-        with open(os.path.join(PARENT_DIR, 'config.json'), encoding='utf-8') as f:
+        # config.json 跟 crawler.py 同一目錄（本機=工作區根；雲端=/app）
+        with open(os.path.join(crawler.BASE_DIR, 'config.json'), encoding='utf-8') as f:
             cfg = json.load(f)
         # APP 即場抓取：禁用爬蟲的長時間休息（永不觸發 700 次/15分鐘 限流），
         # 保留每次請求間隔以免被封
@@ -102,6 +103,58 @@ def do_fetch(mid, force=False):
         conn.close()
         _last_fetch[mid] = time.time()
         return {'ok': bool(ok)}
+
+
+# ============ 一鍵更新賽事（賽果＋新場次＋最近三日盤口） ============
+# 手動掣 / 每次開 APP 自動觸發（30 分鐘內只會自動跑一次）
+_update_state = {'running': False, 'phase': '', 'last_done': 0.0,
+                 'last_result': None, 'error': None}
+UPDATE_THROTTLE_SEC = 1800
+
+
+def _update_worker():
+    import crawler
+    with open(os.path.join(crawler.BASE_DIR, 'config.json'), encoding='utf-8') as f:
+        cfg = json.load(f)
+    cfg['max_requests_before_rest'] = 999999999
+    cfg['rest_minutes'] = 0
+    conn = sqlite3.connect(DB_PATH, timeout=180)
+    try:
+        st = crawler.recent_update(
+            conn, cfg, days=3,
+            progress=lambda m: _update_state.update(phase=m))
+        _update_state['last_result'] = st
+        _update_state['error'] = None
+        print(f"[update] 完成：{st}", flush=True)
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        _update_state['error'] = traceback.format_exc(limit=3)
+    finally:
+        conn.close()
+        _update_state['running'] = False
+        _update_state['phase'] = ''
+        _update_state['last_done'] = time.time()
+
+
+def do_update(auto=False):
+    if _update_state['running']:
+        return {'ok': False, 'running': True, 'error': '更新進行中'}
+    if (auto and _update_state['last_done']
+            and time.time() - _update_state['last_done'] < UPDATE_THROTTLE_SEC):
+        return {'ok': True, 'skipped': True}
+    _update_state.update(running=True, phase='準備中…', error=None,
+                         last_result=None)
+    threading.Thread(target=_update_worker, daemon=True).start()
+    return {'ok': True, 'started': True}
+
+
+def update_status():
+    d = dict(_update_state)
+    d['ok'] = True
+    if d['last_done']:
+        d['last_done_ago'] = int(time.time() - d['last_done'])
+    return d
 
 
 def do_screen(mid, sel=None):
@@ -271,6 +324,12 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/update-status':
+            try:
+                self._send(200, json.dumps(update_status(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         self._send(404, '{}')
 
     def do_POST(self):
@@ -282,6 +341,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(
                     do_fetch(int(body.get('id')), bool(body.get('force'))),
                     ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/update':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(do_update(bool(body.get('auto'))),
+                                           ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
