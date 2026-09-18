@@ -115,9 +115,14 @@ def load_pool(conn, max_age=1800):
         t0 = time.time()
         df = pd.read_sql(POOL_SQL, conn)
         # 上/下/走 結果（讓球盤：上=讓球方贏；平手盤：上=主勝）
+        # 主讓：hs-aws-h>0 上盤贏；客讓：aws-hs-h>0 上盤贏；平手：hs-aws>0 主勝
+        # （2026-09-19 修正：客讓分支原本正負號顛倒；平手唔可以跌入客讓分支）
         giver_home = df['c_g'] == 'home'
-        margin = np.where(giver_home, df['hs'] - df['aws'] - df['c_h'],
-                          df['hs'] - df['aws'] + df['c_h'])
+        giver_away = df['c_g'] == 'away'
+        margin = np.where(
+            giver_home, df['hs'] - df['aws'] - df['c_h'],
+            np.where(giver_away, df['aws'] - df['hs'] - df['c_h'],
+                     df['hs'] - df['aws']))
         df['res'] = np.where(margin > 0, 'A', np.where(margin < 0, 'B', 'P'))  # A=上盤/主勝 B=下盤/客勝 P=走
         # 上盤水位（讓球方水位；平手取低水方）
         df['up_water'] = np.where(df['c_g'] == 'home', df['c_ho'],

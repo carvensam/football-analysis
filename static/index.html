@@ -25,7 +25,7 @@
 <main>
   <section id="listPane">
     <details id="picksPanel">
-      <summary><span id="picksSum">我的選擇</span></summary>
+      <summary><span id="picksSum">我的選擇</span><button id="btnPicksBig" class="btn">⤢ 大版面</button></summary>
       <div id="picksBox">載入中…</div>
     </details>
     <h2>即將開賽</h2>
@@ -36,6 +36,13 @@
     <div id="result" style="display:none"></div>
   </section>
 </main>
+<div id="pkOverlay" style="display:none">
+  <div class="pk-ov-head">
+    <b id="pkOvTitle">我的選擇</b>
+    <button id="pkOvClose" class="btn">✕ 關閉</button>
+  </div>
+  <div class="pk-ov-body" id="pkOvBody">載入中…</div>
+</div>
 <script src="/static/app.js"></script>
 </body>
 </html>

@@ -172,6 +172,118 @@ async function loadPicks() {
   });
 }
 
+// ===== 我的選擇 · 獨立大版面 =====
+let pkOvTimer = null;
+
+function _ocTxt(o) {   // {n,up_r,down_r,push_r} → '上52.1 下40.4 走7.5｜n=134'
+  if (!o) return '無數據';
+  return `上${pct(o.up_r)} 下${pct(o.down_r)} 走${pct(o.push_r)}｜n=${o.n}`;
+}
+
+function _pairTxt(b) { // 全庫＋同聯賽
+  if (!b) return '不適用';
+  return `全庫 ${_ocTxt(b.all)}<br><span style="opacity:.75">同聯賽 ${_ocTxt(b.lg)}</span>`;
+}
+
+function _gapTxt(g, curLine) {
+  // g = {all:{mode,d50}, lg:{...}} —— 展示現時盤 vs 最接近50%盤 差距（全庫為主）
+  if (!g) return '<span style="opacity:.7">不適用</span>';
+  const parts = [];
+  const scope = g.all || g.lg;
+  if (!scope) return '<span style="opacity:.7">不適用</span>';
+  const d50 = scope.d50, mode = scope.mode;
+  const gapText = gd => (gd && (gd.text || gd.gap != null)) ? (gd.text || String(gd.gap)) : null;
+  if (d50) {
+    parts.push(`現時盤【${esc(curLine || '—')}】 vs 最接近50%盤【${esc(d50.line)}】` +
+      `（n=${d50.n}｜上${pct(d50.up_r)}）` +
+      (gapText(d50.gap) ? ` → <b>${esc(gapText(d50.gap))}</b>` : ''));
+  }
+  if (mode) {
+    parts.push(`分佈最多盤【${esc(mode.line)}】（n=${mode.n}｜上${pct(mode.up_r)}）` +
+      (gapText(mode.gap) ? ` → <b>${esc(gapText(mode.gap))}</b>` : ''));
+  }
+  return parts.length ? parts.join('<br>') : '<span style="opacity:.7">無數據</span>';
+}
+
+function _pkCard(p) {
+  const res = p.result == null ? '<span style="color:var(--dim)">未開賽</span>'
+    : (RES_TAG[p.result] || esc(p.result));
+  const b = p.brief || {};
+  const i12 = b.i12, i15 = b.i15;
+  const i12v = !i12 ? '不適用'
+    : `n=${i12.n}` + (i12.top ? `<br>最多【${esc(i12.top.line || '')}】上${pct(i12.top.up_r)} 下${pct(i12.top.down_r)}` : '');
+  const i15v = !i15 ? '不適用'
+    : `n=${i15.n}` + (i15.zone ? `<br>今場水位區【${esc(i15.zone.zone)}】上${pct(i15.zone.up_r)} 下${pct(i15.zone.down_r)} 走${pct(i15.zone.push_r)}` : '');
+  const del = !p.played ? `<button class="btn pk-del" data-id="${p.id}">✕</button>` : '';
+  return `<div class="pk-card">
+    <div class="pk-top">
+      <span class="pk-time">${esc(p.kickoff.slice(5, 16))}　${esc(p.league)}</span>
+      <span class="pk-teams">${esc(p.home)} vs ${esc(p.away)}</span>
+      ${p.score ? `<span class="pk-score">${esc(p.score)}</span>` : ''}
+      <span class="pk-tag ${p.choice}">${p.choice === 'up' ? '上盤' : '下盤'}</span>
+      <span class="pk-res">${res}</span>
+      <span style="color:var(--dim);font-size:12px">尾盤 ${esc(p.line || '—')}${p.odds ? ' ' + esc(p.odds) : ''}</span>
+      ${del}
+    </div>
+    <div class="pk-items">
+      <div class="pk-it"><div class="t">① 同初盤及尾盤</div><div class="v">${_pairTxt(b.i1)}</div></div>
+      <div class="pk-it"><div class="t">⑤ 對上對賽尾盤</div><div class="v">${_pairTxt(b.i5)}</div></div>
+      <div class="pk-it"><div class="t">⑧ 主客入失球±3</div><div class="v">${_pairTxt(b.i8)}</div></div>
+      <div class="pk-it"><div class="t">⑫ 主場客場排名±2</div><div class="v">${i12v}</div></div>
+      <div class="pk-it"><div class="t">⑮ 排名±2＋同尾盤</div><div class="v">${i15v}</div></div>
+    </div>
+    <div class="pk-gap"><span class="lab">⑭ 差距</span>${_gapTxt(b.g14, b.cur_line)}</div>
+    <div class="pk-gap"><span class="lab">⑰ 差距</span>${_gapTxt(b.g17, b.cur_line)}</div>
+  </div>`;
+}
+
+async function renderPicksOverlay() {
+  const body = document.getElementById('pkOvBody');
+  body.innerHTML = '<div class="empty">計算中（每場跑 ①⑤⑧⑫⑮ ＋ ⑭⑰ 差距，約 10-30 秒）…</div>';
+  let d;
+  try { d = await jget('/api/picks/full'); }
+  catch (e) { body.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  const s = d.stats || {};
+  const rate = s.win_rate != null ? (s.win_rate * 100).toFixed(1) + '%' : '—';
+  document.getElementById('pkOvTitle').textContent =
+    `我的選擇｜${s.total || 0} 場（未開賽 ${s.pending || 0}）｜已開賽24小時內 ${(d.played || []).length} 場｜勝 ${s.wins || 0} 輸 ${s.losses || 0} 走 ${s.pushes || 0}｜勝出率 ${rate}`;
+  if (!s.total) {
+    body.innerHTML = '<div class="note">未有任何選擇。喺賽事結果頁最底撳「上盤／下盤」記錄。</div>';
+    return;
+  }
+  let h = '';
+  if ((d.pending || []).length) {
+    h += `<div class="pk-sec-t">未開賽（順開賽時間排）</div>` + d.pending.map(_pkCard).join('');
+  }
+  if ((d.played || []).length) {
+    h += `<div class="pk-sec-t">已開賽（24 小時內，最新排先）</div>` + d.played.map(_pkCard).join('');
+  }
+  body.innerHTML = h;
+  body.querySelectorAll('.pk-del').forEach(btn => {
+    btn.onclick = async () => {
+      await jpost('/api/pick/delete', {id: parseInt(btn.dataset.id, 10)});
+      loadPicks();
+      if (curMatch) updatePkButtons(curMatch);
+      renderPicksOverlay();
+    };
+  });
+}
+
+function openPicksOverlay() {
+  document.getElementById('pkOverlay').style.display = 'flex';
+  renderPicksOverlay();
+  clearInterval(pkOvTimer);
+  pkOvTimer = setInterval(() => {   // 開住嗰陣每分鐘自動刷新（睇住最新盤）
+    if (!document.hidden) renderPicksOverlay();
+  }, 60 * 1000);
+}
+
+function closePicksOverlay() {
+  document.getElementById('pkOverlay').style.display = 'none';
+  clearInterval(pkOvTimer);
+  pkOvTimer = null;
+}
+
 async function fetchOdds(id, quiet) {
   if (!quiet) setStatus('獲取賠率中…（球探網，請稍候）');
   const r = await jpost('/api/fetch', {id});
@@ -360,10 +472,6 @@ function renderResult(res) {
     </div>
     <div class="tbtns">
       <button class="btn" id="btnRefreshLine">⟳ 重新整理盤口及水位</button>
-      <span class="pk-lab">我的選擇：</span>
-      <button class="btn pk ${myPick==='up'?'on':''}" data-pk="up">上盤</button>
-      <button class="btn pk ${myPick==='down'?'on':''}" data-pk="down">下盤</button>
-      <span id="pkMsg" class="note" style="display:inline-block;margin:0 0 0 8px"></span>
     </div></div>`;
 
   const titles = {};
@@ -406,6 +514,13 @@ function renderResult(res) {
     }
     h += `<details><summary><span class="sum-t">${i}. ${esc(it.title)}</span>${it.ref && i<=9 ? `<span class="sub">${esc(it.ref)}</span>` : ''}${itemPreview(i, it)}</summary><div class="body">${body}</div></details>`;
   }
+  // 我的選擇（上/下盤）——放喺頁最底
+  h += `<div class="tbtns pk-bar">
+      <span class="pk-lab">我的選擇：</span>
+      <button class="btn pk ${myPick==='up'?'on':''}" data-pk="up">上盤</button>
+      <button class="btn pk ${myPick==='down'?'on':''}" data-pk="down">下盤</button>
+      <span id="pkMsg" class="note" style="display:inline-block;margin:0 0 0 8px"></span>
+    </div>`;
   $('#result').innerHTML = h;
 
   // 重新整理盤口及水位：強制重新抓取，然後重新篩查
@@ -472,6 +587,10 @@ function lineBox(title, o) {
 
 $('#btnRefresh').onclick = loadList;
 $('#hours').onchange = loadList;
+
+// ===== 我的選擇 · 大版面 =====
+$('#btnPicksBig').onclick = openPicksOverlay;
+$('#pkOvClose').onclick = closePicksOverlay;
 
 // ===== 一鍵更新賽事（賽果＋新場次＋最近三日盤口）=====
 async function pollUpdate() {

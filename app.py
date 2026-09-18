@@ -185,7 +185,7 @@ def pick_result(handicap, giver, hs, aws):
     if giver == 'home':
         margin = hs - aws - handicap
     elif giver == 'away':
-        margin = hs - aws + handicap
+        margin = aws - hs - handicap   # 2026-09-19 修正：客讓分支原本正負號顛倒
     else:  # 平手盤
         margin = hs - aws
     return 'A' if margin > 0 else ('B' if margin < 0 else 'P')
@@ -259,6 +259,164 @@ def get_picks():
     return {'stats': stats, 'picks': out}
 
 
+# ============ 我的選擇 · 大版面（未開賽全部＋已開賽保留24小時） ============
+_pk_full_cache = {}
+
+
+def _oc_brief(oc):
+    if not oc:
+        return None
+    return {'n': oc['n'], 'up_r': oc['up_r'], 'down_r': oc['down_r'],
+            'push_r': oc['push_r']}
+
+
+def _pair_brief(it):
+    """第 1/5/8 項：全庫＋同聯賽 上/下/走 率"""
+    if not it or it.get('error'):
+        return None
+    return {'all': _oc_brief(it.get('all')), 'lg': _oc_brief(it.get('league'))}
+
+
+def _dist_brief(it):
+    """第 12 項：樣本數＋分佈最多盤口"""
+    if not it or it.get('error') or not it.get('all'):
+        return None
+    a = it['all']
+    top = None
+    for r in (a.get('dist') or []):
+        if top is None or r.get('n', 0) > top.get('n', 0):
+            top = r
+    return {'n': a.get('n'), 'top': top}
+
+
+def _zone_brief(it, up_water):
+    """第 15 項：樣本數＋今場上盤水位所屬水位區"""
+    if not it or it.get('error') or not it.get('all'):
+        return None
+    a = it['all']
+    cur = None
+    if up_water is not None:
+        zi = screen_engine.zone_idx(up_water)
+        name = screen_engine.ZONES[zi]
+        for r in (a.get('zones') or []):
+            if r.get('zone') == name:
+                cur = r
+                break
+    return {'n': a.get('n'), 'zone': cur}
+
+
+def _gap_scope(scope):
+    if not scope:
+        return None
+
+    def cv(d):
+        if not d:
+            return None
+        return {'line': d.get('line'), 'n': d.get('n'),
+                'up_r': d.get('up_r'), 'down_r': d.get('down_r'),
+                'push_r': d.get('push_r'), 'gap': d.get('gap')}
+
+    return {'mode': cv(scope.get('mode')), 'd50': cv(scope.get('d50'))}
+
+
+def _gap_brief(it):
+    """第 14/17 項：分佈最多盤口 及 最接近50%盤口（全庫＋同聯賽）"""
+    if not it or it.get('error'):
+        return None
+    return {'all': _gap_scope(it.get('all')), 'lg': _gap_scope(it.get('league'))}
+
+
+def _screen_brief(mid):
+    """對單場跑篩查，抽出 1/5/8/12/15 摘要 及 14/17 差距（5 分鐘快取）"""
+    ts, data = _pk_full_cache.get(mid, (0, None))
+    if data is not None and time.time() - ts < 300:
+        return data
+    conn = db()
+    try:
+        t = screen_engine.get_target(conn, mid)
+        if not t:
+            return None
+        res = screen_engine.screen(conn, t)
+        items = res.get('items', {})
+        close = t.get('close') or {}
+        g = close.get('g')
+        if g == 'home':
+            up_water = close.get('ho')
+        elif g == 'away':
+            up_water = close.get('ao')
+        else:
+            ho, ao = close.get('ho'), close.get('ao')
+            up_water = min(ho, ao) if ho is not None and ao is not None else None
+        brief = {
+            'cur_line': screen_engine.fmt_line(close.get('h'), g)
+                        if close.get('h') is not None else None,
+            'cur_water': up_water,
+            'i1': _pair_brief(items.get('1')),
+            'i5': _pair_brief(items.get('5')),
+            'i8': _pair_brief(items.get('8')),
+            'i12': _dist_brief(items.get('12')),
+            'i15': _zone_brief(items.get('15'), up_water),
+            'g14': _gap_brief(items.get('14')),
+            'g17': _gap_brief(items.get('17')),
+        }
+        if len(_pk_full_cache) > 200:
+            _pk_full_cache.clear()
+        _pk_full_cache[mid] = (time.time(), brief)
+        return brief
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return None
+    finally:
+        conn.close()
+
+
+def get_picks_full():
+    conn = db()
+    rows = conn.execute(
+        'SELECT p.match_id, p.choice, m.kickoff, m.home_score, m.away_score, '
+        'ht.name_tc, at.name_tc, c.req_name, '
+        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
+        'FROM user_picks p '
+        'JOIN matches m ON m.id=p.match_id '
+        'JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        'JOIN teams ht ON ht.titan_id=m.home_id '
+        'JOIN teams at ON at.titan_id=m.away_id '
+        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+        "AND oc.label='closing' AND oc.company_id=12 "
+        # 未開賽全部保留；已開賽只保留 24 小時
+        "WHERE m.home_score IS NULL "
+        "OR m.kickoff >= datetime('now','localtime','-24 hours')").fetchall()
+    conn.close()
+    out = []
+    for (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao) in rows:
+        rec = {'id': mid, 'choice': choice, 'kickoff': ko, 'home': h, 'away': a,
+               'league': lg,
+               'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+               'odds': f'主{ho}/客{ao}' if ho is not None else None,
+               'played': hs is not None}
+        if hs is not None:
+            r = pick_result(hc, gv, hs, aws)
+            rec['score'] = f'{hs}-{aws}'
+            rec['result'] = 'X' if r is None else (
+                'P' if r == 'P' else ('W' if (r == 'A') == (choice == 'up') else 'L'))
+        rec['brief'] = _screen_brief(mid)
+        out.append(rec)
+    # 未開賽順時間排先；已開賽（24h內）跟後，最新嘅排最前
+    pending = sorted([r for r in out if not r['played']],
+                     key=lambda r: r['kickoff'])
+    played = sorted([r for r in out if r['played']],
+                    key=lambda r: r['kickoff'], reverse=True)
+    wins = sum(1 for r in played if r.get('result') == 'W')
+    losses = sum(1 for r in played if r.get('result') == 'L')
+    pushes = sum(1 for r in played if r.get('result') == 'P')
+    stats = {'total': len(out), 'pending': len(pending), 'wins': wins,
+             'losses': losses, 'pushes': pushes,
+             'win_rate': wins / (wins + losses) if (wins + losses) else None}
+    return {'stats': stats, 'pending': pending, 'played': played}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -328,6 +486,14 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._send(200, json.dumps(update_status(), ensure_ascii=False))
             except Exception as e:
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/picks/full':
+            try:
+                self._send(200, json.dumps(get_picks_full(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         self._send(404, '{}')
