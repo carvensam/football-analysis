@@ -65,22 +65,29 @@ def upcoming(hours=48):
     rows = conn.execute(
         "SELECT m.id, c.req_name, m.kickoff, ht.name_tc, at.name_tc, m.odds_done, "
         "EXISTS(SELECT 1 FROM odds_asian oa WHERE oa.match_id=m.id AND oa.company_id=12), "
-        "oc.handicap, oc.giver, oc.home_odds, oc.away_odds "
+        "oc.handicap, oc.giver, oc.home_odds, oc.away_odds, "
+        "COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) "
         "FROM matches m JOIN seasons s ON s.id=m.season_id "
         "JOIN competitions c ON c.titan_id=s.titan_id "
         "JOIN teams ht ON ht.titan_id=m.home_id "
         "JOIN teams at ON at.titan_id=m.away_id "
         "LEFT JOIN odds_asian oc ON oc.match_id=m.id AND oc.company_id=12 "
         "AND oc.label='closing' "
+        "LEFT JOIN match_prestandings ps ON ps.match_id=m.id "
+        "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
+        "AND hr.scope='total' AND hr.grp='' "
+        "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
+        "AND ar.scope='total' AND ar.grp='' "
         "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','localtime') "
         + cap + "ORDER BY m.kickoff", args).fetchall()
     out = []
-    for mid, lg, ko, h, a, od, has, hc, gv, ho, ao in rows:
+    for mid, lg, ko, h, a, od, has, hc, gv, ho, ao, hr_, ar_ in rows:
         line = None
         if hc is not None:
             line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao}
         out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
                     'has_odds': bool(has), 'line': line,
+                    'rank_home': hr_, 'rank_away': ar_,
                     'fetched_ago': int(time.time() - _last_fetch[mid]) if mid in _last_fetch else None})
     conn.close()
     return out
@@ -216,7 +223,8 @@ def get_picks():
     rows = conn.execute(
         'SELECT p.match_id, p.choice, m.kickoff, m.home_score, m.away_score, '
         'ht.name_tc, at.name_tc, c.req_name, '
-        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
+        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
+        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
         'FROM user_picks p '
         'JOIN matches m ON m.id=p.match_id '
         'JOIN seasons s ON s.id=m.season_id '
@@ -225,12 +233,17 @@ def get_picks():
         'JOIN teams at ON at.titan_id=m.away_id '
         'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
         "AND oc.label='closing' AND oc.company_id=12 "
+        'LEFT JOIN match_prestandings ps ON ps.match_id=m.id '
+        "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
+        "AND hr.scope='total' AND hr.grp='' "
+        "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
+        "AND ar.scope='total' AND ar.grp='' "
         'ORDER BY m.kickoff DESC').fetchall()
     out = []
     wins = losses = pushes = pending = 0
-    for (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao) in rows:
+    for (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao, hr_, ar_) in rows:
         rec = {'id': mid, 'choice': choice, 'kickoff': ko, 'home': h, 'away': a,
-               'league': lg,
+               'league': lg, 'rank_home': hr_, 'rank_away': ar_,
                'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
                'odds': f'主{ho}/客{ao}' if ho is not None else None}
         if hs is None:
@@ -400,7 +413,8 @@ def get_picks_full():
     rows = conn.execute(
         'SELECT p.match_id, p.choice, m.kickoff, m.home_score, m.away_score, '
         'ht.name_tc, at.name_tc, c.req_name, '
-        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
+        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
+        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
         'FROM user_picks p '
         'JOIN matches m ON m.id=p.match_id '
         'JOIN seasons s ON s.id=m.season_id '
@@ -409,14 +423,19 @@ def get_picks_full():
         'JOIN teams at ON at.titan_id=m.away_id '
         'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
         "AND oc.label='closing' AND oc.company_id=12 "
+        'LEFT JOIN match_prestandings ps ON ps.match_id=m.id '
+        "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
+        "AND hr.scope='total' AND hr.grp='' "
+        "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
+        "AND ar.scope='total' AND ar.grp='' "
         # 未開賽全部保留；已開賽只保留 24 小時
         "WHERE m.home_score IS NULL "
         "OR m.kickoff >= datetime('now','localtime','-24 hours')").fetchall()
     conn.close()
     out = []
-    for (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao) in rows:
+    for (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao, hr_, ar_) in rows:
         rec = {'id': mid, 'choice': choice, 'kickoff': ko, 'home': h, 'away': a,
-               'league': lg,
+               'league': lg, 'rank_home': hr_, 'rank_away': ar_,
                'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
                'odds': f'主{ho}/客{ao}' if ho is not None else None,
                'played': hs is not None}
@@ -448,9 +467,10 @@ _feat_scan = {'running': False, 'done': 0, 'total': 0, 'added': 0,
 
 
 def _featured_direction(b):
-    """七重準則：①⑤⑧ 全庫同方向≥50%；⑫⑮⑱ 全庫+同聯賽同方向≥50%。
-    方向由第①項（全庫）揀：上盤率≥50%→'up'，否則下盤率≥50%→'down'，否則唔入選。
-    通過全部返回 'up'/'down'，任何一項不達標返回 None。"""
+    """七重準則（2026-09-19 更新）：每項【全庫或同聯賽其中一個】同方向 ≥50% 即合格。
+    方向由第①項揀：全庫上盤≥50%→up；否則全庫下盤≥50%→down；
+    否則同聯賽上盤≥50%→up；否則同聯賽下盤≥50%→down；全部唔夠→唔入選。
+    ①⑤⑧⑫⑮⑱ 全部通過返回 'up'/'down'，任何一項不達標返回 None。"""
     if not b:
         return None
 
@@ -459,38 +479,43 @@ def _featured_direction(b):
             return None
         return oc.get('up_r') if d == 'up' else oc.get('down_r')
 
-    a1 = (b.get('i1') or {}).get('all')
-    if not a1:
-        return None
-    if (a1.get('up_r') or 0) >= 0.5:
+    def ok(oc_all, oc_lg, d):
+        # 全庫或同聯賽其中一個同方向 ≥50%
+        for oc in (oc_all, oc_lg):
+            r = rate(oc, d)
+            if r is not None and r >= 0.5:
+                return True
+        return False
+
+    i1 = b.get('i1') or {}
+    a1, l1 = i1.get('all'), i1.get('lg')
+    if rate(a1, 'up') is not None and rate(a1, 'up') >= 0.5:
         d = 'up'
-    elif (a1.get('down_r') or 0) >= 0.5:
+    elif rate(a1, 'down') is not None and rate(a1, 'down') >= 0.5:
+        d = 'down'
+    elif rate(l1, 'up') is not None and rate(l1, 'up') >= 0.5:
+        d = 'up'
+    elif rate(l1, 'down') is not None and rate(l1, 'down') >= 0.5:
         d = 'down'
     else:
         return None
-    # ①⑤⑧：全庫同方向 ≥50%
+    # ①⑤⑧：全庫或同聯賽其中一個同方向 ≥50%
     for k in ('i1', 'i5', 'i8'):
-        r = rate((b.get(k) or {}).get('all'), d)
-        if r is None or r < 0.5:
+        it = b.get(k) or {}
+        if not ok(it.get('all'), it.get('lg'), d):
             return None
-    # ⑫：同尾盤盤口（全庫 + 同聯賽）
+    # ⑫：同尾盤盤口（全庫或同聯賽）
     i12 = b.get('i12') or {}
-    for row in (i12.get('cur'), (i12.get('lg') or {}).get('cur')):
-        r = rate(row, d)
-        if r is None or r < 0.5:
-            return None
-    # ⑮：同尾盤＋今場水位區（全庫 + 同聯賽）
+    if not ok(i12.get('cur'), (i12.get('lg') or {}).get('cur'), d):
+        return None
+    # ⑮：同尾盤＋今場水位區（全庫或同聯賽）
     i15 = b.get('i15') or {}
-    for row in (i15.get('zone'), i15.get('lg_zone')):
-        r = rate(row, d)
-        if r is None or r < 0.5:
-            return None
-    # ⑱：排名差距淨值±1＋同尾盤（全庫 + 同聯賽）
+    if not ok(i15.get('zone'), i15.get('lg_zone'), d):
+        return None
+    # ⑱：排名差距淨值±1＋同尾盤（全庫或同聯賽）
     i18 = b.get('i18') or {}
-    for row in (i18.get('all'), i18.get('lg')):
-        r = rate(row, d)
-        if r is None or r < 0.5:
-            return None
+    if not ok(i18.get('all'), i18.get('lg'), d):
+        return None
     return d
 
 
@@ -542,7 +567,8 @@ def get_featured_full():
     pending_rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
         'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
-        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
+        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
+        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
         'FROM featured f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
         'JOIN competitions c ON c.titan_id=s.titan_id '
@@ -550,11 +576,17 @@ def get_featured_full():
         'JOIN teams at ON at.titan_id=m.away_id '
         'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
         "AND oc.label='closing' AND oc.company_id=12 "
+        'LEFT JOIN match_prestandings ps ON ps.match_id=m.id '
+        "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
+        "AND hr.scope='total' AND hr.grp='' "
+        "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
+        "AND ar.scope='total' AND ar.grp='' "
         'WHERE m.home_score IS NULL ORDER BY m.kickoff').fetchall()
     played_rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
         'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
-        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
+        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
+        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
         'FROM featured f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
         'JOIN competitions c ON c.titan_id=s.titan_id '
@@ -562,13 +594,18 @@ def get_featured_full():
         'JOIN teams at ON at.titan_id=m.away_id '
         'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
         "AND oc.label='closing' AND oc.company_id=12 "
+        'LEFT JOIN match_prestandings ps ON ps.match_id=m.id '
+        "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
+        "AND hr.scope='total' AND hr.grp='' "
+        "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
+        "AND ar.scope='total' AND ar.grp='' "
         'WHERE m.home_score IS NOT NULL ORDER BY m.kickoff DESC').fetchall()
     conn.close()
 
     def build(row):
-        (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao) = row
+        (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, hr_, ar_) = row
         rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
-               'home': h, 'away': a, 'league': lg,
+               'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
                'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
                'odds': f'主{ho}/客{ao}' if ho is not None else None,
                'played': hs is not None}
