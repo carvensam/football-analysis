@@ -918,10 +918,65 @@ $('#btnFtScan').onclick = startFtScan;
 $('#btnCheck').onclick = openCheckOverlay;
 $('#ckOvClose').onclick = closeCheckOverlay;
 $('#btnCkScan').onclick = startCkScan;
-// 測試用：?autocheck=1 自動打開 Check 下先
+// 測試用：?autocheck=1 自動打開 Check 下先；?autopk=1 自動打開我的選擇大版面
 if (location.search.indexOf('autocheck=1') >= 0) {
   setTimeout(openCheckOverlay, 800);
 }
+if (location.search.indexOf('autopk=1') >= 0) {
+  setTimeout(openPicksOverlay, 800);
+}
+
+// ===== 各頁「⟳ 刷新盤口」：更新即時盤口＋賠率，重算精選 =====
+let refreshing = false;
+function setOvStatus(msg) {
+  ['pkOvStatus', 'ftScanInfo', 'ckScanInfo'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = msg;
+  });
+}
+async function pollRefresh() {
+  for (;;) {
+    const s = await jget('/api/update-status');
+    if (!s.running) {
+      if (s.error) { setOvStatus('更新出錯：' + String(s.error).split('\n')[0]); return false; }
+      const r = s.last_result || {};
+      setOvStatus(`✓ 盤口已更新（補 ${r.odds || 0} 場）｜精選重算中…`);
+      break;
+    }
+    setOvStatus('⟳ ' + (s.phase || '更新緊最新盤口及賠率') + '…');
+    await new Promise(rs => setTimeout(rs, 3000));
+  }
+  for (;;) {   // 等精選重算完成
+    const f = await jget('/api/featured/scan-status');
+    if (!f.running) break;
+    setOvStatus(`⟳ 精選重算中 ${f.done}/${f.total}…`);
+    await new Promise(rs => setTimeout(rs, 3000));
+  }
+  return true;
+}
+async function refreshOddsAll() {
+  if (refreshing) { setOvStatus('⟳ 更新緊，唔好重複撳…'); return; }
+  refreshing = true;
+  document.querySelectorAll('.ov-refresh').forEach(b => b.disabled = true);
+  setOvStatus('⟳ 更新緊最新盤口及賠率…');
+  try {
+    const r = await jpost('/api/update', {});
+    if (r.error) { setOvStatus('更新：' + r.error); return; }
+    if (!(await pollRefresh())) return;
+    setOvStatus('✓ 完成：盤口＋賠率已更新，精選已重算');
+    await loadList();
+    if (curMatch) openMatch(curMatch);
+    if (document.getElementById('pkOverlay').style.display !== 'none') renderPicksOverlay();
+    if (document.getElementById('ftOverlay').style.display !== 'none') renderFeaturedOverlay();
+    if (document.getElementById('ckOverlay').style.display !== 'none') renderCheckOverlay();
+  } catch (e) {
+    setOvStatus('更新失敗：' + e);
+  } finally {
+    refreshing = false;
+    document.querySelectorAll('.ov-refresh').forEach(b => b.disabled = false);
+  }
+}
+document.querySelectorAll('.ov-refresh').forEach(b => b.onclick = refreshOddsAll);
 
 // ===== 一鍵更新賽事（賽果＋新場次＋最近三日盤口）=====
 async function pollUpdate() {

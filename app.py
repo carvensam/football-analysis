@@ -31,7 +31,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '2.3'
+SERVER_VERSION = '2.4'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -124,6 +124,7 @@ def _update_worker():
     cfg['max_requests_before_rest'] = 999999999
     cfg['rest_minutes'] = 0
     conn = sqlite3.connect(DB_PATH, timeout=180)
+    ok = False
     try:
         st = crawler.recent_update(
             conn, cfg, days=3,
@@ -131,6 +132,7 @@ def _update_worker():
         _update_state['last_result'] = st
         _update_state['error'] = None
         print(f"[update] 完成：{st}", flush=True)
+        ok = True
     except Exception:
         import traceback
         traceback.print_exc()
@@ -140,6 +142,8 @@ def _update_worker():
         _update_state['running'] = False
         _update_state['phase'] = ''
         _update_state['last_done'] = time.time()
+    if ok:
+        _recompute_featured_after_update()
 
 
 def do_update(auto=False):
@@ -572,6 +576,24 @@ def _featured_scan_job():
     finally:
         conn.close()
         _feat_scan['running'] = False
+
+
+def _recompute_featured_after_update():
+    """盤口／賠率更新後重算精選：清走未結算入選（歷史已結算保留做統計），
+    清數據池快取，再全量重新篩選。"""
+    try:
+        conn = db()
+        conn.execute('DELETE FROM featured WHERE match_id IN '
+                     '(SELECT id FROM matches WHERE home_score IS NULL)')
+        conn.commit()
+        conn.close()
+        screen_engine._pool_cache['ts'] = 0   # 令 load_pool 重新載入新盤口
+        print('[update] 重算精選…', flush=True)
+        if not _feat_scan['running']:
+            threading.Thread(target=_featured_scan_job, daemon=True).start()
+    except Exception:
+        import traceback
+        traceback.print_exc()
 
 
 def get_featured_full():
