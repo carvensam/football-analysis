@@ -431,6 +431,9 @@ function _ftCard(p) {
 function _ftCheckTxt(p) {
   // 精選場係咪中咗 Check 下先 8 組合嘅任何一條；中咗 → 講明邊條＋歷史開出上/下盤率＋統計基數
   const chk = p.check;
+  if (chk && chk.error) {
+    return `<span style="color:var(--down)">✓ Check 計算失敗：${esc(chk.error)}</span>`;
+  }
   if (!chk) {
     return '<span style="color:var(--dim)">呢場唔中任何一條組合（⑭／⑰ 無深淺差距或樣本不足）</span>';
   }

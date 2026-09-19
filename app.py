@@ -1057,8 +1057,9 @@ def _check_combo_for(mid, direction):
                        'up_r': up / eff if eff else None,
                        'down_r': down / eff if eff else None}
         conn.close()
-    except Exception:
+    except Exception as e:
         traceback.print_exc()
+        out = {'error': str(e)[:200]}     # 計算失敗同「唔中組合」分開顯示
     if len(_check_combo_cache) > 500:
         _check_combo_cache.clear()
     _check_combo_cache[key] = (time.time(), out)
