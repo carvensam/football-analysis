@@ -32,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '2.8'
+SERVER_VERSION = '2.9'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -740,6 +740,7 @@ def get_featured_full():
             rec['score'] = f'{hs}-{aws}'
             rec['result'] = res
         rec['brief'] = _screen_brief(mid)
+        rec['check'] = _check_combo_for(mid, d)     # 中咗 Check 下先邊條組合
         return rec
 
     pending = [build(r) for r in pending_rows]
@@ -980,6 +981,89 @@ def _d50_dir(m, c_h, c_gc, res, t_h, t_gc):
 
 
 _EMPTY_IDX = np.zeros(0, dtype=np.int64)
+
+# 精選場次「Check 下先」組合快取（10 分鐘）
+_check_combo_cache = {}
+
+
+def _check_combo_for(mid, direction):
+    """精選場次中咗 Check 下先邊條組合。
+    目標場嘅尾盤/排名/上次比賽經 get_target 攞（未開賽場唔喺歷史池入面），
+    樣本索引嚟自歷史池；g14/g17 分類同回測掃描完全一致（上盤角度 deep/shallow），
+    再喺 check_rows 度攞該組合嘅歷史開出統計。
+    回傳 {'g14','g17','n','up','down','push','up_r','down_r'}；唔中任何組合 → None"""
+    key = (mid, direction)
+    ent = _check_combo_cache.get(key)
+    if ent and time.time() - ent[0] < 600:
+        return ent[1]
+    out = None
+    try:
+        conn = db()
+        t = screen_engine.get_target(conn, mid)
+        close = screen_engine.tline((t or {}).get('odds') or {}, 'closing')
+        if t and close:
+            df, _prev = screen_engine.load_pool(conn)
+            c_h = df['c_h'].to_numpy()
+            c_gc = df['c_g'].fillna('none').map(_GMAP).to_numpy()
+            res = df['res'].map({'A': 1, 'B': -1, 'P': 0}).to_numpy()
+            t_h = float(close['h'])
+            t_g = _GMAP.get(close.get('g') or 'none', 0)
+            # ⑫ 樣本：主場/客場排名 ±2（同回測掃描一致）
+            hhr = t['pre']['home_home_rank']
+            aar = t['pre']['away_away_rank']
+            hhr_a = df['home_home_rank'].to_numpy()
+            aar_a = df['away_away_rank'].to_numpy()
+            idx12 = None
+            if hhr is not None and aar is not None:
+                r1, r2 = int(hhr), int(aar)
+                cells = []
+                for di in range(-2, 3):
+                    for dj in range(-2, 3):
+                        w = (hhr_a == r1 + di) & (aar_a == r2 + dj)
+                        if w.any():
+                            cells.append(np.nonzero(w)[0])
+                idx12 = np.unique(np.concatenate(cells)) if cells else _EMPTY_IDX
+            g14 = (_d50_dir_idx(idx12, c_h, c_gc, res, t_h, t_g)
+                   if idx12 is not None else None)
+            # ⑰ 樣本：今次主隊上次比賽（角色＋盤口，同回測掃描一致）
+            g17d = None
+            hp = t.get('home_prev')
+            if hp and hp.get('h') is not None:
+                hp_h = df['hp_h'].to_numpy()
+                hp_gc = df['hp_g'].fillna('none').map(_GMAP).to_numpy()
+                hp_rc = df['hp_role'].map({'home': 1, 'away': 0}).fillna(-1).to_numpy()
+                t_rc = 1 if hp['role'] == 'home' else 0
+                t_hp = float(hp['h'])
+                t_hg = _GMAP.get(hp.get('g') or 'none', 0)
+                w = (hp_rc == t_rc) & (hp_h == t_hp) & (hp_gc == t_hg)
+                idx17 = np.nonzero(w)[0] if w.any() else _EMPTY_IDX
+                g17d = _d50_dir_idx(idx17, c_h, c_gc, res, t_h, t_g)
+            if g14 and g17d:
+                rows = conn.execute(
+                    'SELECT res, COUNT(*) FROM check_rows '
+                    'WHERE direction=? AND g14=? AND g17=? GROUP BY res',
+                    (direction, g14, g17d)).fetchall()
+                up = down = push = 0
+                for r_, n in rows:
+                    if r_ == 'A':
+                        up = n
+                    elif r_ == 'B':
+                        down = n
+                    else:
+                        push = n
+                eff = up + down
+                out = {'g14': g14, 'g17': g17d, 'n': up + down + push,
+                       'up': up, 'down': down, 'push': push,
+                       'up_r': up / eff if eff else None,
+                       'down_r': down / eff if eff else None}
+        conn.close()
+    except Exception:
+        traceback.print_exc()
+    if len(_check_combo_cache) > 500:
+        _check_combo_cache.clear()
+    _check_combo_cache[key] = (time.time(), out)
+    return out
+
 
 
 def _check_scan_job(table='check_rows'):

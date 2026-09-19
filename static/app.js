@@ -424,7 +424,23 @@ function _ftCard(p) {
     </div>
     <div class="pk-gap"><span class="lab">⑭ 差距</span>${_gapTxt(b.g14, b.cur_line)}</div>
     <div class="pk-gap"><span class="lab">⑰ 差距</span>${_gapTxt(b.g17, b.cur_line)}</div>
+    <div class="pk-gap"><span class="lab">✓ Check</span>${_ftCheckTxt(p)}</div>
   </div>`;
+}
+
+function _ftCheckTxt(p) {
+  // 精選場係咪中咗 Check 下先 8 組合嘅任何一條；中咗 → 講明邊條＋歷史開出上/下盤率＋統計基數
+  const chk = p.check;
+  if (!chk) {
+    return '<span style="color:var(--dim)">呢場唔中任何一條組合（⑭／⑰ 無深淺差距或樣本不足）</span>';
+  }
+  // 後端 g14/g17 係「上盤」角度；方向=下時換算做「下盤」角度（deep<->shallow 對調）
+  const sw = v => p.direction === 'down' ? (v === 'deep' ? 'shallow' : 'deep') : v;
+  const cb = CK_COMBOS.find(c => c.dir === p.direction &&
+    c.g14s === sw(chk.g14) && c.g17s === sw(chk.g17));
+  return `<b style="color:#ffd766">中咗呢條組合</b>：${esc(cb ? cb.label : '')}` +
+    ` → 歷史開出 <b class="r-up">上盤 ${pct(chk.up_r)}</b> ／ <b class="r-down">下盤 ${pct(chk.down_r)}</b>` +
+    `<span style="color:var(--dim)">（統計基數 ${chk.n} 場：上 ${chk.up}｜下 ${chk.down}｜走 ${chk.push}，走盤唔計分母）</span>`;
 }
 
 async function renderFeaturedOverlay() {
