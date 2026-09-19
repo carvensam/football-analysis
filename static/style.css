@@ -160,3 +160,16 @@ td.l, th.l { text-align: left; }
 .pk-gap .cur { color: var(--accent); font-weight: bold; }
 #btnPicksBig { margin-left: 8px; padding: 1px 8px; font-size: 11px; }
 .pk-bar { margin-top: 16px; padding-top: 12px; border-top: 1px dashed var(--line); }
+
+/* ===== 過往賽果 ===== */
+#rsOverlay { position: fixed; inset: 0; z-index: 60; background: var(--bg);
+  display: flex; flex-direction: column; }
+.rs-stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 14px; }
+.rs-stat { flex: 1 1 150px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 12px; padding: 12px 14px; text-align: center; }
+.rs-lab { color: var(--dim); font-size: 12px; margin-bottom: 4px; }
+.rs-val { font-size: 24px; font-weight: bold; color: var(--accent2); }
+.rs-sub { color: var(--dim); font-size: 11px; margin-top: 4px; }
+.rs-card { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 9px 14px; margin-bottom: 8px; }

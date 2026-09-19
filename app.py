@@ -12,6 +12,7 @@ import socket
 import sqlite3
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -31,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '2.5'
+SERVER_VERSION = '2.6'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -220,6 +221,12 @@ def init_picks():
     conn.execute('''CREATE TABLE IF NOT EXISTS check_rows(
         match_id INTEGER PRIMARY KEY, direction TEXT,
         g14 TEXT, g17 TEXT, res TEXT)''')
+    # 選擇當刻嘅盤口/水位快照（2026-09-19：我的選擇要同時展示揀時＋尾盤數據）
+    cols = [r[1] for r in conn.execute('PRAGMA table_info(user_picks)')]
+    for c, t in (('pick_handicap', 'REAL'), ('pick_giver', 'TEXT'),
+                 ('pick_home_odds', 'REAL'), ('pick_away_odds', 'REAL')):
+        if c not in cols:
+            conn.execute(f'ALTER TABLE user_picks ADD COLUMN {c} {t}')
     conn.commit()
     conn.close()
 
@@ -241,9 +248,22 @@ def do_pick(mid, choice):
     if choice not in ('up', 'down'):
         return {'ok': False, 'error': '選擇無效'}
     conn = db()
-    conn.execute('INSERT INTO user_picks(match_id, choice, created) VALUES(?,?,?) '
-                 'ON CONFLICT(match_id) DO UPDATE SET choice=excluded.choice, '
-                 'created=excluded.created', (mid, choice, time.time()))
+    # 揀嘅當刻影低當時嘅盤口/水位（冇 closing 就用最新一筆）
+    row = conn.execute(
+        'SELECT handicap, giver, home_odds, away_odds FROM odds_asian '
+        'WHERE match_id=? AND company_id=12 '
+        'ORDER BY (label=\'closing\') DESC, label DESC LIMIT 1',
+        (mid,)).fetchone()
+    conn.execute(
+        'INSERT INTO user_picks(match_id, choice, created, pick_handicap, '
+        'pick_giver, pick_home_odds, pick_away_odds) VALUES(?,?,?,?,?,?,?) '
+        'ON CONFLICT(match_id) DO UPDATE SET choice=excluded.choice, '
+        'created=excluded.created, pick_handicap=excluded.pick_handicap, '
+        'pick_giver=excluded.pick_giver, '
+        'pick_home_odds=excluded.pick_home_odds, '
+        'pick_away_odds=excluded.pick_away_odds',
+        (mid, choice, time.time()) + tuple(row) if row else
+        (mid, choice, time.time(), None, None, None, None))
     conn.commit()
     conn.close()
     return {'ok': True}
@@ -453,6 +473,7 @@ def get_picks_full():
         'SELECT p.match_id, p.choice, m.kickoff, m.home_score, m.away_score, '
         'ht.name_tc, at.name_tc, c.req_name, '
         'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
+        'p.pick_handicap, p.pick_giver, p.pick_home_odds, p.pick_away_odds, '
         'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
         'FROM user_picks p '
         'JOIN matches m ON m.id=p.match_id '
@@ -467,17 +488,23 @@ def get_picks_full():
         "AND hr.scope='total' AND hr.grp='' "
         "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
         "AND ar.scope='total' AND ar.grp='' "
-        # 未開賽全部保留；已開賽只保留 24 小時
-        "WHERE m.home_score IS NULL "
-        "OR m.kickoff >= datetime('now','localtime','-24 hours')").fetchall()
+        # 全部選擇永久保留（唔設 24 小時限制）
+    ).fetchall()
     conn.close()
     out = []
-    for (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao, hr_, ar_) in rows:
+    now_str = time.strftime('%Y-%m-%d %H:%M:%S')
+    for (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao,
+         ph, pg, pho, pao, hr_, ar_) in rows:
         rec = {'id': mid, 'choice': choice, 'kickoff': ko, 'home': h, 'away': a,
                'league': lg, 'rank_home': hr_, 'rank_away': ar_,
+               # 尾盤數據（賽後定案）
                'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
                'odds': f'主{ho}/客{ao}' if ho is not None else None,
-               'played': hs is not None}
+               # 揀嘅當刻嘅數據（快照）
+               'pick_line': screen_engine.fmt_line(ph, pg) if ph is not None else None,
+               'pick_odds': f'主{pho}/客{pao}' if pho is not None else None,
+               # played = 已開賽（kickoff 過咗）；有冇賽果係另一回事
+               'played': ko < now_str}
         if hs is not None:
             r = pick_result(hc, gv, hs, aws)
             rec['score'] = f'{hs}-{aws}'
@@ -485,7 +512,7 @@ def get_picks_full():
                 'P' if r == 'P' else ('W' if (r == 'A') == (choice == 'up') else 'L'))
         rec['brief'] = _screen_brief(mid)
         out.append(rec)
-    # 未開賽順時間排先；已開賽（24h內）跟後，最新嘅排最前
+    # 未開賽順時間排先；已開賽永久保留跟後（按日子分類），最新嘅排最前
     pending = sorted([r for r in out if not r['played']],
                      key=lambda r: r['kickoff'])
     played = sorted([r for r in out if r['played']],
@@ -649,7 +676,7 @@ def get_featured_full():
         "AND hr.scope='total' AND hr.grp='' "
         "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
         "AND ar.scope='total' AND ar.grp='' "
-        'WHERE m.home_score IS NULL ORDER BY m.kickoff').fetchall()
+        'WHERE m.kickoff >= ? ORDER BY m.kickoff', (now,)).fetchall()
     played_rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
         'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
@@ -667,7 +694,7 @@ def get_featured_full():
         "AND hr.scope='total' AND hr.grp='' "
         "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
         "AND ar.scope='total' AND ar.grp='' "
-        'WHERE m.home_score IS NOT NULL ORDER BY m.kickoff DESC').fetchall()
+        'WHERE m.kickoff < ? ORDER BY m.kickoff DESC', (now,)).fetchall()
     conn.close()
 
     def build(row):
@@ -676,7 +703,8 @@ def get_featured_full():
                'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
                'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
                'odds': f'主{ho}/客{ao}' if ho is not None else None,
-               'played': hs is not None}
+               # played = 已開賽（kickoff 過咗）；冇賽果嘅會顯示「待結算」
+               'played': ko < now}
         if hs is not None:
             r = pick_result(hc, gv, hs, aws)
             if res is None and r is not None:
@@ -703,6 +731,100 @@ def get_featured_full():
              'hit_rate': wins / (wins + losses) if (wins + losses) else None}
     return {'stats': stats, 'pending': pending, 'played': played,
             'scan': {k: _feat_scan[k] for k in ('running', 'done', 'total', 'added', 'last', 'error')}}
+
+
+# ============ 過往賽果（已完場＋尾盤 → 上/下/走盤＋五項命中率統計） ============
+
+def get_results(limit=1000):
+    conn = db()
+    # 統計：全部已完場且有尾盤（易胜博）嘅場次
+    stat_rows = conn.execute(
+        'SELECT oc.handicap, oc.giver, m.home_score, m.away_score '
+        'FROM matches m JOIN odds_asian oc ON oc.match_id=m.id '
+        "AND oc.label='closing' AND oc.company_id=12 "
+        'WHERE m.home_score IS NOT NULL').fetchall()
+    up = down = push = 0
+    for hc, gv, hs, aws in stat_rows:
+        r = pick_result(hc, gv, hs, aws)
+        if r == 'A':
+            up += 1
+        elif r == 'B':
+            down += 1
+        elif r == 'P':
+            push += 1
+    eff = up + down
+    n_all = len(stat_rows)
+    stats = {
+        'total': n_all, 'up': up, 'down': down, 'push': push,
+        # 上/下盤命中率：分母剔除走盤；總命中率＝有開出上下盤結果嘅比例（＝1－走盤率）
+        'up_r': up / eff if eff else None,
+        'down_r': down / eff if eff else None,
+        'decisive_r': eff / n_all if n_all else None,
+    }
+    # 精選命中率（已結算，走盤唔計入分母）
+    fr = conn.execute(
+        'SELECT result, COUNT(*) FROM featured WHERE result IS NOT NULL '
+        'GROUP BY result').fetchall()
+    fw = fl = fp = 0
+    for res, n in fr:
+        if res == 'W':
+            fw = n
+        elif res == 'L':
+            fl = n
+        else:
+            fp = n
+    stats['feat_w'] = fw
+    stats['feat_l'] = fl
+    stats['feat_p'] = fp
+    stats['feat_r'] = fw / (fw + fl) if (fw + fl) else None
+    # 我的選擇命中率（已完場，走盤唔計入分母）
+    pr = conn.execute(
+        'SELECT p.choice, oc.handicap, oc.giver, m.home_score, m.away_score '
+        'FROM user_picks p JOIN matches m ON m.id=p.match_id '
+        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+        "AND oc.label='closing' AND oc.company_id=12 "
+        'WHERE m.home_score IS NOT NULL').fetchall()
+    pw = pl = pp = 0
+    for choice, hc, gv, hs, aws in pr:
+        r = pick_result(hc, gv, hs, aws)
+        if r is None:
+            continue
+        if r == 'P':
+            pp += 1
+        elif (r == 'A') == (choice == 'up'):
+            pw += 1
+        else:
+            pl += 1
+    stats['pk_w'] = pw
+    stats['pk_l'] = pl
+    stats['pk_p'] = pp
+    stats['pk_r'] = pw / (pw + pl) if (pw + pl) else None
+    # 最近 N 場列表（最新排先）
+    rows = conn.execute(
+        'SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc, '
+        'm.home_score, m.away_score, oc.handicap, oc.giver, '
+        'oc.home_odds, oc.away_odds '
+        'FROM matches m JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        'JOIN teams ht ON ht.titan_id=m.home_id '
+        'JOIN teams at ON at.titan_id=m.away_id '
+        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+        "AND oc.label='closing' AND oc.company_id=12 "
+        'WHERE m.home_score IS NOT NULL '
+        'ORDER BY m.kickoff DESC LIMIT ?', (limit,)).fetchall()
+    items = []
+    for (mid, ko, lg, h, a, hs, aws, hc, gv, ho, ao) in rows:
+        r = pick_result(hc, gv, hs, aws) if hc is not None else None
+        items.append({
+            'id': mid, 'kickoff': ko, 'league': lg, 'home': h, 'away': a,
+            'score': f'{hs}-{aws}',
+            'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+            'odds': f'主{ho}/客{ao}' if ho is not None else None,
+            'outcome': ('up' if r == 'A' else 'down' if r == 'B'
+                        else 'push' if r == 'P' else None),
+        })
+    conn.close()
+    return {'stats': stats, 'items': items, 'limit': limit}
 
 
 # ============ Check 下先（8 組合回測：①⑤⑧⑫⑮⑱方向 × ⑭深淺 × ⑰深淺） ============
@@ -1127,6 +1249,16 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/check/scan-status':
             self._send(200, json.dumps(_check_scan, ensure_ascii=False))
             return
+        if u.path == '/api/results':
+            try:
+                qs = parse_qs(u.query)
+                limit = int(qs.get('limit', ['1000'])[0])
+                self._send(200, json.dumps(get_results(limit), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         self._send(404, '{}')
 
     def do_POST(self):
@@ -1265,6 +1397,77 @@ def _seed_check_rows():
         return False
 
 
+# ============ 賽果補抓（開賽後 2.5 小時仍無賽果 → 自動重抓補上） ============
+_result_catchup = {'running': False, 'last': None, 'fixed': 0, 'error': None}
+
+
+def _result_catchup_once():
+    """搵開賽超過 2.5 小時但仲未入賽果嘅場次，
+    按所屬聯賽分組重抓現行賽季檔（save_season 會順便更新賽果）。
+    每輪最多 20 個聯賽，其餘下輪再補，避免一次太重。"""
+    conn = db()
+    rows = conn.execute(
+        'SELECT m.id, s.titan_id FROM matches m '
+        'JOIN seasons s ON s.id=m.season_id '
+        'WHERE m.home_score IS NULL '
+        "AND m.kickoff <= datetime('now','localtime','-2 hours 30 minutes') "
+        "AND m.kickoff >= datetime('now','localtime','-10 days') "
+        'ORDER BY m.kickoff').fetchall()
+    if not rows:
+        conn.close()
+        return 0
+    by_lg = {}
+    for mid, tid in rows:
+        by_lg.setdefault(tid, []).append(mid)
+    crawler, fetcher = get_crawler()
+    conn = db()
+    fixed = 0
+    for i, (tid, mids) in enumerate(by_lg.items()):
+        if i >= 20:
+            break
+        try:
+            seasons = crawler.get_season_list(fetcher, tid)
+            if not seasons:
+                continue
+            season_label = seasons[0]        # 只取現行賽季
+            prefix = crawler.resolve_prefix(fetcher, tid)
+            if not prefix:
+                continue
+            url = (f'https://zq.titan007.com/jsData/matchResult/'
+                   f'{season_label}/{prefix}.js?version=1')
+            text = fetcher.get(url)
+            if not text or text.lstrip().startswith('<'):
+                continue
+            parsed = crawler.parse_season_js(text)
+            crawler.save_season(conn, tid, season_label, 1, parsed)
+            for mid in mids:
+                if conn.execute('SELECT home_score FROM matches WHERE id=?',
+                                (mid,)).fetchone()[0] is not None:
+                    fixed += 1
+        except Exception:
+            crawler.log(conn, 'ERROR',
+                        f'賽果補抓失敗 {tid}\n' + traceback.format_exc())
+    conn.close()
+    return fixed
+
+
+def _result_catchup_job():
+    """每 15 分鐘巡一次。賽果更新後，精選自動結算／我的選擇勝負讀取時自動跟上。"""
+    while True:
+        time.sleep(15 * 60)
+        if _result_catchup['running']:
+            continue
+        _result_catchup['running'] = True
+        try:
+            _result_catchup['fixed'] = _result_catchup_once()
+            _result_catchup['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+            _result_catchup['error'] = None
+        except Exception:
+            _result_catchup['error'] = traceback.format_exc()[-400:]
+        finally:
+            _result_catchup['running'] = False
+
+
 def _auto_scans():
     """開機自動補數：featured 空咗（雲端重部署會清磁碟）就重掃精選；
     check_rows 太少（種入失敗）就自動開始全庫回測。唔阻塞服務。"""
@@ -1308,4 +1511,5 @@ if __name__ == '__main__':
     _seed_check_rows()
     _auto_scans()
     threading.Thread(target=_warmup, daemon=True).start()
+    threading.Thread(target=_result_catchup_job, daemon=True).start()
     httpd.serve_forever()

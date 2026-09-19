@@ -209,8 +209,9 @@ function _gapTxt(g, curLine) {
 }
 
 function _pkCard(p) {
-  const res = p.result == null ? '<span style="color:var(--dim)">未開賽</span>'
-    : (RES_TAG[p.result] || esc(p.result));
+  const res = p.played ? (p.score ? (RES_TAG[p.result] || esc(p.result))
+      : '<span style="color:var(--dim)">待賽果</span>')
+    : '<span style="color:var(--dim)">未開賽</span>';
   const b = p.brief || {};
   const i12 = b.i12, i15 = b.i15;
   const i12v = !i12 ? '不適用'
@@ -226,7 +227,7 @@ function _pkCard(p) {
       ${p.score ? `<span class="pk-score">${esc(p.score)}</span>` : ''}
       <span class="pk-tag ${p.choice}">${p.choice === 'up' ? '上盤' : '下盤'}</span>
       <span class="pk-res">${res}</span>
-      <span style="color:var(--dim);font-size:12px">尾盤 ${esc(p.line || '—')}${p.odds ? ' ' + esc(p.odds) : ''}</span>
+      <span style="color:var(--dim);font-size:12px">揀時 ${esc(p.pick_line || '—')}${p.pick_odds ? ' ' + esc(p.pick_odds) : ''}｜尾盤 ${esc(p.line || '—')}${p.odds ? ' ' + esc(p.odds) : ''}</span>
       ${again}${del}
     </div>
     <div class="pk-items">
@@ -250,7 +251,7 @@ async function renderPicksOverlay() {
   const s = d.stats || {};
   const rate = s.win_rate != null ? (s.win_rate * 100).toFixed(1) + '%' : '—';
   document.getElementById('pkOvTitle').textContent =
-    `我的選擇｜${s.total || 0} 場（未開賽 ${s.pending || 0}）｜已開賽24小時內 ${(d.played || []).length} 場｜勝 ${s.wins || 0} 輸 ${s.losses || 0} 走 ${s.pushes || 0}｜勝出率 ${rate}`;
+    `我的選擇｜${s.total || 0} 場（未開賽 ${s.pending || 0}）｜已開賽 ${(d.played || []).length} 場（永久保留）｜勝 ${s.wins || 0} 輸 ${s.losses || 0} 走 ${s.pushes || 0}｜勝出率 ${rate}`;
   if (!s.total) {
     body.innerHTML = '<div class="note">未有任何選擇。喺賽事結果頁最底撳「上盤／下盤」記錄。</div>';
     return;
@@ -260,7 +261,16 @@ async function renderPicksOverlay() {
     h += `<div class="pk-sec-t">未開賽（順開賽時間排）</div>` + d.pending.map(_pkCard).join('');
   }
   if ((d.played || []).length) {
-    h += `<div class="pk-sec-t">已開賽（24 小時內，最新排先）</div>` + d.played.map(_pkCard).join('');
+    h += `<div class="pk-sec-t">已開賽（永久保留，按日子分類，最新排先）</div>`;
+    let lastDate = '';
+    for (const p of d.played) {
+      const dd = p.kickoff.slice(0, 10);
+      if (dd !== lastDate) {
+        h += `<div class="ft-date">${esc(dd)}</div>`;
+        lastDate = dd;
+      }
+      h += _pkCard(p);
+    }
   }
   body.innerHTML = h;
   body.querySelectorAll('.pk-del').forEach(btn => {
@@ -436,19 +446,15 @@ async function renderFeaturedOverlay() {
   }
   const played = d.played || [];
   if (played.length) {
-    h += `<div class="pk-sec-t">已完場（${played.length} 場${played.length > 20 ? '，按日子分類' : ''}）</div>`;
-    if (played.length > 20) {
-      let lastDate = '';
-      for (const p of played) {
-        const dd = p.kickoff.slice(0, 10);
-        if (dd !== lastDate) {
-          h += `<div class="ft-date">${esc(dd)}</div>`;
-          lastDate = dd;
-        }
-        h += _ftCard(p);
+    h += `<div class="pk-sec-t">已開賽／已完場（${played.length} 場，按日子分類，最新排先）</div>`;
+    let lastDate = '';
+    for (const p of played) {
+      const dd = p.kickoff.slice(0, 10);
+      if (dd !== lastDate) {
+        h += `<div class="ft-date">${esc(dd)}</div>`;
+        lastDate = dd;
       }
-    } else {
-      h += played.map(_ftCard).join('');
+      h += _ftCard(p);
     }
   }
   if (!h) h = '<div class="note">暫無精選場次。撳「🔍 掃描精選」喺全部即將開賽嘅場次入面搵（約 1-3 分鐘）。</div>';
@@ -935,6 +941,66 @@ $('#btnFtScan').onclick = startFtScan;
 $('#btnCheck').onclick = openCheckOverlay;
 $('#ckOvClose').onclick = closeCheckOverlay;
 $('#btnCkScan').onclick = startCkScan;
+
+// ===== 過往賽果 =====
+function _pct_(v) { return v == null ? '—' : (v * 100).toFixed(1) + '%'; }
+
+function _rsCard(m) {
+  const tag = m.outcome === 'up' ? '<b class="r-up">上盤</b>'
+    : m.outcome === 'down' ? '<b class="r-down">下盤</b>'
+    : m.outcome === 'push' ? '<b>➖ 走盤</b>'
+    : '<span style="color:var(--dim)">無尾盤</span>';
+  return `<div class="rs-card">
+    <span class="pk-time">${esc(m.kickoff.slice(5, 16))}　${esc(m.league)}</span>
+    <span class="pk-teams">${esc(m.home)} <b>${esc(m.score)}</b> ${esc(m.away)}</span>
+    <span style="color:var(--dim);font-size:12px">${esc(m.line || '—')}${m.odds ? ' ' + esc(m.odds) : ''}</span>
+    <span class="pk-res">${tag}</span>
+  </div>`;
+}
+
+async function renderResultsOverlay() {
+  const body = document.getElementById('rsOvBody');
+  body.innerHTML = '<div class="empty">載入中…</div>';
+  let d;
+  try { d = await jget('/api/results?limit=1000'); }
+  catch (e) { body.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  const s = d.stats || {};
+  document.getElementById('rsOvTitle').textContent =
+    `📋 過往賽果｜統計 ${s.total || 0} 場（顯示最近 ${(d.items || []).length} 場，最新排先）`;
+  const cell = (lab, val, sub) =>
+    `<div class="rs-stat"><div class="rs-lab">${lab}</div><div class="rs-val">${val}</div>` +
+    (sub ? `<div class="rs-sub">${sub}</div>` : '') + '</div>';
+  let h = '<div class="rs-stats">';
+  h += cell('上盤命中率', _pct_(s.up_r), `上${s.up || 0} 下${s.down || 0} 走${s.push || 0}（走盤唔計分母）`);
+  h += cell('下盤命中率', _pct_(s.down_r), '同上，分母剔除走盤');
+  h += cell('總命中率', _pct_(s.decisive_r), '開出上/下盤結果嘅比例（＝1－走盤率）');
+  h += cell('精選命中率', _pct_(s.feat_r),
+    s.feat_w != null ? `中${s.feat_w} 錯${s.feat_l} 走${s.feat_p || 0}` : '');
+  h += cell('我的選擇命中率', _pct_(s.pk_r),
+    s.pk_w != null ? `中${s.pk_w} 錯${s.pk_l} 走${s.pk_p || 0}` : '');
+  h += '</div>';
+  let lastDate = '';
+  for (const m of (d.items || [])) {
+    const dd = m.kickoff.slice(0, 10);
+    if (dd !== lastDate) {
+      h += `<div class="ft-date">${esc(dd)}</div>`;
+      lastDate = dd;
+    }
+    h += _rsCard(m);
+  }
+  if (!(d.items || []).length) h += '<div class="note">暫無已完場賽事。</div>';
+  body.innerHTML = h;
+}
+
+function openResultsOverlay() {
+  document.getElementById('rsOverlay').style.display = 'flex';
+  renderResultsOverlay();
+}
+function closeResultsOverlay() {
+  document.getElementById('rsOverlay').style.display = 'none';
+}
+$('#btnResults').onclick = openResultsOverlay;
+$('#rsOvClose').onclick = closeResultsOverlay;
 // 測試用：?autocheck=1 自動打開 Check 下先；?autopk=1 自動打開我的選擇大版面；?autofeat=1 精選
 if (location.search.indexOf('autocheck=1') >= 0) {
   setTimeout(openCheckOverlay, 800);
@@ -944,6 +1010,9 @@ if (location.search.indexOf('autopk=1') >= 0) {
 }
 if (location.search.indexOf('autofeat=1') >= 0) {
   setTimeout(openFeaturedOverlay, 800);
+}
+if (location.search.indexOf('autors=1') >= 0) {
+  setTimeout(openResultsOverlay, 800);
 }
 
 // ===== 各頁「⟳ 刷新盤口」：更新即時盤口＋賠率，重算精選 =====
