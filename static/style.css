@@ -164,6 +164,9 @@ td.l, th.l { text-align: left; }
 /* ===== 過往賽果 ===== */
 #rsOverlay { position: fixed; inset: 0; z-index: 60; background: var(--bg);
   display: flex; flex-direction: column; }
+/* ===== 過往紀錄（精選自動紀錄尾盤快照） ===== */
+#flOverlay { position: fixed; inset: 0; z-index: 60; background: var(--bg);
+  display: flex; flex-direction: column; }
 .rs-stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 14px; }
 .rs-stat { flex: 1 1 150px; background: var(--panel); border: 1px solid var(--line);
   border-radius: 12px; padding: 12px 14px; text-align: center; }

@@ -23,6 +23,7 @@
     <button id="btnFeatured" class="btn gold" title="七重準則全通過嘅精選場次">★ 精選</button>
     <button id="btnCheck" class="btn" title="8 組合歷史開出上/下盤比例">✓ Check 下先</button>
     <button id="btnResults" class="btn" title="精選已開賽場次賽果＋五項命中率統計">📋 過往賽果</button>
+    <button id="btnFeatLog" class="btn" title="精選一出現即自動紀錄（尾盤快照，永久保留，計一場）">📜 過往紀錄</button>
     <span id="status" class="status"></span>
   </div>
 </header>
@@ -77,6 +78,14 @@
     <button id="rsOvClose" class="btn">✕ 關閉</button>
   </div>
   <div class="pk-ov-body" id="rsOvBody">載入中…</div>
+</div>
+<div id="flOverlay" style="display:none">
+  <div class="pk-ov-head">
+    <b id="flOvTitle">過往紀錄</b>
+    <span id="flInfo" class="ft-scan-info">精選一出現即自動紀錄</span>
+    <button id="flOvClose" class="btn">✕ 關閉</button>
+  </div>
+  <div class="pk-ov-body" id="flOvBody">載入中…</div>
 </div>
 <script src="/static/app.js"></script>
 </body>

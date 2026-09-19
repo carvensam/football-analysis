@@ -1146,6 +1146,74 @@ if (location.search.indexOf('autors=1') >= 0) {
   setTimeout(openResultsOverlay, 800);
 }
 
+// ===== 過往紀錄（精選一出現即自動紀錄尾盤快照，永久保留，計一場） =====
+let flOvTimer = null;
+
+function _flCard(m) {
+  const dTag = m.direction === 'up' ? '<span class="pk-tag up">上盤</span>'
+    : m.direction === 'down' ? '<span class="pk-tag down">下盤</span>' : '';
+  const res = !m.played ? '<span style="color:var(--dim)">未開賽</span>'
+    : m.result === 'W' ? '<b class="r-up">✅ 命中</b>'
+    : m.result === 'L' ? '<b class="r-down">❌ 未中</b>'
+    : m.result === 'P' ? '<b>➖ 走盤</b>'
+    : '<span style="color:var(--dim)">待結算</span>';
+  return `<div class="rs-card">
+    <span class="pk-time">${esc(m.kickoff.slice(5, 16))}　${esc(m.league)}</span>
+    <span class="pk-teams">${esc(m.home)} <b>${esc(m.score || '—')}</b> ${esc(m.away)}</span>
+    <span style="color:var(--dim);font-size:12px">紀錄尾盤 ${esc(m.line || '—')}${m.odds ? ' ' + esc(m.odds) : ''}</span>
+    ${dTag}
+    <span class="pk-res">${res}</span>
+  </div>`;
+}
+
+async function renderFeatLogOverlay() {
+  const body = document.getElementById('flOvBody');
+  let d;
+  try { d = await jget('/api/featlog'); }
+  catch (e) { body.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  const s = d.stats || {};
+  const rate = s.hit_rate != null ? (s.hit_rate * 100).toFixed(1) + '%' : '—';
+  document.getElementById('flOvTitle').textContent =
+    `📜 過往紀錄｜${s.total || 0} 場（未開賽 ${s.pending || 0}｜已完場 ${s.played || 0}）｜命中 ${s.wins || 0} 場｜命中率 ${rate}`;
+  let h = '';
+  if ((d.pending || []).length) {
+    h += `<div class="pk-sec-t">未開賽（順開賽時間排）</div>` + d.pending.map(_flCard).join('');
+  }
+  const played = d.played || [];
+  if (played.length) {
+    h += `<div class="pk-sec-t">已開賽／已完場（${played.length} 場，按日子分類，最新排先）</div>`;
+    let lastDate = '';
+    for (const p of played) {
+      const dd = p.kickoff.slice(0, 10);
+      if (dd !== lastDate) {
+        h += `<div class="ft-date">${esc(dd)}</div>`;
+        lastDate = dd;
+      }
+      h += _flCard(p);
+    }
+  }
+  if (!h) h = '<div class="note">暫無紀錄。精選場次一出現（掃描／重新整理／更新重算／開機自動補掃）即自動紀錄喺呢度，之後就算被移出精選都永久留底。</div>';
+  body.innerHTML = h;
+}
+
+function openFeatLogOverlay() {
+  document.getElementById('flOverlay').style.display = 'flex';
+  renderFeatLogOverlay();
+  clearInterval(flOvTimer);
+  flOvTimer = setInterval(() => {
+    if (!document.hidden) renderFeatLogOverlay();
+  }, 60 * 1000);
+}
+function closeFeatLogOverlay() {
+  document.getElementById('flOverlay').style.display = 'none';
+  clearInterval(flOvTimer);
+}
+$('#btnFeatLog').onclick = openFeatLogOverlay;
+$('#flOvClose').onclick = closeFeatLogOverlay;
+if (location.search.indexOf('autolog=1') >= 0) {
+  setTimeout(openFeatLogOverlay, 800);
+}
+
 // ===== 各頁「⟳ 刷新盤口」：更新即時盤口＋賠率，重算精選 =====
 let refreshing = false;
 function setOvStatus(msg) {

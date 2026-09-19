@@ -32,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '3.0'
+SERVER_VERSION = '3.1'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -200,6 +200,23 @@ def do_screen(mid, sel=None):
     return res
 
 
+def log_featured(conn, mid, direction):
+    """過往紀錄（2026-09-20）：任何渠道入選精選 → 自動影低當刻尾盤快照。
+    計一場：同一 match_id 保留首次 added_at，但尾盤快照同方向更新為最新。"""
+    row = conn.execute(
+        "SELECT handicap, giver, home_odds, away_odds FROM odds_asian "
+        "WHERE match_id=? AND company_id=12 "
+        "ORDER BY (label='closing') DESC, label DESC LIMIT 1", (mid,)).fetchone()
+    hc, gv, ho, ao = row if row else (None, None, None, None)
+    conn.execute(
+        'INSERT INTO featured_log(match_id, direction, added_at, handicap, '
+        'giver, home_odds, away_odds) VALUES(?,?,?,?,?,?,?) '
+        'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction, '
+        'handicap=excluded.handicap, giver=excluded.giver, '
+        'home_odds=excluded.home_odds, away_odds=excluded.away_odds',
+        (mid, direction, time.strftime('%Y-%m-%d %H:%M:%S'), hc, gv, ho, ao))
+
+
 def do_featured_refresh(mid):
     """精選單場重新整理：重抓該場最新盤口賠率，重算該場精選資格。
     仍合準則 → 保留／更新方向；唔再合 → 未結算移出；已完場歷史保留。"""
@@ -222,6 +239,7 @@ def do_featured_refresh(mid):
                 'INSERT INTO featured(match_id, direction, added_at) VALUES(?,?,?) '
                 'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction',
                 (mid, d, time.strftime('%Y-%m-%d %H:%M:%S')))
+            log_featured(conn, mid, d)
         elif row and row[0] is None:
             conn.execute('DELETE FROM featured WHERE match_id=?', (mid,))
             removed = True
@@ -243,6 +261,19 @@ def init_picks():
     conn.execute('''CREATE TABLE IF NOT EXISTS check_rows(
         match_id INTEGER PRIMARY KEY, direction TEXT,
         g14 TEXT, g17 TEXT, res TEXT)''')
+    # 過往紀錄（2026-09-20）：精選一出現即自動紀錄尾盤快照，永久保留，計一場
+    conn.execute('''CREATE TABLE IF NOT EXISTS featured_log(
+        match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
+        added_at TEXT, handicap REAL, giver TEXT,
+        home_odds REAL, away_odds REAL)''')
+    conn.execute(
+        "INSERT OR IGNORE INTO featured_log("
+        "match_id, direction, added_at, handicap, giver, home_odds, away_odds) "
+        "SELECT f.match_id, f.direction, f.added_at, oc.handicap, oc.giver, "
+        "oc.home_odds, oc.away_odds FROM featured f "
+        "LEFT JOIN odds_asian oc ON oc.match_id=f.match_id "
+        "AND oc.label='closing' AND oc.company_id=12")
+    conn.commit()
     # 選擇當刻嘅盤口/水位快照（2026-09-19：我的選擇要同時展示揀時＋尾盤數據）
     cols = [r[1] for r in conn.execute('PRAGMA table_info(user_picks)')]
     for c, t in (('pick_handicap', 'REAL'), ('pick_giver', 'TEXT'),
@@ -644,6 +675,7 @@ def _featured_scan_job():
                         'INSERT INTO featured(match_id, direction, added_at) '
                         'VALUES(?,?,?)',
                         (mid, d, time.strftime('%Y-%m-%d %H:%M:%S')))
+                    log_featured(conn, mid, d)
                     conn.commit()
                     added += 1
             except Exception:
@@ -981,6 +1013,50 @@ def get_results(limit=1000, league=None, hc=None, gv=None, scope='featured'):
             'trend': trend, 'leagues': leagues, 'lines': lines,
             'filter': {'league': league, 'hc': hc, 'gv': gv},
             'scope': scope}
+
+
+# ============ 過往紀錄（精選一出現即自動紀錄尾盤快照，永久保留，計一場） ============
+
+def get_featlog():
+    """過往紀錄：任何渠道入選精選都會自動影低當刻尾盤（featured_log）。
+    同一場多次紀錄 → 計一場（保留首次入選時間，尾盤快照用最新）。
+    結算以 log 影低嘅尾盤快照計，唔係而家嘅 closing。"""
+    conn = db()
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    rows = conn.execute(
+        'SELECT l.match_id, l.direction, l.added_at, l.handicap, l.giver, '
+        'l.home_odds, l.away_odds, m.kickoff, m.home_score, m.away_score, '
+        'ht.name_tc, at.name_tc, c.req_name '
+        'FROM featured_log l JOIN matches m ON m.id=l.match_id '
+        'JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        'JOIN teams ht ON ht.titan_id=m.home_id '
+        'JOIN teams at ON at.titan_id=m.away_id '
+        'ORDER BY m.kickoff DESC').fetchall()
+    conn.close()
+    pending, played = [], []
+    for (mid, d, added, hc, gv, ho, ao, ko, hs, aws, h, a, lg) in rows:
+        rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
+               'home': h, 'away': a, 'league': lg,
+               'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+               'odds': f'主{ho}/客{ao}' if ho is not None else None,
+               'played': ko < now}
+        if hs is not None:
+            rec['score'] = f'{hs}-{aws}'
+            r = pick_result(hc, gv, hs, aws)
+            rec['result'] = ('P' if r == 'P' else
+                             'W' if ((r == 'A') == (d == 'up')) else 'L') \
+                if r is not None else None
+        (pending if ko >= now else played).append(rec)
+    pending.reverse()   # 未開賽順開賽時間排
+    wins = sum(1 for r in played if r.get('result') == 'W')
+    losses = sum(1 for r in played if r.get('result') == 'L')
+    pushes = sum(1 for r in played if r.get('result') == 'P')
+    stats = {'total': len(pending) + len(played), 'pending': len(pending),
+             'played': len(played), 'wins': wins, 'losses': losses,
+             'pushes': pushes,
+             'hit_rate': wins / (wins + losses) if (wins + losses) else None}
+    return {'stats': stats, 'pending': pending, 'played': played}
 
 
 # ============ Check 下先（8 組合回測：①⑤⑧⑫⑮⑱方向 × ⑭深淺 × ⑰深淺） ============
@@ -1500,6 +1576,14 @@ class Handler(BaseHTTPRequestHandler):
                 scope = qs.get('scope', ['featured'])[0]
                 self._send(200, json.dumps(
                     get_results(limit, league, hc, gv, scope), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/featlog':
+            try:
+                self._send(200, json.dumps(get_featlog(), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
