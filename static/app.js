@@ -967,20 +967,30 @@ let rsFilter = {league: '', hc: '', gv: ''};   // '' = 全部
 function _pct_(v) { return v == null ? '—' : (v * 100).toFixed(1) + '%'; }
 
 function _rsCard(m) {
-  const tag = m.outcome === 'up' ? '<b class="r-up">上盤</b>'
-    : m.outcome === 'down' ? '<b class="r-down">下盤</b>'
-    : m.outcome === 'push' ? '<b>➖ 走盤</b>'
-    : '<span style="color:var(--dim)">無尾盤</span>';
+  // 精選場次卡：入選方向＋結算結果＋賽果開出
+  const dTag = m.direction === 'up' ? '<span class="pk-tag up">上盤</span>'
+    : m.direction === 'down' ? '<span class="pk-tag down">下盤</span>'
+    : '';
+  const res = m.ft_result === 'W' ? '<b class="r-up">✅ 命中</b>'
+    : m.ft_result === 'L' ? '<b class="r-down">❌ 未中</b>'
+    : m.ft_result === 'P' ? '<b>➖ 走盤</b>'
+    : '<span style="color:var(--dim)">待結算</span>';
+  const tag = m.outcome === 'up' ? '<b class="r-up">開上盤</b>'
+    : m.outcome === 'down' ? '<b class="r-down">開下盤</b>'
+    : m.outcome === 'push' ? '<b>➖ 走</b>'
+    : (m.score ? '<span style="color:var(--dim)">無尾盤</span>' : '');
   return `<div class="rs-card">
     <span class="pk-time">${esc(m.kickoff.slice(5, 16))}　${esc(m.league)}</span>
-    <span class="pk-teams">${esc(m.home)} <b>${esc(m.score)}</b> ${esc(m.away)}</span>
+    <span class="pk-teams">${esc(m.home)} <b>${esc(m.score || '—')}</b> ${esc(m.away)}</span>
     <span style="color:var(--dim);font-size:12px">${esc(m.line || '—')}${m.odds ? ' ' + esc(m.odds) : ''}</span>
-    <span class="pk-res">${tag}</span>
+    ${dTag}
+    <span class="pk-res">${res}</span>
+    <span style="font-size:12px">${tag}</span>
   </div>`;
 }
 
 function _rsDrawTrend(canvas, trend) {
-  // 上盤 vs 下盤逐日走勢：藍柱＝上盤率，紅柱＝下盤率（分母剔除走盤），50% 參考線
+  // 精選逐日命中走勢：綠柱＝當日命中率（分母剔除走盤），50% 參考線；柱頂標 n/L
   const ctx = canvas.getContext('2d');
   const W = canvas.width = canvas.clientWidth * (window.devicePixelRatio || 1);
   const H = canvas.height = canvas.clientHeight * (window.devicePixelRatio || 1);
@@ -996,11 +1006,8 @@ function _rsDrawTrend(canvas, trend) {
   const padL = 44 * dpr, padR = 10 * dpr, padT = 22 * dpr, padB = 30 * dpr;
   const cw = (W - padL - padR) / trend.length;
   const yOf = v => padT + (1 - v) * (H - padT - padB);
-  const css = getComputedStyle(document.body);
-  const cUp = css.getPropertyValue('--up').trim() || '#3fa7ff';
-  const cDown = css.getPropertyValue('--down').trim() || '#ff6b6b';
+  const cHit = '#37d67a';
   const cDim = '#8a93a6';
-  // 格線 0/25/50/75/100%
   ctx.font = `${10 * dpr}px sans-serif`;
   ctx.textAlign = 'right';
   for (const v of [0, 0.25, 0.5, 0.75, 1]) {
@@ -1015,34 +1022,29 @@ function _rsDrawTrend(canvas, trend) {
     ctx.fillText(Math.round(v * 100) + '%', padL - 5 * dpr, y + 3 * dpr);
   }
   trend.forEach((t, i) => {
-    const eff = t.up + t.down;
-    const upr = eff ? t.up / eff : 0;
-    const downr = eff ? t.down / eff : 0;
-    const bw = Math.max(2 * dpr, cw * 0.32);
+    const eff = t.w + t.l;
+    if (!eff) return;
+    const r = t.w / eff;
+    const bw = Math.max(3 * dpr, cw * 0.5);
     const x = padL + i * cw + cw / 2;
-    // 上盤柱（向上係基於 yOf：值大＝柱頂高）
-    ctx.fillStyle = cUp;
-    ctx.fillRect(x - bw - 1 * dpr, yOf(upr), bw, yOf(0) - yOf(upr));
-    ctx.fillStyle = cDown;
-    ctx.fillRect(x + 1 * dpr, yOf(downr), bw, yOf(0) - yOf(downr));
+    ctx.fillStyle = r >= 0.5 ? cHit : '#ff6b6b';
+    ctx.fillRect(x - bw / 2, yOf(r), bw, yOf(0) - yOf(r));
+    ctx.fillStyle = cDim;
+    ctx.textAlign = 'center';
+    ctx.fillText(`${t.w}/${eff}`, x, yOf(r) - 3 * dpr);
   });
-  // 日期標籤（頭/尾/中間，最多 6 個）
   ctx.fillStyle = cDim;
-  ctx.textAlign = 'center';
   const step = Math.max(1, Math.ceil(trend.length / 6));
   trend.forEach((t, i) => {
     if (i % step === 0 || i === trend.length - 1) {
       ctx.fillText(t.date.slice(5), padL + i * cw + cw / 2, H - 10 * dpr);
     }
   });
-  // 圖例
   ctx.textAlign = 'left';
-  ctx.fillStyle = cUp;
-  ctx.fillText('■ 上盤率', padL, 14 * dpr);
-  ctx.fillStyle = cDown;
-  ctx.fillText('■ 下盤率', padL + 70 * dpr, 14 * dpr);
+  ctx.fillStyle = cHit;
+  ctx.fillText('■ 當日命中率（n/N＝中/已結算）', padL, 14 * dpr);
   ctx.fillStyle = '#ffd766';
-  ctx.fillText('― 50%', padL + 140 * dpr, 14 * dpr);
+  ctx.fillText('― 50%', padL + 210 * dpr, 14 * dpr);
 }
 
 function _rsFilterBar(d) {
@@ -1064,7 +1066,7 @@ function _rsFilterBar(d) {
 async function renderResultsOverlay() {
   const body = document.getElementById('rsOvBody');
   body.innerHTML = '<div class="empty">載入中…</div>';
-  const q = new URLSearchParams({limit: '1000'});
+  const q = new URLSearchParams({limit: '1000', scope: 'featured'});
   if (rsFilter.league) q.set('league', rsFilter.league);
   if (rsFilter.hc !== '') { q.set('hc', rsFilter.hc); q.set('gv', rsFilter.gv || 'none'); }
   let d;
@@ -1077,21 +1079,24 @@ async function renderResultsOverlay() {
     : null;
   const fTxt = (f.league ? '｜' + f.league : '') + (fLine ? '｜' + fLine : '');
   document.getElementById('rsOvTitle').textContent =
-    `📋 過往賽果${fTxt}｜統計 ${s.total || 0} 場（顯示最近 ${(d.items || []).length} 場，最新排先）`;
+    `📋 過往賽果（精選）${fTxt}｜已開賽 ${(d.items || []).length} 場｜已結算統計 ${s.total || 0} 場`;
   const cell = (lab, val, sub) =>
     `<div class="rs-stat"><div class="rs-lab">${lab}</div><div class="rs-val">${val}</div>` +
     (sub ? `<div class="rs-sub">${sub}</div>` : '') + '</div>';
   let h = _rsFilterBar(d);
   h += '<div class="rs-stats">';
-  h += cell('上盤命中率', _pct_(s.up_r), `上${s.up || 0} 下${s.down || 0} 走${s.push || 0}（走盤唔計分母）`);
-  h += cell('下盤命中率', _pct_(s.down_r), '同上，分母剔除走盤');
-  h += cell('總命中率', _pct_(s.decisive_r), '開出上/下盤結果嘅比例（＝1－走盤率）');
+  h += cell('上盤命中率', _pct_(s.up_r),
+    `方向=上嘅精選：中${s.up_hit || 0} 錯${(s.up_n || 0) - (s.up_hit || 0)}（基數 ${s.up_n || 0} 場，走盤唔計分母）`);
+  h += cell('下盤命中率', _pct_(s.down_r),
+    `方向=下嘅精選：中${s.down_hit || 0} 錯${(s.down_n || 0) - (s.down_hit || 0)}（基數 ${s.down_n || 0} 場，走盤唔計分母）`);
+  h += cell('總命中率', _pct_(s.decisive_r),
+    `全部已結算精選：中${(s.up_hit || 0) + (s.down_hit || 0)} 錯${((s.up_n || 0) - (s.up_hit || 0)) + ((s.down_n || 0) - (s.down_hit || 0))}（基數 ${(s.up_n || 0) + (s.down_n || 0)} 場）`);
   h += cell('精選命中率', _pct_(s.feat_r),
-    s.feat_w != null ? `中${s.feat_w} 錯${s.feat_l} 走${s.feat_p || 0}` : '');
+    `中${s.feat_w || 0} 錯${s.feat_l || 0} 走${s.feat_p || 0}（永久保留全部精選結算）`);
   h += cell('我的選擇命中率', _pct_(s.pk_r),
     s.pk_w != null ? `中${s.pk_w} 錯${s.pk_l} 走${s.pk_p || 0}` : '');
   h += '</div>';
-  h += `<div class="rs-trend-w"><div class="rs-trend-t">上盤 vs 下盤逐日走勢（最近 ${(d.trend || []).length} 日，跟篩選）</div>
+  h += `<div class="rs-trend-w"><div class="rs-trend-t">精選逐日命中走勢（最近 ${(d.trend || []).length} 日，跟篩選；綠≥50%・紅&lt;50%）</div>
     <canvas id="rsTrend" class="rs-trend"></canvas></div>`;
   let lastDate = '';
   for (const m of (d.items || [])) {
@@ -1102,7 +1107,7 @@ async function renderResultsOverlay() {
     }
     h += _rsCard(m);
   }
-  if (!(d.items || []).length) h += '<div class="note">暫無已完場賽事。</div>';
+  if (!(d.items || []).length) h += '<div class="note">暫無已開賽嘅精選場次。撳「★ 精選」→「🔍 掃描精選」開始累積記錄。</div>';
   body.innerHTML = h;
   // 篩選聯動
   document.getElementById('rsLg').onchange = ev => {

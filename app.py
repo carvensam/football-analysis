@@ -32,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '2.9.1'
+SERVER_VERSION = '3.0'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -758,10 +758,15 @@ def get_featured_full():
 
 # ============ 過往賽果（已完場＋尾盤 → 上/下/走盤＋五項命中率統計＋篩選＋走勢） ============
 
-def get_results(limit=1000, league=None, hc=None, gv=None):
+def get_results(limit=1000, league=None, hc=None, gv=None, scope='featured'):
+    """過往賽果（2026-09-20 起 = 精選場次專頁）。
+    scope='featured'：只計精選已開賽場次；scope='all'：全部已完場（舊版口徑）。
+    五項命中率：上盤命中率（方向=上嘅精選命中）、下盤命中率（方向=下）、
+    總命中率／精選命中率（全部精選已結算）、我的選擇命中率。"""
     conn = db()
-    # 篩選條件（聯賽 / 盤口 handicap+giver）
-    where = 'WHERE m.home_score IS NOT NULL'
+    featured = (scope == 'featured')
+    where = ("WHERE m.kickoff < datetime('now','localtime')" if featured
+             else 'WHERE m.home_score IS NOT NULL')
     args = []
     if league:
         where += ' AND c.req_name = ?'
@@ -774,18 +779,33 @@ def get_results(limit=1000, league=None, hc=None, gv=None):
         line_args.append(hc)
         if gv not in (None, 'none'):
             line_args.append(gv)
-    base_from = (
-        'FROM matches m '
-        'JOIN seasons s ON s.id=m.season_id '
-        'JOIN competitions c ON c.titan_id=s.titan_id '
-        'JOIN odds_asian oc ON oc.match_id=m.id '
-        "AND oc.label='closing' AND oc.company_id=12 ")
-    # 統計：符合篩選嘅已完場且有尾盤嘅場次
+    if featured:
+        base_from = (
+            'FROM featured f JOIN matches m ON m.id=f.match_id '
+            'JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+            "AND oc.label='closing' AND oc.company_id=12 ")
+        stat_select = ('SELECT f.direction, oc.handicap, oc.giver, '
+                       'm.home_score, m.away_score ')
+        stat_where = where + ' AND m.home_score IS NOT NULL'
+    else:
+        base_from = (
+            'FROM matches m '
+            'JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'JOIN odds_asian oc ON oc.match_id=m.id '
+            "AND oc.label='closing' AND oc.company_id=12 ")
+        stat_select = ('SELECT NULL, oc.handicap, oc.giver, '
+                       'm.home_score, m.away_score ')
+        stat_where = where
+    # 統計：符合篩選嘅場次（featured=已結算精選；all=有尾盤完場）
     stat_rows = conn.execute(
-        'SELECT oc.handicap, oc.giver, m.home_score, m.away_score ' +
-        base_from + where + line_where, args + line_args).fetchall()
-    up = down = push = 0
-    for hc_, gv_, hs, aws in stat_rows:
+        stat_select + base_from + stat_where + line_where,
+        args + line_args).fetchall()
+    up = down = push = 0          # 賽果開出角度
+    uw = ul = dw = dl = 0         # 精選方向命中角度（featured 才有方向）
+    for d, hc_, gv_, hs, aws in stat_rows:
         r = pick_result(hc_, gv_, hs, aws)
         if r == 'A':
             up += 1
@@ -793,16 +813,38 @@ def get_results(limit=1000, league=None, hc=None, gv=None):
             down += 1
         elif r == 'P':
             push += 1
+        else:
+            continue
+        if d and r != 'P':
+            if (r == 'A') == (d == 'up'):
+                if d == 'up':
+                    uw += 1
+                else:
+                    dw += 1
+            else:
+                if d == 'up':
+                    ul += 1
+                else:
+                    dl += 1
     eff = up + down
     n_all = len(stat_rows)
+    ueff = uw + ul
+    deff = dw + dl
+    teff = ueff + deff
     stats = {
         'total': n_all, 'up': up, 'down': down, 'push': push,
-        # 上/下盤命中率：分母剔除走盤；總命中率＝有開出上下盤結果嘅比例（＝1－走盤率）
-        'up_r': up / eff if eff else None,
-        'down_r': down / eff if eff else None,
-        'decisive_r': eff / n_all if n_all else None,
+        # 上/下盤命中率（精選方向角度，走盤唔計分母）；all 範圍退回開出比例
+        'up_r': (uw / ueff if ueff else None) if featured
+                else (up / eff if eff else None),
+        'down_r': (dw / deff if deff else None) if featured
+                  else (down / eff if eff else None),
+        'decisive_r': ((uw + dw) / teff if teff else None) if featured
+                      else (eff / n_all if n_all else None),
+        # 方向分項場數（featured 顯示用）
+        'up_n': ueff, 'up_hit': uw,
+        'down_n': deff, 'down_hit': dw,
     }
-    # 精選命中率（已結算，走盤唔計入分母）
+    # 精選命中率（全部精選已結算，走盤唔計分母）
     fr = conn.execute(
         'SELECT result, COUNT(*) FROM featured WHERE result IS NOT NULL '
         'GROUP BY result').fetchall()
@@ -840,66 +882,105 @@ def get_results(limit=1000, league=None, hc=None, gv=None):
     stats['pk_l'] = pl
     stats['pk_p'] = pp
     stats['pk_r'] = pw / (pw + pl) if (pw + pl) else None
-    # 走勢：符合篩選嘅場次按日計 上/下/走（最近 30 個有賽事嘅日子，舊→新）
+    # 走勢：按日計（featured=逐日命中；all=逐日開出上/下），最近 30 日，舊→新
+    trend_select = ('SELECT substr(m.kickoff,1,10) d, f.direction, '
+                    'oc.handicap, oc.giver, m.home_score, m.away_score '
+                    if featured else
+                    'SELECT substr(m.kickoff,1,10) d, NULL, '
+                    'oc.handicap, oc.giver, m.home_score, m.away_score ')
     trend_rows = conn.execute(
-        'SELECT substr(m.kickoff,1,10) d, '
-        'oc.handicap, oc.giver, m.home_score, m.away_score ' +
-        base_from + where + line_where +
-        " ORDER BY d", args + line_args).fetchall()
+        trend_select + base_from + stat_where + line_where + ' ORDER BY d',
+        args + line_args).fetchall()
     by_day = {}
-    for d, hc_, gv_, hs, aws in trend_rows:
+    for d, drc, hc_, gv_, hs, aws in trend_rows:
         r = pick_result(hc_, gv_, hs, aws)
-        b = by_day.setdefault(d, {'up': 0, 'down': 0, 'push': 0})
+        b = by_day.setdefault(d, {'up': 0, 'down': 0, 'push': 0,
+                                  'w': 0, 'l': 0})
         if r == 'A':
             b['up'] += 1
         elif r == 'B':
             b['down'] += 1
         elif r == 'P':
             b['push'] += 1
+        else:
+            continue
+        if drc and r != 'P':
+            if (r == 'A') == (drc == 'up'):
+                b['w'] += 1
+            else:
+                b['l'] += 1
     trend = [{'date': d, **by_day[d]} for d in sorted(by_day)][-30:]
-    # 篩選選項：聯賽清單＋常見盤口清單（有尾盤嘅已完場場次計）
+    # 篩選選項：聯賽清單＋常見盤口清單（已開賽場次計）
+    if featured:
+        lg_from = ('FROM featured f JOIN matches m ON m.id=f.match_id '
+                   'JOIN seasons s ON s.id=m.season_id '
+                   'JOIN competitions c ON c.titan_id=s.titan_id ')
+        lg_where = "WHERE m.kickoff < datetime('now','localtime')"
+    else:
+        lg_from = ('FROM matches m JOIN seasons s ON s.id=m.season_id '
+                   'JOIN competitions c ON c.titan_id=s.titan_id ')
+        lg_where = 'WHERE m.home_score IS NOT NULL'
     leagues = [r[0] for r in conn.execute(
-        'SELECT DISTINCT c.req_name ' +
-        'FROM matches m JOIN seasons s ON s.id=m.season_id '
-        'JOIN competitions c ON c.titan_id=s.titan_id '
-        "WHERE m.home_score IS NOT NULL ORDER BY c.req_name").fetchall()]
+        'SELECT DISTINCT c.req_name ' + lg_from + lg_where +
+        ' ORDER BY c.req_name').fetchall()]
     line_rows = conn.execute(
         'SELECT oc.handicap, oc.giver, COUNT(*) n ' +
-        base_from + where +
+        base_from + where + ' AND oc.handicap IS NOT NULL' +
         ' GROUP BY oc.handicap, oc.giver ORDER BY n DESC LIMIT 80',
         args).fetchall()
     lines = [{'line': screen_engine.fmt_line(hc_, gv_), 'hc': hc_,
               'gv': gv_ or 'none', 'n': n}
              for hc_, gv_, n in line_rows]
     # 最近 N 場列表（最新排先，同一篩選）
-    rows = conn.execute(
-        'SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc, '
-        'm.home_score, m.away_score, oc.handicap, oc.giver, '
-        'oc.home_odds, oc.away_odds '
-        'FROM matches m JOIN seasons s ON s.id=m.season_id '
-        'JOIN competitions c ON c.titan_id=s.titan_id '
-        'JOIN teams ht ON ht.titan_id=m.home_id '
-        'JOIN teams at ON at.titan_id=m.away_id '
-        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
-        "AND oc.label='closing' AND oc.company_id=12 " +
-        where.replace('c.req_name', 'c.req_name') + line_where +
-        ' ORDER BY m.kickoff DESC LIMIT ?',
-        args + line_args + [limit]).fetchall()
+    if featured:
+        rows = conn.execute(
+            'SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc, '
+            'm.home_score, m.away_score, oc.handicap, oc.giver, '
+            'oc.home_odds, oc.away_odds, f.direction, f.result, f.added_at '
+            'FROM featured f JOIN matches m ON m.id=f.match_id '
+            'JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'JOIN teams ht ON ht.titan_id=m.home_id '
+            'JOIN teams at ON at.titan_id=m.away_id '
+            'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+            "AND oc.label='closing' AND oc.company_id=12 " +
+            where + line_where +
+            ' ORDER BY m.kickoff DESC LIMIT ?',
+            args + line_args + [limit]).fetchall()
+    else:
+        rows = conn.execute(
+            'SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc, '
+            'm.home_score, m.away_score, oc.handicap, oc.giver, '
+            'oc.home_odds, oc.away_odds, NULL, NULL, NULL '
+            'FROM matches m JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'JOIN teams ht ON ht.titan_id=m.home_id '
+            'JOIN teams at ON at.titan_id=m.away_id '
+            'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+            "AND oc.label='closing' AND oc.company_id=12 " +
+            where + line_where +
+            ' ORDER BY m.kickoff DESC LIMIT ?',
+            args + line_args + [limit]).fetchall()
     items = []
-    for (mid, ko, lg, h, a, hs, aws, hc_, gv_, ho, ao) in rows:
-        r = pick_result(hc_, gv_, hs, aws) if hc_ is not None else None
+    for (mid, ko, lg, h, a, hs, aws, hc_, gv_, ho, ao,
+         drc, fres, added) in rows:
+        r = pick_result(hc_, gv_, hs, aws) \
+            if (hc_ is not None and hs is not None) else None
         items.append({
             'id': mid, 'kickoff': ko, 'league': lg, 'home': h, 'away': a,
-            'score': f'{hs}-{aws}',
+            'score': f'{hs}-{aws}' if hs is not None else None,
             'line': screen_engine.fmt_line(hc_, gv_) if hc_ is not None else None,
             'odds': f'主{ho}/客{ao}' if ho is not None else None,
             'outcome': ('up' if r == 'A' else 'down' if r == 'B'
                         else 'push' if r == 'P' else None),
+            # 精選專屬：入選方向＋結算結果
+            'direction': drc, 'ft_result': fres, 'added_at': added,
         })
     conn.close()
     return {'stats': stats, 'items': items, 'limit': limit,
             'trend': trend, 'leagues': leagues, 'lines': lines,
-            'filter': {'league': league, 'hc': hc, 'gv': gv}}
+            'filter': {'league': league, 'hc': hc, 'gv': gv},
+            'scope': scope}
 
 
 # ============ Check 下先（8 組合回測：①⑤⑧⑫⑮⑱方向 × ⑭深淺 × ⑰深淺） ============
@@ -1416,8 +1497,9 @@ class Handler(BaseHTTPRequestHandler):
                 hc = qs.get('hc', [''])[0]
                 hc = float(hc) if hc not in ('', None) else None
                 gv = qs.get('gv', [''])[0] or None
+                scope = qs.get('scope', ['featured'])[0]
                 self._send(200, json.dumps(
-                    get_results(limit, league, hc, gv), ensure_ascii=False))
+                    get_results(limit, league, hc, gv, scope), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
