@@ -755,19 +755,37 @@ def get_featured_full():
             'scan': {k: _feat_scan[k] for k in ('running', 'done', 'total', 'added', 'last', 'error')}}
 
 
-# ============ 過往賽果（已完場＋尾盤 → 上/下/走盤＋五項命中率統計） ============
+# ============ 過往賽果（已完場＋尾盤 → 上/下/走盤＋五項命中率統計＋篩選＋走勢） ============
 
-def get_results(limit=1000):
+def get_results(limit=1000, league=None, hc=None, gv=None):
     conn = db()
-    # 統計：全部已完場且有尾盤（易胜博）嘅場次
+    # 篩選條件（聯賽 / 盤口 handicap+giver）
+    where = 'WHERE m.home_score IS NOT NULL'
+    args = []
+    if league:
+        where += ' AND c.req_name = ?'
+        args.append(league)
+    line_where = ''
+    line_args = []
+    if hc is not None:
+        line_where = ' AND oc.handicap = ? AND ' + (
+            'oc.giver IS NULL' if gv in (None, 'none') else 'oc.giver = ?')
+        line_args.append(hc)
+        if gv not in (None, 'none'):
+            line_args.append(gv)
+    base_from = (
+        'FROM matches m '
+        'JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        'JOIN odds_asian oc ON oc.match_id=m.id '
+        "AND oc.label='closing' AND oc.company_id=12 ")
+    # 統計：符合篩選嘅已完場且有尾盤嘅場次
     stat_rows = conn.execute(
-        'SELECT oc.handicap, oc.giver, m.home_score, m.away_score '
-        'FROM matches m JOIN odds_asian oc ON oc.match_id=m.id '
-        "AND oc.label='closing' AND oc.company_id=12 "
-        'WHERE m.home_score IS NOT NULL').fetchall()
+        'SELECT oc.handicap, oc.giver, m.home_score, m.away_score ' +
+        base_from + where + line_where, args + line_args).fetchall()
     up = down = push = 0
-    for hc, gv, hs, aws in stat_rows:
-        r = pick_result(hc, gv, hs, aws)
+    for hc_, gv_, hs, aws in stat_rows:
+        r = pick_result(hc_, gv_, hs, aws)
         if r == 'A':
             up += 1
         elif r == 'B':
@@ -807,8 +825,8 @@ def get_results(limit=1000):
         "AND oc.label='closing' AND oc.company_id=12 "
         'WHERE m.home_score IS NOT NULL').fetchall()
     pw = pl = pp = 0
-    for choice, hc, gv, hs, aws in pr:
-        r = pick_result(hc, gv, hs, aws)
+    for choice, hc_, gv_, hs, aws in pr:
+        r = pick_result(hc_, gv_, hs, aws)
         if r is None:
             continue
         if r == 'P':
@@ -821,7 +839,38 @@ def get_results(limit=1000):
     stats['pk_l'] = pl
     stats['pk_p'] = pp
     stats['pk_r'] = pw / (pw + pl) if (pw + pl) else None
-    # 最近 N 場列表（最新排先）
+    # 走勢：符合篩選嘅場次按日計 上/下/走（最近 30 個有賽事嘅日子，舊→新）
+    trend_rows = conn.execute(
+        'SELECT substr(m.kickoff,1,10) d, '
+        'oc.handicap, oc.giver, m.home_score, m.away_score ' +
+        base_from + where + line_where +
+        " ORDER BY d", args + line_args).fetchall()
+    by_day = {}
+    for d, hc_, gv_, hs, aws in trend_rows:
+        r = pick_result(hc_, gv_, hs, aws)
+        b = by_day.setdefault(d, {'up': 0, 'down': 0, 'push': 0})
+        if r == 'A':
+            b['up'] += 1
+        elif r == 'B':
+            b['down'] += 1
+        elif r == 'P':
+            b['push'] += 1
+    trend = [{'date': d, **by_day[d]} for d in sorted(by_day)][-30:]
+    # 篩選選項：聯賽清單＋常見盤口清單（有尾盤嘅已完場場次計）
+    leagues = [r[0] for r in conn.execute(
+        'SELECT DISTINCT c.req_name ' +
+        'FROM matches m JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        "WHERE m.home_score IS NOT NULL ORDER BY c.req_name").fetchall()]
+    line_rows = conn.execute(
+        'SELECT oc.handicap, oc.giver, COUNT(*) n ' +
+        base_from + where +
+        ' GROUP BY oc.handicap, oc.giver ORDER BY n DESC LIMIT 80',
+        args).fetchall()
+    lines = [{'line': screen_engine.fmt_line(hc_, gv_), 'hc': hc_,
+              'gv': gv_ or 'none', 'n': n}
+             for hc_, gv_, n in line_rows]
+    # 最近 N 場列表（最新排先，同一篩選）
     rows = conn.execute(
         'SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc, '
         'm.home_score, m.away_score, oc.handicap, oc.giver, '
@@ -831,22 +880,25 @@ def get_results(limit=1000):
         'JOIN teams ht ON ht.titan_id=m.home_id '
         'JOIN teams at ON at.titan_id=m.away_id '
         'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
-        "AND oc.label='closing' AND oc.company_id=12 "
-        'WHERE m.home_score IS NOT NULL '
-        'ORDER BY m.kickoff DESC LIMIT ?', (limit,)).fetchall()
+        "AND oc.label='closing' AND oc.company_id=12 " +
+        where.replace('c.req_name', 'c.req_name') + line_where +
+        ' ORDER BY m.kickoff DESC LIMIT ?',
+        args + line_args + [limit]).fetchall()
     items = []
-    for (mid, ko, lg, h, a, hs, aws, hc, gv, ho, ao) in rows:
-        r = pick_result(hc, gv, hs, aws) if hc is not None else None
+    for (mid, ko, lg, h, a, hs, aws, hc_, gv_, ho, ao) in rows:
+        r = pick_result(hc_, gv_, hs, aws) if hc_ is not None else None
         items.append({
             'id': mid, 'kickoff': ko, 'league': lg, 'home': h, 'away': a,
             'score': f'{hs}-{aws}',
-            'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+            'line': screen_engine.fmt_line(hc_, gv_) if hc_ is not None else None,
             'odds': f'主{ho}/客{ao}' if ho is not None else None,
             'outcome': ('up' if r == 'A' else 'down' if r == 'B'
                         else 'push' if r == 'P' else None),
         })
     conn.close()
-    return {'stats': stats, 'items': items, 'limit': limit}
+    return {'stats': stats, 'items': items, 'limit': limit,
+            'trend': trend, 'leagues': leagues, 'lines': lines,
+            'filter': {'league': league, 'hc': hc, 'gv': gv}}
 
 
 # ============ Check 下先（8 組合回測：①⑤⑧⑫⑮⑱方向 × ⑭深淺 × ⑰深淺） ============
@@ -1275,7 +1327,12 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 qs = parse_qs(u.query)
                 limit = int(qs.get('limit', ['1000'])[0])
-                self._send(200, json.dumps(get_results(limit), ensure_ascii=False))
+                league = qs.get('league', [''])[0] or None
+                hc = qs.get('hc', [''])[0]
+                hc = float(hc) if hc not in ('', None) else None
+                gv = qs.get('gv', [''])[0] or None
+                self._send(200, json.dumps(
+                    get_results(limit, league, hc, gv), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()

@@ -943,6 +943,8 @@ $('#ckOvClose').onclick = closeCheckOverlay;
 $('#btnCkScan').onclick = startCkScan;
 
 // ===== 過往賽果 =====
+let rsFilter = {league: '', hc: '', gv: ''};   // '' = 全部
+
 function _pct_(v) { return v == null ? '—' : (v * 100).toFixed(1) + '%'; }
 
 function _rsCard(m) {
@@ -958,19 +960,110 @@ function _rsCard(m) {
   </div>`;
 }
 
+function _rsDrawTrend(canvas, trend) {
+  // 上盤 vs 下盤逐日走勢：藍柱＝上盤率，紅柱＝下盤率（分母剔除走盤），50% 參考線
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width = canvas.clientWidth * (window.devicePixelRatio || 1);
+  const H = canvas.height = canvas.clientHeight * (window.devicePixelRatio || 1);
+  ctx.clearRect(0, 0, W, H);
+  if (!trend || !trend.length) {
+    ctx.fillStyle = '#8a93a6';
+    ctx.font = `${14 * (window.devicePixelRatio || 1)}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillText('暫無走勢數據', W / 2, H / 2);
+    return;
+  }
+  const dpr = window.devicePixelRatio || 1;
+  const padL = 44 * dpr, padR = 10 * dpr, padT = 22 * dpr, padB = 30 * dpr;
+  const cw = (W - padL - padR) / trend.length;
+  const yOf = v => padT + (1 - v) * (H - padT - padB);
+  const css = getComputedStyle(document.body);
+  const cUp = css.getPropertyValue('--up').trim() || '#3fa7ff';
+  const cDown = css.getPropertyValue('--down').trim() || '#ff6b6b';
+  const cDim = '#8a93a6';
+  // 格線 0/25/50/75/100%
+  ctx.font = `${10 * dpr}px sans-serif`;
+  ctx.textAlign = 'right';
+  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+    const y = yOf(v);
+    ctx.strokeStyle = v === 0.5 ? 'rgba(255,215,102,.55)' : 'rgba(138,147,166,.18)';
+    ctx.lineWidth = (v === 0.5 ? 1.5 : 1) * dpr;
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(W - padR, y);
+    ctx.stroke();
+    ctx.fillStyle = cDim;
+    ctx.fillText(Math.round(v * 100) + '%', padL - 5 * dpr, y + 3 * dpr);
+  }
+  trend.forEach((t, i) => {
+    const eff = t.up + t.down;
+    const upr = eff ? t.up / eff : 0;
+    const downr = eff ? t.down / eff : 0;
+    const bw = Math.max(2 * dpr, cw * 0.32);
+    const x = padL + i * cw + cw / 2;
+    // 上盤柱（向上係基於 yOf：值大＝柱頂高）
+    ctx.fillStyle = cUp;
+    ctx.fillRect(x - bw - 1 * dpr, yOf(upr), bw, yOf(0) - yOf(upr));
+    ctx.fillStyle = cDown;
+    ctx.fillRect(x + 1 * dpr, yOf(downr), bw, yOf(0) - yOf(downr));
+  });
+  // 日期標籤（頭/尾/中間，最多 6 個）
+  ctx.fillStyle = cDim;
+  ctx.textAlign = 'center';
+  const step = Math.max(1, Math.ceil(trend.length / 6));
+  trend.forEach((t, i) => {
+    if (i % step === 0 || i === trend.length - 1) {
+      ctx.fillText(t.date.slice(5), padL + i * cw + cw / 2, H - 10 * dpr);
+    }
+  });
+  // 圖例
+  ctx.textAlign = 'left';
+  ctx.fillStyle = cUp;
+  ctx.fillText('■ 上盤率', padL, 14 * dpr);
+  ctx.fillStyle = cDown;
+  ctx.fillText('■ 下盤率', padL + 70 * dpr, 14 * dpr);
+  ctx.fillStyle = '#ffd766';
+  ctx.fillText('― 50%', padL + 140 * dpr, 14 * dpr);
+}
+
+function _rsFilterBar(d) {
+  const lgOpts = ['<option value="">全部聯賽</option>']
+    .concat((d.leagues || []).map(l =>
+      `<option value="${esc(l)}" ${rsFilter.league === l ? 'selected' : ''}>${esc(l)}</option>`));
+  const lnOpts = ['<option value="">全部盤口</option>']
+    .concat((d.lines || []).map(o => {
+      const v = `${o.hc}|${o.gv}`;
+      return `<option value="${v}" ${rsFilter.hc !== '' && String(rsFilter.hc) === String(o.hc) && rsFilter.gv === o.gv ? 'selected' : ''}>${esc(o.line)}（${o.n} 場）</option>`;
+    }));
+  return `<div class="rs-filter">
+    <label>聯賽 <select id="rsLg">${lgOpts.join('')}</select></label>
+    <label>盤口 <select id="rsLn">${lnOpts.join('')}</select></label>
+    <span style="color:var(--dim);font-size:12px">篩選後統計、走勢、列表全部跟住變</span>
+  </div>`;
+}
+
 async function renderResultsOverlay() {
   const body = document.getElementById('rsOvBody');
   body.innerHTML = '<div class="empty">載入中…</div>';
+  const q = new URLSearchParams({limit: '1000'});
+  if (rsFilter.league) q.set('league', rsFilter.league);
+  if (rsFilter.hc !== '') { q.set('hc', rsFilter.hc); q.set('gv', rsFilter.gv || 'none'); }
   let d;
-  try { d = await jget('/api/results?limit=1000'); }
+  try { d = await jget('/api/results?' + q.toString()); }
   catch (e) { body.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
   const s = d.stats || {};
+  const f = d.filter || {};
+  const fLine = f.hc != null
+    ? ((d.lines.find(o => String(o.hc) === String(f.hc) && o.gv === (f.gv || 'none')) || {}).line)
+    : null;
+  const fTxt = (f.league ? '｜' + f.league : '') + (fLine ? '｜' + fLine : '');
   document.getElementById('rsOvTitle').textContent =
-    `📋 過往賽果｜統計 ${s.total || 0} 場（顯示最近 ${(d.items || []).length} 場，最新排先）`;
+    `📋 過往賽果${fTxt}｜統計 ${s.total || 0} 場（顯示最近 ${(d.items || []).length} 場，最新排先）`;
   const cell = (lab, val, sub) =>
     `<div class="rs-stat"><div class="rs-lab">${lab}</div><div class="rs-val">${val}</div>` +
     (sub ? `<div class="rs-sub">${sub}</div>` : '') + '</div>';
-  let h = '<div class="rs-stats">';
+  let h = _rsFilterBar(d);
+  h += '<div class="rs-stats">';
   h += cell('上盤命中率', _pct_(s.up_r), `上${s.up || 0} 下${s.down || 0} 走${s.push || 0}（走盤唔計分母）`);
   h += cell('下盤命中率', _pct_(s.down_r), '同上，分母剔除走盤');
   h += cell('總命中率', _pct_(s.decisive_r), '開出上/下盤結果嘅比例（＝1－走盤率）');
@@ -979,6 +1072,8 @@ async function renderResultsOverlay() {
   h += cell('我的選擇命中率', _pct_(s.pk_r),
     s.pk_w != null ? `中${s.pk_w} 錯${s.pk_l} 走${s.pk_p || 0}` : '');
   h += '</div>';
+  h += `<div class="rs-trend-w"><div class="rs-trend-t">上盤 vs 下盤逐日走勢（最近 ${(d.trend || []).length} 日，跟篩選）</div>
+    <canvas id="rsTrend" class="rs-trend"></canvas></div>`;
   let lastDate = '';
   for (const m of (d.items || [])) {
     const dd = m.kickoff.slice(0, 10);
@@ -990,6 +1085,18 @@ async function renderResultsOverlay() {
   }
   if (!(d.items || []).length) h += '<div class="note">暫無已完場賽事。</div>';
   body.innerHTML = h;
+  // 篩選聯動
+  document.getElementById('rsLg').onchange = ev => {
+    rsFilter.league = ev.target.value;
+    renderResultsOverlay();
+  };
+  document.getElementById('rsLn').onchange = ev => {
+    const v = ev.target.value;
+    if (!v) { rsFilter.hc = ''; rsFilter.gv = ''; }
+    else { const [hc, gv] = v.split('|'); rsFilter.hc = hc; rsFilter.gv = gv; }
+    renderResultsOverlay();
+  };
+  _rsDrawTrend(document.getElementById('rsTrend'), d.trend || []);
 }
 
 function openResultsOverlay() {
