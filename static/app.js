@@ -526,10 +526,14 @@ async function renderCheckOverlay() {
   catch (e) { body.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
   const scan = d.scan || {};
   const totalN = (d.combos || []).reduce((s, c) => s + c.n, 0);
-  document.getElementById('ckOvTitle').textContent =
-    `✓ Check 下先｜已回測 ${scan.done || 0}/${scan.total || 0} 場｜入組合 ${totalN} 場`;
+  // 資料齊全但今次進程未跑過掃描（重開伺服器／雲端種入 CSV）：唔好顯示「0/0」
+  const seeded = !scan.running && !scan.last && !(scan.done > 0) && totalN > 0;
+  document.getElementById('ckOvTitle').textContent = seeded
+    ? `✓ Check 下先｜回測資料齊全（全庫）｜入組合 ${totalN} 場`
+    : `✓ Check 下先｜已回測 ${scan.done || 0}/${scan.total || 0} 場｜入組合 ${totalN} 場`;
   document.getElementById('ckScanInfo').textContent =
     scan.running ? `回測中 ${scan.done}/${scan.total}…` :
+    seeded ? '已載入完整回測結果；按「回測掃描」補上新增賽事' :
     (scan.last ? `上次回測：${scan.last}` : '從未回測（約 30-90 分鐘，可中斷續跑）');
   const map = {};
   for (const c of (d.combos || [])) {
@@ -914,6 +918,10 @@ $('#btnFtScan').onclick = startFtScan;
 $('#btnCheck').onclick = openCheckOverlay;
 $('#ckOvClose').onclick = closeCheckOverlay;
 $('#btnCkScan').onclick = startCkScan;
+// 測試用：?autocheck=1 自動打開 Check 下先
+if (location.search.indexOf('autocheck=1') >= 0) {
+  setTimeout(openCheckOverlay, 800);
+}
 
 // ===== 一鍵更新賽事（賽果＋新場次＋最近三日盤口）=====
 async function pollUpdate() {
