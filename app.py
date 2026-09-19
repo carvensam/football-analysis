@@ -31,7 +31,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '2.4'
+SERVER_VERSION = '2.5'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -175,6 +175,37 @@ def do_screen(mid, sel=None):
     res = screen_engine.screen(conn, t, sel=sel)
     conn.close()
     return res
+
+
+def do_featured_refresh(mid):
+    """精選單場重新整理：重抓該場最新盤口賠率，重算該場精選資格。
+    仍合準則 → 保留／更新方向；唔再合 → 未結算移出；已完場歷史保留。"""
+    st = do_fetch(mid, True)
+    if not st.get('ok'):
+        return {'ok': False, 'error': st.get('error', '抓取賠率失敗'), 'fetch': st}
+    conn = db()
+    try:
+        screen_engine._pool_cache['ts'] = 0   # 用新盤口重新載入數據池
+        d = None
+        try:
+            d = _featured_direction(_screen_brief(mid))
+        except Exception:
+            pass
+        row = conn.execute('SELECT result FROM featured WHERE match_id=?',
+                           (mid,)).fetchone()
+        removed = False
+        if d:
+            conn.execute(
+                'INSERT INTO featured(match_id, direction, added_at) VALUES(?,?,?) '
+                'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction',
+                (mid, d, time.strftime('%Y-%m-%d %H:%M:%S')))
+        elif row and row[0] is None:
+            conn.execute('DELETE FROM featured WHERE match_id=?', (mid,))
+            removed = True
+        conn.commit()
+    finally:
+        conn.close()
+    return {'ok': True, 'direction': d, 'removed': removed}
 
 
 # ============ 我的選擇（上/下盤 記錄 + 勝出率統計） ============
@@ -1130,6 +1161,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(
                     do_pick(int(body.get('id')), str(body.get('choice', ''))),
                     ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/featured/refresh':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(
+                    do_featured_refresh(int(body.get('id'))), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()

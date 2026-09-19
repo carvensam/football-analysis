@@ -401,6 +401,7 @@ function _ftCard(p) {
       <span class="pk-tag ${p.direction}">${dName}</span>
       <span class="pk-res">${res}</span>
       <span style="color:var(--dim);font-size:12px">尾盤 ${esc(p.line || '—')}${p.odds ? ' ' + esc(p.odds) : ''}</span>
+      <button class="btn ft-refresh" data-mid="${p.id}">⟳ 重新整理</button>
       <button class="btn ft-share">⇗ 分享</button>
     </div>
     <div class="pk-items">
@@ -455,6 +456,22 @@ async function renderFeaturedOverlay() {
   body.querySelectorAll('.ft-share').forEach((btn, i) => {
     const all = [...(d.pending || []), ...played];
     btn.onclick = () => _ftShare(all[i], btn);
+  });
+  body.querySelectorAll('.ft-refresh').forEach(btn => {
+    btn.onclick = async () => {
+      if (btn.disabled) return;
+      btn.disabled = true;
+      btn.textContent = '⟳ 更新中…';
+      try {
+        const r = await jpost('/api/featured/refresh', {id: btn.dataset.mid});
+        btn.textContent = !r.ok ? ('✕ ' + (r.error || '失敗'))
+          : r.removed ? '✕ 已移出精選'
+          : '✓ 已更新';
+      } catch (e) {
+        btn.textContent = '✕ 失敗';
+      }
+      setTimeout(() => renderFeaturedOverlay(), 1500);
+    };
   });
 }
 
@@ -918,12 +935,15 @@ $('#btnFtScan').onclick = startFtScan;
 $('#btnCheck').onclick = openCheckOverlay;
 $('#ckOvClose').onclick = closeCheckOverlay;
 $('#btnCkScan').onclick = startCkScan;
-// 測試用：?autocheck=1 自動打開 Check 下先；?autopk=1 自動打開我的選擇大版面
+// 測試用：?autocheck=1 自動打開 Check 下先；?autopk=1 自動打開我的選擇大版面；?autofeat=1 精選
 if (location.search.indexOf('autocheck=1') >= 0) {
   setTimeout(openCheckOverlay, 800);
 }
 if (location.search.indexOf('autopk=1') >= 0) {
   setTimeout(openPicksOverlay, 800);
+}
+if (location.search.indexOf('autofeat=1') >= 0) {
+  setTimeout(openFeaturedOverlay, 800);
 }
 
 // ===== 各頁「⟳ 刷新盤口」：更新即時盤口＋賠率，重算精選 =====
