@@ -32,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '2.7'
+SERVER_VERSION = '2.8'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
