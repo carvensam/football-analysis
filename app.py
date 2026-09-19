@@ -31,7 +31,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '2.2'
+SERVER_VERSION = '2.3'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -674,11 +674,31 @@ def _rates_of(m, res):
             'down_r': (eff - a) / eff if eff else None}
 
 
-def _d50_dir(m, c_h, c_gc, res, t_h, t_gc):
-    """樣本 mask → 最接近50%盤口（n>=5，冇就用分佈最多）對今場尾盤嘅方向：
+def _idx_rates(idx, res):
+    """行號陣列版 _rates_of（加速回測用），idx=None 或空 → None"""
+    if idx is None or idx.size == 0:
+        return None
+    n = int(idx.size)
+    r = res[idx]
+    a = int((r == 1).sum())
+    p = int((r == 0).sum())
+    eff = n - p
+    return {'n': n,
+            'up_r': a / eff if eff else None,
+            'down_r': (eff - a) / eff if eff else None}
+
+
+def _lg_rates(idx, res, lg, t_lg):
+    """行號陣列嘅同聯賽版比例"""
+    if idx is None or idx.size == 0:
+        return None
+    return _idx_rates(idx[lg[idx] == t_lg], res)
+
+
+def _d50_dir_idx(idx, c_h, c_gc, res, t_h, t_gc):
+    """樣本行號 → 最接近50%盤口（n>=5，冇就用分佈最多）對今場尾盤嘅方向：
     'deep'=上盤(讓球方)深咗，'shallow'=上盤淺咗，None=無樣本或同盤"""
-    idx = np.nonzero(m)[0]
-    if idx.size == 0:
+    if idx is None or idx.size == 0:
         return None
     q = np.round(c_h[idx] * 4).astype(np.int32)      # 讓球數×4（整數）
     key = q * 4 + (c_gc[idx] + 1)                     # 複合鍵：讓球數+讓球方
@@ -705,9 +725,19 @@ def _d50_dir(m, c_h, c_gc, res, t_h, t_gc):
     return 'deep' if delta * gv > 0 else 'shallow'
 
 
-def _check_scan_job():
+def _d50_dir(m, c_h, c_gc, res, t_h, t_gc):
+    """mask 版（兼容舊呼叫）：轉行號後交畀 _d50_dir_idx"""
+    return _d50_dir_idx(np.nonzero(m)[0], c_h, c_gc, res, t_h, t_gc)
+
+
+_EMPTY_IDX = np.zeros(0, dtype=np.int64)
+
+
+def _check_scan_job(table='check_rows'):
     """全庫回測：每場計 ①⑤⑧⑫⑮⑱ 方向（同精選一致）＋⑭⑰ 最接近50%盤嘅上盤深淺。
-    結果落 check_rows 表（可中斷續跑）。約 7 萬場，需時 30-90 分鐘。"""
+    結果落 check_rows 表（可中斷續跑）。
+    v2 索引版：盤口用字典分組、排名/入球用整數格索引，逐場成本由 O(N) 降到 O(組)，
+    免費雲端機限速下都由 0.3場/秒 提升到可接受速度。"""
     global _check_scan
     if _check_scan['running']:
         return
@@ -737,9 +767,56 @@ def _check_scan_job():
         hp_rc = df['hp_role'].map({'home': 1, 'away': 0}).fillna(-1).to_numpy()
         zone = df['up_zone'].to_numpy()
 
-        existing = set(r[0] for r in conn.execute('SELECT match_id FROM check_rows'))
+        # ---- 預建索引（一次過，之後每場 O(組) 查詢）----
+        ihl = i_h.tolist(); igl = i_gc.tolist()
+        chl = c_h.tolist(); cgl = c_gc.tolist()
+        pvl = pv_h.tolist(); pgl = pv_gc.tolist()
+        hpl = hp_h.tolist(); hgl = hp_gc.tolist(); hrl = hp_rc.tolist()
+        # ①：初盤＋尾盤盤口完全相同 → 候選組
+        g1 = {}
+        for i in range(n_total):
+            g1.setdefault((ihl[i], igl[i], chl[i], cgl[i]), []).append(i)
+        for k_ in g1:
+            g1[k_] = np.asarray(g1[k_], dtype=np.int64)
+        # ⑤：對上一次對賽尾盤盤口
+        g5 = {}
+        for i in range(n_total):
+            h5 = pvl[i]
+            if h5 == h5:    # 非 NaN
+                g5.setdefault((h5, pgl[i]), []).append(i)
+        for k_ in g5:
+            g5[k_] = np.asarray(g5[k_], dtype=np.int64)
+        # ⑧：主隊主場（hh_p>0）/ 客隊客場（aa_p>0）入失球統計（全部整數）
+        v8 = (hh_p > 0) & (aa_p > 0)
+        i8v = np.nonzero(v8)[0]
+        HH_GF = hh_gf[i8v]; HH_GA = hh_ga[i8v]; HH_GD = hh_gd[i8v]
+        AA_GF = aa_gf[i8v]; AA_GA = aa_ga[i8v]; AA_GD = aa_gd[i8v]
+        # ⑫/⑱：排名整數格（兩隊排名齊先有效）
+        v12 = ~(np.isnan(hhr) | np.isnan(aar))
+        i12v = np.nonzero(v12)[0]
+        g12 = {}
+        for i in i12v.tolist():
+            g12.setdefault((int(hhr[i]), int(aar[i])), []).append(i)
+        for k_ in g12:
+            g12[k_] = np.asarray(g12[k_], dtype=np.int64)
+        gap = hhr - aar
+        g18 = {}
+        for i in i12v.tolist():
+            g18.setdefault(int(gap[i]), []).append(i)
+        for k_ in g18:
+            g18[k_] = np.asarray(g18[k_], dtype=np.int64)
+        # ⑰：上次對賽角色＋盤口
+        g17 = {}
+        for i in range(n_total):
+            h7 = hpl[i]
+            if h7 == h7 and hrl[i] >= 0:
+                g17.setdefault((hrl[i], h7, hgl[i]), []).append(i)
+        for k_ in g17:
+            g17[k_] = np.asarray(g17[k_], dtype=np.int64)
+
+        existing = set(r[0] for r in conn.execute(f'SELECT match_id FROM {table}'))
         _check_scan['done'] = len(existing)
-        kept = int(conn.execute('SELECT COUNT(*) FROM check_rows').fetchone()[0])
+        kept = int(conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0])
         _check_scan['kept'] = kept
         batch = []
         for k in range(n_total):
@@ -747,79 +824,119 @@ def _check_scan_job():
             if mid in existing:
                 continue
             try:
-                t_h, t_g = float(c_h[k]), int(c_gc[k])
-                t_ho, t_ao = float(c_ho[k]), float(c_ao[k])
-                t_lg = lg[k]
-                # ① 同初盤及尾盤（盤口100%同，水位±0.03）
-                m1 = (i_h == t_h) & (i_gc == t_g) & (c_h == t_h) & (c_gc == t_g) & \
-                     (np.abs(i_ho - t_ho) <= 0.03) & (np.abs(i_ao - t_ao) <= 0.03) & \
-                     (np.abs(c_ho - t_ho) <= 0.03) & (np.abs(c_ao - t_ao) <= 0.03)
-                m1l = m1 & (lg == t_lg)
-                # ⑤ 對上一次對賽尾盤 vs 今場尾盤
-                m5 = (pv_h == t_h) & (pv_gc == t_g) & \
-                     (np.abs(pv_ho - t_ho) <= 0.03) & (np.abs(pv_ao - t_ao) <= 0.03)
-                m5l = m5 & (lg == t_lg)
-                brief = {
-                    'i1': {'all': _rates_of(m1, res), 'lg': _rates_of(m1l, res)},
-                    'i5': {'all': _rates_of(m5, res), 'lg': _rates_of(m5l, res)},
-                }
+                t_h = chl[k]; t_g = int(cgl[k])
+                t_ho = float(c_ho[k]); t_ao = float(c_ao[k])
+                t_lg = int(lg[k])
+                idx12 = None
+                # ① 同初盤及尾盤（候選初盤&尾盤都對照今場尾盤 t_h/t_g，
+                #   同舊 mask (i_h==t_h)&(i_gc==t_g)&(c_h==t_h)&(c_gc==t_g) 一致）
+                cand = g1.get((t_h, t_g, t_h, t_g))
+                if cand is not None:
+                    w = (np.abs(i_ho[cand] - t_ho) <= 0.03) & \
+                        (np.abs(i_ao[cand] - t_ao) <= 0.03) & \
+                        (np.abs(c_ho[cand] - t_ho) <= 0.03) & \
+                        (np.abs(c_ao[cand] - t_ao) <= 0.03)
+                    idx1 = cand[w]
+                else:
+                    idx1 = None
+                # ⑤ 對上一次對賽尾盤 vs 今場尾盤（候選嘅 pv 盤口 = 今場尾盤 t_h/t_g；
+                #   同舊 mask (pv_h==t_h)&(pv_gc==t_g) 一致，唔係對照今場嘅 pv）
+                cand5 = g5.get((t_h, t_g))
+                if cand5 is not None:
+                    w5 = (np.abs(pv_ho[cand5] - t_ho) <= 0.03) & \
+                         (np.abs(pv_ao[cand5] - t_ao) <= 0.03)
+                    idx5 = cand5[w5]
+                else:
+                    idx5 = None
+                brief = {'i1': {'all': _idx_rates(idx1, res),
+                                'lg': _lg_rates(idx1, res, lg, t_lg)},
+                         'i5': {'all': _idx_rates(idx5, res),
+                                'lg': _lg_rates(idx5, res, lg, t_lg)}}
                 d = _featured_direction(brief, gates=False)
                 if d:
                     # ⑧ 主隊主場/客隊客場 入失球差 ±3
                     if hh_p[k] > 0 and aa_p[k] > 0:
-                        m8 = (hh_p > 0) & (aa_p > 0) & \
-                             (np.abs(hh_gf - hh_gf[k]) <= 3) & \
-                             (np.abs(hh_ga - hh_ga[k]) <= 3) & \
-                             (np.abs(hh_gd - hh_gd[k]) <= 3) & \
-                             (np.abs(aa_gf - aa_gf[k]) <= 3) & \
-                             (np.abs(aa_ga - aa_ga[k]) <= 3) & \
-                             (np.abs(aa_gd - aa_gd[k]) <= 3)
-                        brief['i8'] = {'all': _rates_of(m8, res),
-                                       'lg': _rates_of(m8 & (lg == t_lg), res)}
-                    # ⑫ 主場/客場排名±2；i12.cur = 樣本入面同今場尾盤嗰行
-                    if not np.isnan(hhr[k]) and not np.isnan(aar[k]):
-                        m12 = (np.abs(hhr - hhr[k]) <= 2) & (np.abs(aar - aar[k]) <= 2)
-                        m15 = m12 & (c_h == t_h) & (c_gc == t_g)
-                        brief['i12'] = {'n': int(m12.sum()),
-                                        'cur': _rates_of(m15, res),
-                                        'lg': {'cur': _rates_of(m15 & (lg == t_lg), res)}}
+                        m8 = (np.abs(HH_GF - hh_gf[k]) <= 3) & \
+                             (np.abs(HH_GA - hh_ga[k]) <= 3) & \
+                             (np.abs(HH_GD - hh_gd[k]) <= 3) & \
+                             (np.abs(AA_GF - aa_gf[k]) <= 3) & \
+                             (np.abs(AA_GA - aa_ga[k]) <= 3) & \
+                             (np.abs(AA_GD - aa_gd[k]) <= 3)
+                        idx8 = i8v[m8]
+                        brief['i8'] = {'all': _idx_rates(idx8, res),
+                                       'lg': _lg_rates(idx8, res, lg, t_lg)}
+                    # 快速閘：i1/i5/i8 過唔到就唔使計 ⑫⑱（同 _featured_direction 首批閘一致）
+                    def _ok1418(oc_all, oc_lg, dd):
+                        for oc in (oc_all, oc_lg):
+                            if oc:
+                                r_ = oc.get('up_r') if dd == 'up' else oc.get('down_r')
+                                if r_ is not None and r_ >= 0.5:
+                                    return True
+                        return False
+                    i8b = brief.get('i8') or {}
+                    if not (_ok1418(brief['i1']['all'], brief['i1']['lg'], d) and
+                            _ok1418(brief['i5']['all'], brief['i5']['lg'], d) and
+                            _ok1418(i8b.get('all'), i8b.get('lg'), d)):
+                        d = None
+                if d:
+                    # ⑫ 主場/客場排名±2
+                    if not (np.isnan(hhr[k]) or np.isnan(aar[k])):
+                        r1, r2 = int(hhr[k]), int(aar[k])
+                        cells = []
+                        for di in range(-2, 3):
+                            for dj in range(-2, 3):
+                                cc = g12.get((r1 + di, r2 + dj))
+                                if cc is not None:
+                                    cells.append(cc)
+                        idx12 = np.unique(np.concatenate(cells)) if cells else _EMPTY_IDX
+                        m15 = idx12[(c_h[idx12] == t_h) & (c_gc[idx12] == t_g)] \
+                            if idx12.size else _EMPTY_IDX
+                        brief['i12'] = {'n': int(idx12.size),
+                                        'cur': _idx_rates(m15, res),
+                                        'lg': {'cur': _lg_rates(m15, res, lg, t_lg)}}
                         # ⑮ = ⑫＋同尾盤，再按今場上盤水位區
                         t_zone = int(zone[k])
-                        m15z = m15 & (zone == t_zone)
-                        brief['i15'] = {'zone': _rates_of(m15z, res),
-                                        'lg_zone': _rates_of(m15z & (lg == t_lg), res)}
+                        m15z = m15[zone[m15] == t_zone] if m15.size else _EMPTY_IDX
+                        brief['i15'] = {'zone': _idx_rates(m15z, res),
+                                        'lg_zone': _lg_rates(m15z, res, lg, t_lg)}
                         # ⑱ 排名差距淨值±1＋同尾盤
-                        m18 = (np.abs((hhr - aar) - (hhr[k] - aar[k])) <= 1) & \
-                              (c_h == t_h) & (c_gc == t_g)
-                        brief['i18'] = {'all': _rates_of(m18, res),
-                                        'lg': _rates_of(m18 & (lg == t_lg), res)}
+                        g0 = int(gap[k])
+                        c18 = []
+                        for dg in range(-1, 2):
+                            cc = g18.get(g0 + dg)
+                            if cc is not None:
+                                c18.append(cc)
+                        idx18 = np.unique(np.concatenate(c18)) if c18 else _EMPTY_IDX
+                        m18 = idx18[(c_h[idx18] == t_h) & (c_gc[idx18] == t_g)] \
+                            if idx18.size else _EMPTY_IDX
+                        brief['i18'] = {'all': _idx_rates(m18, res),
+                                        'lg': _lg_rates(m18, res, lg, t_lg)}
                     d = _featured_direction(brief)
                 if d:
-                    g14 = (_d50_dir(m12, c_h, c_gc, res, t_h, t_g)
-                           if 'i12' in brief else None)
-                    g17 = None
-                    if hp_h[k] == hp_h[k] and hp_rc[k] >= 0:   # hp 有效
-                        m16 = (hp_rc == hp_rc[k]) & (hp_h == hp_h[k]) & \
-                              (hp_gc == hp_gc[k])
-                        g17 = _d50_dir(m16, c_h, c_gc, res, t_h, t_g)
+                    g14 = (_d50_dir_idx(idx12, c_h, c_gc, res, t_h, t_g)
+                           if idx12 is not None else None)
+                    g17d = None
+                    if hpl[k] == hpl[k] and hrl[k] >= 0:   # hp 有效
+                        idx17 = g17.get((hrl[k], hpl[k], hgl[k]))
+                        g17d = _d50_dir_idx(idx17, c_h, c_gc, res, t_h, t_g)
                     r = res[k]
-                    batch.append((mid, d, g14, g17,
+                    batch.append((mid, d, g14, g17d,
                                   'A' if r == 1 else ('B' if r == -1 else 'P')))
-                    if g14 and g17:
+                    if g14 and g17d:
                         kept += 1
             except Exception:
                 pass
             _check_scan['done'] += 1
             if len(batch) >= 500:
                 conn.executemany(
-                    'INSERT OR IGNORE INTO check_rows(match_id, direction, g14, g17, res) '
+                    f'INSERT OR IGNORE INTO {table}(match_id, direction, g14, g17, res) '
                     'VALUES(?,?,?,?,?)', batch)
                 conn.commit()
                 batch.clear()
                 _check_scan['kept'] = kept
         if batch:
             conn.executemany(
-                'INSERT OR IGNORE INTO check_rows(match_id, direction, g14, g17, res) '
+                f'INSERT OR IGNORE INTO {table}(match_id, direction, g14, g17, res) '
                 'VALUES(?,?,?,?,?)', batch)
             conn.commit()
         _check_scan['kept'] = kept
@@ -1050,6 +1167,58 @@ def _warmup():
         _pool_ready['err'] = traceback.format_exc(limit=3)
 
 
+def _seed_check_rows():
+    """開機種入隨映像焗入嘅 check_rows 回測結果（check_rows.csv，約 8-9 千行）。
+    雲端免費機 CPU 限速，全庫回測要幾十分鐘；焗入 CSV 就即刻有完整 8 組合數據。
+    之後仍可『開始統計』補上新賽事。種入失敗／冇檔案就交畀自動掃描。"""
+    csv_path = os.path.join(BASE_DIR, 'check_rows.csv')
+    if not os.path.exists(csv_path):
+        return False
+    try:
+        conn = db()
+        n = int(conn.execute('SELECT COUNT(*) FROM check_rows').fetchone()[0])
+        if n >= 1000:
+            conn.close()
+            return True     # 已有數據（例如本機資料庫），唔使種
+        import csv
+        rows = []
+        with open(csv_path, newline='', encoding='utf-8') as f:
+            for r in csv.reader(f):
+                if not r or r[0] == 'match_id':
+                    continue
+                rows.append((int(r[0]), r[1] or None, r[2] or None,
+                             r[3] or None, r[4] or None))
+        conn.executemany(
+            'INSERT OR IGNORE INTO check_rows(match_id, direction, g14, g17, res) '
+            'VALUES(?,?,?,?,?)', rows)
+        conn.commit()
+        conn.close()
+        print(f'[check] 已種入 {len(rows)} 行回測結果', flush=True)
+        return True
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def _auto_scans():
+    """開機自動補數：featured 空咗（雲端重部署會清磁碟）就重掃精選；
+    check_rows 太少（種入失敗）就自動開始全庫回測。唔阻塞服務。"""
+    try:
+        conn = db()
+        n_feat = int(conn.execute('SELECT COUNT(*) FROM featured').fetchone()[0])
+        n_chk = int(conn.execute('SELECT COUNT(*) FROM check_rows').fetchone()[0])
+        conn.close()
+        if n_feat == 0 and not _feat_scan['running']:
+            print('[auto] featured 空白，開始重掃精選', flush=True)
+            threading.Thread(target=_featured_scan_job, daemon=True).start()
+        if n_chk < 1000 and not _check_scan['running']:
+            print('[auto] check_rows 不足，開始全庫回測', flush=True)
+            threading.Thread(target=_check_scan_job, daemon=True).start()
+    except Exception:
+        pass
+
+
 class Server(ThreadingHTTPServer):
     """獨佔 7100 埠——如果已有舊伺服器在跑，即刻報錯退出，唔會兩個搶一個埠"""
     allow_reuse_address = False
@@ -1072,5 +1241,7 @@ if __name__ == '__main__':
         sys.exit(1)
     print(f'篩查 APP v{SERVER_VERSION}：http://localhost:{port}')
     init_picks()
+    _seed_check_rows()
+    _auto_scans()
     threading.Thread(target=_warmup, daemon=True).start()
     httpd.serve_forever()
