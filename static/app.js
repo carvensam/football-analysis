@@ -1029,7 +1029,7 @@ async function pollRefresh() {
     if (!s.running) {
       if (s.error) { setOvStatus('更新出錯：' + String(s.error).split('\n')[0]); return false; }
       const r = s.last_result || {};
-      setOvStatus(`✓ 盤口已更新（補 ${r.odds || 0} 場）｜精選重算中…`);
+      setOvStatus(`✓ 已更新（補盤口 ${r.odds || 0} 場／刷新已存在場次 ${r.odds_refresh || '—'}）｜精選重算中…`);
       break;
     }
     setOvStatus('⟳ ' + (s.phase || '更新緊最新盤口及賠率') + '…');
@@ -1067,11 +1067,11 @@ async function refreshOddsAll() {
 }
 document.querySelectorAll('.ov-refresh').forEach(b => b.onclick = refreshOddsAll);
 
-// ===== 一鍵更新賽事（賽果＋新場次＋最近三日盤口）=====
+// ===== 一鍵更新賽事（賽果＋新場次＋已存在場次嘅盤口及賠率全部刷新）=====
 async function pollUpdate() {
   const s = await jget('/api/update-status');
   if (s.running) {
-    setStatus('⟳ 更新中：' + (s.phase || '…') + '（賽果＋新場次＋盤口）');
+    setStatus('⟳ 更新中：' + (s.phase || '…') + '（賽果＋新場次＋盤口賠率）');
     setTimeout(pollUpdate, 3000);
     return;
   }
@@ -1081,7 +1081,8 @@ async function pollUpdate() {
   }
   const r = s.last_result || {};
   setStatus(`✓ 更新完成（賽季檔 ${r.seasons || 0} 個／補盤口 ${r.odds || 0} 場` +
-            (r.odds_fail ? `／失敗 ${r.odds_fail}` : '') + '）');
+            (r.odds_fail ? `／失敗 ${r.odds_fail}` : '') +
+            (r.odds_refresh ? `／已存在場次盤口賠率刷新 ${r.odds_refresh}` : '') + '）');
   await loadList();
   if (curMatch) openMatch(curMatch);   // 用新數據重新篩查已選場次
 }

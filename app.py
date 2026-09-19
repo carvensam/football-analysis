@@ -32,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '2.6'
+SERVER_VERSION = '2.7'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -111,7 +111,7 @@ def do_fetch(mid, force=False):
         return {'ok': bool(ok)}
 
 
-# ============ 一鍵更新賽事（賽果＋新場次＋最近三日盤口） ============
+# ============ 一鍵更新賽事（賽果＋新場次＋已存在場次嘅盤口及賠率全部刷新） ============
 # 手動掣 / 每次開 APP 自動觸發（30 分鐘內只會自動跑一次）
 _update_state = {'running': False, 'phase': '', 'last_done': 0.0,
                  'last_result': None, 'error': None}
@@ -127,10 +127,32 @@ def _update_worker():
     conn = sqlite3.connect(DB_PATH, timeout=180)
     ok = False
     try:
+        # ① 賽果＋新場次＋最近三日補盤口（各聯賽現行賽季檔）
         st = crawler.recent_update(
             conn, cfg, days=3,
             progress=lambda m: _update_state.update(phase=m))
         _update_state['last_result'] = st
+        # ② 已存在場次嘅盤口＋賠率全部強制刷新（未開賽且已有盤口嘅，最近開賽排先）
+        todo = conn.execute(
+            'SELECT m.id, m.kickoff FROM matches m '
+            'WHERE m.home_score IS NULL '
+            "AND m.kickoff >= datetime('now','localtime') "
+            'AND EXISTS(SELECT 1 FROM odds_asian o '
+            'WHERE o.match_id=m.id AND o.company_id=12) '
+            'ORDER BY m.kickoff').fetchall()
+        fetcher = crawler.Fetcher(conn, cfg)
+        n_ok = n_fail = 0
+        for i, (mid, ko) in enumerate(todo):
+            _update_state['phase'] = (
+                f'刷新已存在場次嘅盤口及賠率 {i + 1}/{len(todo)}')
+            try:
+                if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
+                    n_ok += 1
+                else:
+                    n_fail += 1
+            except Exception:
+                n_fail += 1
+        st['odds_refresh'] = f'{n_ok} 場成功 / {n_fail} 場失敗'
         _update_state['error'] = None
         print(f"[update] 完成：{st}", flush=True)
         ok = True
