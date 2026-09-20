@@ -728,16 +728,13 @@ function distRender(d, zones, curLine, curZone) {
     const zm = Math.max(r.max_zone_n, 1);
     h += r.zones.map((z, i) => {
       if (!z) return `<td class="zone-row${i === curZone ? ' cur-col' : ''}"></td>`;
-      const colCur = i === curZone;
-      // 今場水位列：黃色漸變；其他照舊藍色
-      const bg = colCur
-        ? `background:rgba(255,205,60,${(0.35 + 0.65*z.n/zm).toFixed(2)})`
-        : `background:rgba(63,167,255,${(0.25 + 0.75*z.n/zm).toFixed(2)})`;
+      // 方格全部照舊藍色；今場水位列只係 td 背景黃（highlight）
+      const bg = `background:rgba(63,167,255,${(0.25 + 0.75*z.n/zm).toFixed(2)})`;
       const rates = z.up_r != null
         ? `<span class="zrate">${(z.up_r*100).toFixed(0)}·${(z.down_r*100).toFixed(0)}·${(z.push_r*100).toFixed(0)}</span>`
         : '';
       const tip = `${z.n}場｜上盤(贏1) ${z.up}場${z.up_r!=null?' '+pct(z.up_r):''}｜下盤(輸1) ${z.down}場${z.down_r!=null?' '+pct(z.down_r):''}｜走盤 ${z.push}場${z.push_r!=null?' '+pct(z.push_r):''}`;
-      return `<td class="zone-row${colCur ? ' cur-col' : ''}"><span class="zcell" style="${bg}" title="${tip}"><b>${z.n}</b>${rates}</span></td>`;
+      return `<td class="zone-row${i === curZone ? ' cur-col' : ''}"><span class="zcell" style="${bg}" title="${tip}"><b>${z.n}</b>${rates}</span></td>`;
     }).join('') + '</tr>';
   }
   h += '</table>';
