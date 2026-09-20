@@ -1163,7 +1163,53 @@ function _flCard(m) {
     <span style="color:var(--dim);font-size:12px">紀錄尾盤 ${esc(m.line || '—')}${m.odds ? ' ' + esc(m.odds) : ''}</span>
     ${dTag}
     <span class="pk-res">${res}</span>
+    <button class="btn fl-share" data-mid="${m.id}">⇗ 分享</button>
   </div>`;
+}
+
+function _flShareText(m) {
+  const dName = m.direction === 'up' ? '上盤' : '下盤';
+  const L = [];
+  L.push('⚽ FootballAnalysis 過往紀錄');
+  L.push(m.league);
+  L.push(`${m.home} vs ${m.away}`);
+  L.push(`開賽：${m.kickoff}`);
+  if (m.line) L.push(`紀錄尾盤：${m.line}${m.odds ? ' ' + m.odds : ''}`);
+  L.push(`方向：${dName}`);
+  if (m.added_at) L.push(`入選紀錄：${m.added_at}`);
+  if (m.score) {
+    L.push(`賽果：${m.score}（${m.result === 'W' ? '✅ 方向命中'
+      : m.result === 'L' ? '❌ 方向未中'
+      : m.result === 'P' ? '➖ 走盤' : '待結算'}）`);
+  } else {
+    L.push('狀態：未開賽');
+  }
+  return L.join('\n');
+}
+
+async function _flShare(m, btn) {
+  const text = _flShareText(m);
+  const menu = btn.parentElement.querySelector('.ft-menu');
+  if (menu) { menu.remove(); return; }
+  const mm = document.createElement('div');
+  mm.className = 'ft-menu';
+  const wa = 'https://wa.me/?text=' + encodeURIComponent(text);
+  const line = 'https://line.me/R/share/text?text=' + encodeURIComponent(text);
+  mm.innerHTML = `<a class="btn" href="${wa}" target="_blank" rel="noopener">WhatsApp</a>
+    <a class="btn" href="${line}" target="_blank" rel="noopener">LINE</a>
+    <button class="btn" data-act="copy">複製文字</button>`;
+  btn.parentElement.appendChild(mm);
+  mm.querySelector('[data-act="copy"]').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      mm.querySelector('[data-act="copy"]').textContent = '✓ 已複製';
+    } catch (e) {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand('copy'); ta.remove();
+      mm.querySelector('[data-act="copy"]').textContent = '✓ 已複製';
+    }
+  };
 }
 
 async function renderFeatLogOverlay() {
@@ -1194,6 +1240,12 @@ async function renderFeatLogOverlay() {
   }
   if (!h) h = '<div class="note">暫無紀錄。精選場次一出現（掃描／重新整理／更新重算／開機自動補掃）即自動紀錄喺呢度，之後就算被移出精選都永久留底。</div>';
   body.innerHTML = h;
+  // 分享掣接線（WhatsApp／LINE／複製）
+  const allRec = [...(d.pending || []), ...played];
+  body.querySelectorAll('.fl-share').forEach(btn => {
+    const rec = allRec.find(x => String(x.id) === String(btn.dataset.mid));
+    btn.onclick = () => _flShare(rec, btn);
+  });
 }
 
 function openFeatLogOverlay() {
