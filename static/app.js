@@ -4,6 +4,15 @@ const ZONES_LABEL = ['≤.69','.70','.75','.80','.85','.90','.95','1.00','1.05',
 const ZONES = ZONES_LABEL.slice();   // 實際用嘅水位分區，render 時會用伺服器版本覆寫內容
 let curMatch = null;
 
+// 水位 → 分區索引（同 screen_engine.zone_idx 一模一樣）
+function zoneIdx(w) {
+  if (w == null || isNaN(w)) return -1;
+  const c = Math.round(w * 100);
+  if (c < 70) return 0;
+  if (c < 110) return Math.floor((c - 70) / 5) + 1;
+  return 9;
+}
+
 function setStatus(t) { $('#status').textContent = t; }
 
 // 球隊名前加「(排名)」；無排名則原樣
@@ -703,40 +712,45 @@ function outcomeTable(item) {
     <div class="note">讓球盤：上盤＝讓球方；<b>平手盤：上盤＝平手主隊（主勝）、下盤＝平手客隊（客勝）、走盤＝賽和</b>。勝率分母已剔除走盤。「賽事總數」＝該範圍內有尾盤數據的完場賽事總數。</div>`;
 }
 
-function distRender(d, zones) {
+function distRender(d, zones, curLine, curZone) {
   if (!d || !d.n) return `<div class="err">無樣本（分母 ${d && d.pool != null ? d.pool.toLocaleString() : '—'} 場）</div>`;
   const maxN = Math.max(...d.dist.map(r => r.n), 1);
-  let h = `<div class="note">樣本 ${d.n} 場／分母 ${d.pool != null ? d.pool.toLocaleString() : '—'} 場　<span style="opacity:.7">水位＝上盤（讓球方）尾盤水位；<b>平手盤：上盤＝平手主隊、下盤＝平手客隊</b>，取低水方。水位格內細字＝上·下·走 率（鼠標停在格上睇詳細）</span></div>`;
+  let h = `<div class="note">樣本 ${d.n} 場／分母 ${d.pool != null ? d.pool.toLocaleString() : '—'} 場　<span style="opacity:.7">水位＝上盤（讓球方）尾盤水位；<b>平手盤：上盤＝平手主隊、下盤＝平手客隊</b>，取低水方。水位格內細字＝上·下·走 率（鼠標停在格上睇詳細）</span>　<b style="color:#ffd766">＝黃底行／列＝今場尾盤盤口／水位</b></div>`;
   h += `<table><tr><th class="l">盤口</th><th>場次</th><th>上盤勝</th><th>下盤勝</th><th>走盤</th>` +
-       zones.map((z,i)=>`<th class="zhead">${ZONES_LABEL[i]}</th>`).join('') + `</tr>`;
+       zones.map((z,i)=>`<th class="zhead${i === curZone ? ' cur-col-h' : ''}">${ZONES_LABEL[i]}</th>`).join('') + `</tr>`;
   for (const r of d.dist) {
     const w = Math.round(r.n / maxN * 90);
-    h += `<tr><td class="l">${esc(r.line)}</td>
+    const rowCur = curLine && r.line === curLine;
+    h += `<tr${rowCur ? ' class="cur-row"' : ''}><td class="l">${esc(r.line)}</td>
       <td><div class="bar-wrap"><div class="bar" style="width:${w}px"></div><span class="num">${r.n}</span></div></td>
       <td class="r-up num">${pct(r.up_r)}</td><td class="r-down num">${pct(r.down_r)}</td>
       <td class="r-push num">${r.push}${r.push_r != null ? ' (' + pct(r.push_r) + ')' : ''}</td>`;
     const zm = Math.max(r.max_zone_n, 1);
-    h += r.zones.map(z => {
-      if (!z) return '<td class="zone-row"></td>';
-      const bg = `background:rgba(63,167,255,${(0.25 + 0.75*z.n/zm).toFixed(2)})`;
+    h += r.zones.map((z, i) => {
+      if (!z) return `<td class="zone-row${i === curZone ? ' cur-col' : ''}"></td>`;
+      const colCur = i === curZone;
+      // 今場水位列：黃色漸變；其他照舊藍色
+      const bg = colCur
+        ? `background:rgba(255,205,60,${(0.35 + 0.65*z.n/zm).toFixed(2)})`
+        : `background:rgba(63,167,255,${(0.25 + 0.75*z.n/zm).toFixed(2)})`;
       const rates = z.up_r != null
         ? `<span class="zrate">${(z.up_r*100).toFixed(0)}·${(z.down_r*100).toFixed(0)}·${(z.push_r*100).toFixed(0)}</span>`
         : '';
       const tip = `${z.n}場｜上盤(贏1) ${z.up}場${z.up_r!=null?' '+pct(z.up_r):''}｜下盤(輸1) ${z.down}場${z.down_r!=null?' '+pct(z.down_r):''}｜走盤 ${z.push}場${z.push_r!=null?' '+pct(z.push_r):''}`;
-      return `<td class="zone-row"><span class="zcell" style="${bg}" title="${tip}"><b>${z.n}</b>${rates}</span></td>`;
+      return `<td class="zone-row${colCur ? ' cur-col' : ''}"><span class="zcell" style="${bg}" title="${tip}"><b>${z.n}</b>${rates}</span></td>`;
     }).join('') + '</tr>';
   }
   h += '</table>';
   return h;
 }
 
-function distSection(item) {
+function distSection(item, curLine, curZone) {
   const key = 'd' + Math.random().toString(36).slice(2,7);
   return `<div class="tabs">
     <span class="tab on" data-k="all" data-t="${key}">全庫</span>
     <span class="tab" data-k="league" data-t="${key}">同聯賽</span></div>
-    <div id="${key}-all">${distRender(item.all, ZONES)}</div>
-    <div id="${key}-league" style="display:none">${distRender(item.league, ZONES)}</div>`;
+    <div id="${key}-all">${distRender(item.all, ZONES, curLine, curZone)}</div>
+    <div id="${key}-league" style="display:none">${distRender(item.league, ZONES, curLine, curZone)}</div>`;
 }
 
 function zoneRates(d) {
@@ -836,6 +850,16 @@ function renderResult(res) {
   const titles = {};
   for (const [k, v] of Object.entries(res.items)) titles[k] = v.title;
 
+  // 今場尾盤對應行／列黃底：盤口行 = 尾盤 line；水位列 = 上盤水位（讓球方水位；平手取低水）
+  const curLine = (t.close && t.close.line) || null;
+  let curWater = null;
+  if (t.close) {
+    if (t.close.g === 'home') curWater = t.close.ho;
+    else if (t.close.g === 'away') curWater = t.close.ao;
+    else if (t.close.ho != null && t.close.ao != null) curWater = Math.min(t.close.ho, t.close.ao);
+  }
+  const curZone = zoneIdx(curWater);
+
   for (let i = 1; i <= 20; i++) {
     const it = res.items[String(i)];
     if (!it) continue;
@@ -847,7 +871,7 @@ function renderResult(res) {
     } else if (i <= 9) {
       body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '') + outcomeTable(it);
     } else if (i <= 13) {
-      body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '') + distSection(it);
+      body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '') + distSection(it, curLine, curZone);
     } else if (i == 15) {
       body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '') + zoneSection(it);
     } else if (i == 18 || i == 19) {
@@ -863,7 +887,8 @@ function renderResult(res) {
     } else if (i == 16) {
       body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '')
         + distSection({all: {n: it.all.n, pool: it.all.pool, dist: it.all.dist},
-                       league: {n: it.league.n, pool: it.league.pool, dist: it.league.dist}})
+                       league: {n: it.league.n, pool: it.league.pool, dist: it.league.dist}},
+                      curLine, curZone)
         + '<h4 style="margin:12px 0 4px">各水位 上盤率／下盤率／走盤率</h4>'
         + zoneSection({all: it.all, league: it.league});
     } else {
@@ -1264,6 +1289,15 @@ $('#btnFeatLog').onclick = openFeatLogOverlay;
 $('#flOvClose').onclick = closeFeatLogOverlay;
 if (location.search.indexOf('autolog=1') >= 0) {
   setTimeout(openFeatLogOverlay, 800);
+}
+// 測試用：?mid=賽事ID 自動開該場篩查並展開全部項（配合 &exp=1）
+const _midM = location.search.match(/[?&]mid=(\d+)/);
+if (_midM) {
+  setTimeout(() => openMatch(parseInt(_midM[1], 10)), 900);
+  if (location.search.indexOf('exp=1') >= 0) {
+    setTimeout(() => document.querySelectorAll('#result details')
+      .forEach(x => { x.open = true; }), 6000);
+  }
 }
 
 // ===== 各頁「⟳ 刷新盤口」：更新即時盤口＋賠率，重算精選 =====

@@ -77,6 +77,11 @@ summary::-webkit-details-marker { color: var(--accent); }
 table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
 th, td { border: 1px solid var(--line); padding: 6px 9px; text-align: center; }
 th { background: var(--panel2); font-weight: bold; }
+/* 第10-13、16項：今場尾盤對應 盤口行／水位列 黃底 Highlight */
+tr.cur-row td { background: rgba(255,215,102,.20); }
+tr.cur-row td.cur-col { background: rgba(255,215,102,.40); }
+td.cur-col { background: rgba(255,215,102,.20); }
+th.cur-col-h { background: #ffd766; color: #241a02; }
 td.l, th.l { text-align: left; }
 .num { font-variant-numeric: tabular-nums; }
 .r-up { color: var(--up); font-weight: bold; }
