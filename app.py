@@ -32,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '3.1'
+SERVER_VERSION = '3.2'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -95,7 +95,31 @@ def upcoming(hours=48):
     return out
 
 
-def do_fetch(mid, force=False):
+def played():
+    """最近 120 小時內已開賽嘅場次（上限 1200 場，最新排先），主頁「已開賽」區用"""
+    conn = db()
+    rows = conn.execute(
+        "SELECT m.id, c.req_name, m.kickoff, ht.name_tc, at.name_tc, "
+        "m.home_score, m.away_score, "
+        "oc.handicap, oc.giver, oc.home_odds, oc.away_odds "
+        "FROM matches m JOIN seasons s ON s.id=m.season_id "
+        "JOIN competitions c ON c.titan_id=s.titan_id "
+        "JOIN teams ht ON ht.titan_id=m.home_id "
+        "JOIN teams at ON at.titan_id=m.away_id "
+        "LEFT JOIN odds_asian oc ON oc.match_id=m.id AND oc.company_id=12 "
+        "AND oc.label='closing' "
+        "WHERE m.kickoff < datetime('now','localtime') "
+        "AND m.kickoff >= datetime('now','localtime','-120 hours') "
+        "ORDER BY m.kickoff DESC LIMIT 1200", ()).fetchall()
+    out = []
+    for mid, lg, ko, h, a, hs, aws, hc, gv, ho, ao in rows:
+        line = None
+        if hc is not None:
+            line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao}
+        out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
+                    'score': None if hs is None else f'{hs}-{aws}', 'line': line})
+    conn.close()
+    return out
     with _fetch_lock:
         if not force and time.time() - _last_fetch.get(mid, 0) < 120:
             return {'ok': True, 'cached': True}
@@ -1503,7 +1527,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/upcoming':
             q = parse_qs(u.query)
             hours = int(q.get('hours', ['48'])[0])
-            self._send(200, json.dumps(upcoming(hours), ensure_ascii=False))
+            self._send(200, json.dumps(
+                {'upcoming': upcoming(hours), 'played': played()},
+                ensure_ascii=False))
             return
         if u.path == '/api/screen':
             q = parse_qs(u.query)

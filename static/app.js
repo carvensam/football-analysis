@@ -81,10 +81,12 @@ function cnt(oc, key){ return oc ? `${oc[key]} (${pct(oc[key+'_r'])})` : '—'; 
 async function loadList() {
   setStatus('載入賽事…');
   const hours = $('#hours').value;
-  const list = await jget('/api/upcoming?hours='+hours);
+  const d = await jget('/api/upcoming?hours='+hours);
+  const list = d.upcoming || [];
   const box = $('#matchList');
   box.innerHTML = '';
-  if (!list.length) { box.innerHTML = '<div class="empty">' + (hours === '0' ? '無即將開賽賽事' : '未來'+hours+'小時無賽事') + '</div>'; listCount = 0; lastList = []; listUpdatedAt = new Date(); updateStatus(); return; }
+  if (!list.length) { box.innerHTML = '<div class="empty">' + (hours === '0' ? '無即將開賽賽事' : '未來'+hours+'小時無賽事') + '</div>'; listCount = 0; lastList = []; listUpdatedAt = new Date(); updateStatus(); }
+  else {
   lastList = list;
   listUpdatedAt = new Date();
   let lastDate = '';
@@ -113,6 +115,38 @@ async function loadList() {
   }
   listCount = list.length;
   updateStatus();
+  }
+  renderPlayed(d.played || []);
+}
+
+// 已開賽區：最近 120 小時、上限 1200 場、按日期分類（API 已最新排先）
+function renderPlayed(played) {
+  const box = $('#playedList');
+  if (!box) return;
+  box.innerHTML = '';
+  if (!played.length) { box.innerHTML = '<div class="empty">過去120小時內無已開賽場次</div>'; return; }
+  let lastDate = '';
+  for (const m of played) {
+    const dd = m.kickoff.slice(5, 10);
+    if (dd !== lastDate) {
+      lastDate = dd;
+      const sep = document.createElement('div');
+      sep.className = 'date-sep';
+      sep.textContent = m.kickoff.slice(0, 10);
+      box.appendChild(sep);
+    }
+    const row = document.createElement('div');
+    row.className = 'mrow played' + (curMatch === m.id ? ' active' : '');
+    row.dataset.id = m.id;
+    const line = m.line ? `<span class="line-tag">${esc(m.line.line)} 主${m.line.ho}/客${m.line.ao}</span>` : '';
+    const score = m.score ? `<b class="score">${esc(m.score)}</b>` : '<span class="badge no">進行中</span>';
+    row.innerHTML = `
+      <div class="top"><span>${esc(m.league)}</span><span>${m.kickoff.slice(11,16)}</span></div>
+      <div class="mid">${esc(m.home)} ${score} ${esc(m.away)}</div>
+      <div class="bot">${line} <span class="badge ok">已開賽</span></div>`;
+    row.onclick = () => openMatch(m.id, row);
+    box.appendChild(row);
+  }
 }
 
 let picksMap = {};   // match_id -> 'up'/'down'
@@ -750,25 +784,37 @@ function distSection(item, curLine, curZone) {
     <div id="${key}-league" style="display:none">${distRender(item.league, ZONES, curLine, curZone)}</div>`;
 }
 
-function zoneRates(d) {
+// 水位區標籤（'≤0.69'／'0.70-0.74'／'≥1.10'）係咪包含某水位
+function zoneHit(zlabel, w) {
+  if (w == null || isNaN(w)) return false;
+  const s = String(zlabel);
+  if (s.charAt(0) === '≤') return w <= parseFloat(s.slice(1));
+  if (s.charAt(0) === '≥') return w >= parseFloat(s.slice(1));
+  const parts = s.split('-');
+  const lo = parseFloat(parts[0]), hi = parseFloat(parts[1]);
+  return w >= lo && w <= hi;
+}
+
+function zoneRates(d, curWater) {
   if (!d || !d.n) return `<div class="err">無樣本（分母 ${d && d.pool != null ? d.pool.toLocaleString() : '—'} 場）</div>`;
-  let h = `<div class="note">樣本 ${d.n} 場／分母 ${d.pool != null ? d.pool.toLocaleString() : '—'} 場　<span style="opacity:.7">水位＝上盤（讓球方）尾盤水位；<b>平手盤：上盤＝平手主隊、下盤＝平手客隊</b>，取低水方。結果只計 贏1／走盤／輸1</span></div>`;
+  let h = `<div class="note">樣本 ${d.n} 場／分母 ${d.pool != null ? d.pool.toLocaleString() : '—'} 場　<span style="opacity:.7">水位＝上盤（讓球方）尾盤水位；<b>平手盤：上盤＝平手主隊、下盤＝平手客隊</b>，取低水方。結果只計 贏1／走盤／輸1</span>　<b style="color:#ffd766">＝黃底行＝包含今場上盤水位嘅水位區</b></div>`;
   h += `<table><tr><th class="l">上盤水位</th><th>場次</th><th>上盤率（贏1）</th><th>下盤率（輸1）</th><th>走盤率</th></tr>`;
   for (const z of d.zones) {
-    h += `<tr><td class="l">${esc(z.zone)}</td><td class="num">${z.n}</td>
+    const cur = zoneHit(z.zone, curWater);
+    h += `<tr${cur ? ' class="cur-row"' : ''}><td class="l">${esc(z.zone)}</td><td class="num">${z.n}</td>
       <td class="r-up num">${pct(z.up_r)}</td><td class="r-down num">${pct(z.down_r)}</td>
       <td class="r-push num">${pct(z.push_r)}</td></tr>`;
   }
   return h + '</table>';
 }
 
-function zoneSection(item) {
+function zoneSection(item, curWater) {
   const key = 'z' + Math.random().toString(36).slice(2,7);
   return `<div class="tabs">
     <span class="tab on" data-k="all" data-t="${key}">全庫</span>
     <span class="tab" data-k="league" data-t="${key}">同聯賽</span></div>
-    <div id="${key}-all">${zoneRates(item.all)}</div>
-    <div id="${key}-league" style="display:none">${zoneRates(item.league)}</div>`;
+    <div id="${key}-all">${zoneRates(item.all, curWater)}</div>
+    <div id="${key}-league" style="display:none">${zoneRates(item.league, curWater)}</div>`;
 }
 
 function gapCard(t, g) {
@@ -799,7 +845,7 @@ function item20HTML(it, t, titles) {
   for (let k = 1; k <= 19; k++) {
     if (k === 14 || k === 17) continue;   // 分析項，不能剔
     boxes += `<div class="i16-row"><label title="${esc(titles[k] || '')}">
-      <input type="checkbox" class="i16-cb" value="${k}" ${it.sel && it.sel.includes(k) ? 'checked' : ''}>
+      <input type="checkbox" class="i16-cb" value="${k}" ${it.sel && it.sel.includes(String(k)) ? 'checked' : ''}>
       <b>${k}.</b> ${esc(titles[k] || '')}</label></div>`;
   }
   return `<div class="note">${esc(it.ref || '')}</div>
@@ -808,19 +854,20 @@ function item20HTML(it, t, titles) {
     <div id="i20-result" style="margin-top:10px">${it.sel ? i15ResultTable(it) : '<div class="note">尚未提交</div>'}</div>`;
 }
 
-function itemPreview(i, it) {
+function itemPreview(k, it) {
   if (it.error) return `<span class="pv err">｜${esc(it.error)}</span>`;
   const fmtOC = oc => (oc && oc.n != null)
     ? `${oc.up}／${oc.n}（上 ${pct(oc.up_r)}｜下 ${pct(oc.down_r)}）` : '—';
-  if (i <= 9)
+  const kn = +k;
+  if (k === '5A' || (k !== '5B' && !isNaN(kn) && kn <= 9))
     return `<span class="pv">｜全庫 ${fmtOC(it.all)}　同聯賽 ${fmtOC(it.league)}</span>`;
-  if (i <= 13 || i == 15 || i == 16 || i == 18 || i == 19)
+  if (k === '5B' || (!isNaN(kn) && kn <= 13) || k === '15' || k === '16' || k === '18' || k === '19')
     return `<span class="pv">｜全庫樣本 ${(it.all && it.all.n) || 0} 場　同聯賽 ${(it.league && it.league.n) || 0} 場</span>`;
-  if (i == 14 || i == 17) {
+  if (k === '14' || k === '17') {
     const m = it.all && it.all.mode, d = it.all && it.all.d50;
     return `<span class="pv">｜全庫：分佈最多 ${m ? esc(m.line) + ' ' + m.n + '場' : '—'}　近50% ${d ? esc(d.line) + ' ' + d.n + '場' : '—'}</span>`;
   }
-  if (i == 20)
+  if (k === '20')
     return `<span class="pv">｜${it.sel ? '已剔選：' + it.sel.map(s => '第' + s + '項').join('、') : '剔選第1-19項（第14、17項除外）後提交'}</span>`;
   return '';
 }
@@ -839,6 +886,7 @@ function renderResult(res) {
       ${lineBox('尾盤（檢查基準）', t.close)}
       ${lineBox('初盤', t.init)}
       ${lineBox('開賽前4小時', t.h4)}
+      ${lineBox('開賽前10分鐘', t.h10)}
     </div>
     <div class="tbtns">
       <button class="btn" id="btnRefreshLine">⟳ 重新整理盤口及水位</button>
@@ -857,21 +905,24 @@ function renderResult(res) {
   }
   const curZone = zoneIdx(curWater);
 
-  for (let i = 1; i <= 20; i++) {
-    const it = res.items[String(i)];
+  const ORDER = ['1', '2', '3', '4', '5', '5A', '5B', '6', '7', '8', '9', '10',
+                 '11', '12', '13', '14', '15', '16', '17', '18', '19', '20'];
+  for (const k of ORDER) {
+    const it = res.items[String(k)];
     if (!it) continue;
+    const kn = +k;
     let body = '';
-    if (i == 20) {
+    if (k === '20') {
       body = it.error ? `<div class="err">${esc(it.error)}</div>` : item20HTML(it, t, titles);
     } else if (it.error) {
-      body = `<div class="err">${i >= 10 && it.ref ? '' : esc(it.ref || '')} ${esc(it.error)}</div>`;
-    } else if (i <= 9) {
+      body = `<div class="err">${!isNaN(kn) && kn >= 10 && it.ref ? '' : esc(it.ref || '')} ${esc(it.error)}</div>`;
+    } else if (k === '5A' || (!isNaN(kn) && kn <= 9)) {
       body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '') + outcomeTable(it);
-    } else if (i <= 13) {
+    } else if (k === '5B' || (!isNaN(kn) && kn <= 13)) {
       body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '') + distSection(it, curLine, curZone);
-    } else if (i == 15) {
-      body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '') + zoneSection(it);
-    } else if (i == 18 || i == 19) {
+    } else if (k === '15') {
+      body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '') + zoneSection(it, curWater);
+    } else if (k === '18' || k === '19') {
       const ocLine = d => {
         if (!d || !d.oc) return '';
         const oc = d.oc;
@@ -880,20 +931,20 @@ function renderResult(res) {
       body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '')
         + ocLine(it.all) + ocLine(it.league)
         + '<h4 style="margin:12px 0 4px">各水位 上盤率／下盤率／走盤率</h4>'
-        + zoneSection({all: it.all, league: it.league});
-    } else if (i == 16) {
+        + zoneSection({all: it.all, league: it.league}, curWater);
+    } else if (k === '16') {
       body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '')
         + distSection({all: {n: it.all.n, pool: it.all.pool, dist: it.all.dist},
                        league: {n: it.league.n, pool: it.league.pool, dist: it.league.dist}},
                       curLine, curZone)
         + '<h4 style="margin:12px 0 4px">各水位 上盤率／下盤率／走盤率</h4>'
-        + zoneSection({all: it.all, league: it.league});
+        + zoneSection({all: it.all, league: it.league}, curWater);
     } else {
       body = `<div class="note">參照：${esc(it.ref || '')}</div>
         <h4 style="margin:8px 0 4px">全庫</h4>${gapCard('分佈最多的盤口', it.all && it.all.mode)}${gapCard('上盤勝率最接近 50% 的盤口（至少5場）', it.all && it.all.d50)}
         <h4 style="margin:12px 0 4px">同聯賽（${esc(t.league)}）</h4>${gapCard('分佈最多的盤口', it.league && it.league.mode)}${gapCard('上盤勝率最接近 50% 的盤口（至少5場）', it.league && it.league.d50)}`;
     }
-    h += `<details><summary><span class="sum-t">${i}. ${esc(it.title)}</span>${it.ref && i<=9 ? `<span class="sub">${esc(it.ref)}</span>` : ''}${itemPreview(i, it)}</summary><div class="body">${body}</div></details>`;
+    h += `<details><summary><span class="sum-t">${k}. ${esc(it.title)}</span>${it.ref && (k === '5A' || (!isNaN(kn) && kn <= 9)) ? `<span class="sub">${esc(it.ref)}</span>` : ''}${itemPreview(k, it)}</summary><div class="body">${body}</div></details>`;
   }
   // 我的選擇（上/下盤）——放喺頁最底
   h += `<div class="tbtns pk-bar">
@@ -969,6 +1020,14 @@ function lineBox(title, o) {
 $('#btnRefresh').onclick = loadList;
 $('#hours').onchange = loadList;
 
+// 五個大版面頂部嘅「🏠 主頁」掣：一撳關閉 overlay 返主頁
+document.querySelectorAll('.ov-home').forEach(b => {
+  b.onclick = () => {
+    const ov = b.closest('[id$="Overlay"]');
+    if (ov) ov.style.display = 'none';
+  };
+});
+
 // ===== 我的選擇 · 大版面 =====
 $('#btnPicksBig').onclick = openPicksOverlay;
 $('#pkOvClose').onclick = closePicksOverlay;
@@ -984,9 +1043,39 @@ $('#ckOvClose').onclick = closeCheckOverlay;
 $('#btnCkScan').onclick = startCkScan;
 
 // ===== 過往賽果 =====
-let rsFilter = {league: '', hc: '', gv: ''};   // '' = 全部
+let rsFilter = {league: '', hc: '', gv: '', win: ''};   // '' = 全部；win: '' / 'W' 贏超50% / 'L' 輸超50%
 
 function _pct_(v) { return v == null ? '—' : (v * 100).toFixed(1) + '%'; }
+
+// 按聯賽／日期 分組嘅 贏/輸/走 比例表（用已篩選嘅 d.items client-side 計）
+function _rsRatioTable(items, keyFn, title) {
+  const g = {};
+  for (const m of items) {
+    if (!m.ft_result) continue;
+    const k = keyFn(m);
+    if (!k) continue;
+    const e = g[k] || (g[k] = {w: 0, l: 0, p: 0});
+    if (m.ft_result === 'W') e.w++;
+    else if (m.ft_result === 'L') e.l++;
+    else e.p++;
+  }
+  let rows = Object.entries(g).map(([k, v]) => ({
+    k, w: v.w, l: v.l, p: v.p, n: v.w + v.l + v.p,
+    r: (v.w + v.l) ? v.w / (v.w + v.l) : null
+  }));
+  if (rsFilter.win === 'W') rows = rows.filter(r => r.r != null && r.r > 0.5);
+  if (rsFilter.win === 'L') rows = rows.filter(r => r.r != null && r.r < 0.5);
+  rows.sort((a, b) => b.n - a.n);
+  let h = `<h4 style="margin:14px 0 4px">${esc(title)}</h4><table>
+    <tr><th class="l">${title.indexOf('日期') >= 0 ? '日期' : '聯賽'}</th><th>場次</th><th>贏</th><th>輸</th><th>走</th><th>贏率（贏÷(贏+輸)）</th></tr>`;
+  for (const r of rows) {
+    h += `<tr><td class="l">${esc(r.k)}</td><td class="num">${r.n}</td>
+      <td class="r-up num">${r.w}</td><td class="r-down num">${r.l}</td>
+      <td class="r-push num">${r.p}</td><td class="num"><b>${_pct_(r.r)}</b></td></tr>`;
+  }
+  if (!rows.length) h += '<tr><td colspan="6" class="note">無符合條件嘅場次</td></tr>';
+  return h + '</table>';
+}
 
 function _rsCard(m) {
   // 精選場次卡：入選方向＋結算結果＋賽果開出
@@ -1078,10 +1167,13 @@ function _rsFilterBar(d) {
       const v = `${o.hc}|${o.gv}`;
       return `<option value="${v}" ${rsFilter.hc !== '' && String(rsFilter.hc) === String(o.hc) && rsFilter.gv === o.gv ? 'selected' : ''}>${esc(o.line)}（${o.n} 場）</option>`;
     }));
+  const winOpts = [['', '全部勝負'], ['W', '贏超50%'], ['L', '輸超50%']]
+    .map(([v, t]) => `<option value="${v}" ${rsFilter.win === v ? 'selected' : ''}>${t}</option>`);
   return `<div class="rs-filter">
     <label>聯賽 <select id="rsLg">${lgOpts.join('')}</select></label>
     <label>盤口 <select id="rsLn">${lnOpts.join('')}</select></label>
-    <span style="color:var(--dim);font-size:12px">篩選後統計、走勢、列表全部跟住變</span>
+    <label>勝負 <select id="rsWin">${winOpts.join('')}</select></label>
+    <span style="color:var(--dim);font-size:12px">篩選後統計、走勢、比例表全部跟住變</span>
   </div>`;
 }
 
@@ -1120,6 +1212,9 @@ async function renderResultsOverlay() {
   h += '</div>';
   h += `<div class="rs-trend-w"><div class="rs-trend-t">精選逐日命中走勢（最近 ${(d.trend || []).length} 日，跟篩選；綠≥50%・紅&lt;50%）</div>
     <canvas id="rsTrend" class="rs-trend"></canvas></div>`;
+  const rsItems = d.items || [];
+  h += _rsRatioTable(rsItems, m => m.league, '按聯賽 贏／輸比例（跟篩選）');
+  h += _rsRatioTable(rsItems, m => (m.kickoff || '').slice(0, 10), '按日期 贏／輸比例（跟篩選）');
   let lastDate = '';
   for (const m of (d.items || [])) {
     const dd = m.kickoff.slice(0, 10);
@@ -1140,6 +1235,10 @@ async function renderResultsOverlay() {
     const v = ev.target.value;
     if (!v) { rsFilter.hc = ''; rsFilter.gv = ''; }
     else { const [hc, gv] = v.split('|'); rsFilter.hc = hc; rsFilter.gv = gv; }
+    renderResultsOverlay();
+  };
+  document.getElementById('rsWin').onchange = ev => {
+    rsFilter.win = ev.target.value;
     renderResultsOverlay();
   };
   _rsDrawTrend(document.getElementById('rsTrend'), d.trend || []);

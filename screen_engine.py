@@ -22,6 +22,7 @@
 import os
 import sqlite3
 import threading
+import datetime
 import numpy as np
 import pandas as pd
 
@@ -146,6 +147,19 @@ def load_pool(conn, max_age=1800):
         prev = {}
         pair_latest = {}
         if len(allm):
+            # 每場嘅 pre_10m（開賽前10分鐘）——第 5A/5B 項用；merge 一定要在 sort/groupby 之前
+            o10 = pd.read_sql(
+                "SELECT m.id, oc.handicap AS h10, oc.giver AS g10, "
+                "oc.home_odds AS ho10, oc.away_odds AS ao10 FROM matches m "
+                "JOIN odds_asian oc ON oc.match_id=m.id AND oc.label='pre_10m' AND oc.company_id=12 "
+                "WHERE m.home_score IS NOT NULL AND oc.handicap IS NOT NULL", conn)
+            if len(o10):
+                allm = allm.merge(o10, on='id', how='left')
+            else:
+                allm['h10'] = np.nan
+                allm['g10'] = None
+                allm['ho10'] = np.nan
+                allm['ao10'] = np.nan
             a = np.minimum(allm['home_id'].to_numpy(), allm['away_id'].to_numpy())
             b = np.maximum(allm['home_id'].to_numpy(), allm['away_id'].to_numpy())
             allm = allm.assign(_pa=a, _pb=b).sort_values(['kickoff', 'id'], kind='mergesort')
@@ -154,15 +168,23 @@ def load_pool(conn, max_age=1800):
             allm['_pv_g'] = grp['giver'].shift(1)
             allm['_pv_ho'] = grp['home_odds'].shift(1)
             allm['_pv_ao'] = grp['away_odds'].shift(1)
+            # 「對上一次對賽」嘅 pre_10m（雙重相同篩選用）
+            allm['_pv10_h'] = grp['h10'].shift(1)
+            allm['_pv10_g'] = grp['g10'].shift(1)
+            allm['_pv10_ho'] = grp['ho10'].shift(1)
+            allm['_pv10_ao'] = grp['ao10'].shift(1)
             has = allm['_pv_h'].notna()
             if has.any():
                 sub = allm.loc[has]
                 prev = dict(zip(sub['id'].astype(int).tolist(),
                                 zip(sub['_pv_h'], sub['_pv_g'], sub['_pv_ho'], sub['_pv_ao'])))
-                mprev = allm.loc[has, ['id', '_pv_h', '_pv_g', '_pv_ho', '_pv_ao']]
+                mprev = allm.loc[has, ['id', '_pv_h', '_pv_g', '_pv_ho', '_pv_ao',
+                                       '_pv10_h', '_pv10_g', '_pv10_ho', '_pv10_ao']]
                 df = df.merge(mprev, on='id', how='left')
                 df = df.rename(columns={'_pv_h': 'pv_h', '_pv_g': 'pv_g',
-                                        '_pv_ho': 'pv_ho', '_pv_ao': 'pv_ao'})
+                                        '_pv_ho': 'pv_ho', '_pv_ao': 'pv_ao',
+                                        '_pv10_h': 'pv10_h', '_pv10_g': 'pv10_g',
+                                        '_pv10_ho': 'pv10_ho', '_pv10_ao': 'pv10_ao'})
             # pair → 最新一場對賽 (kickoff, id, h, g, ho, ao)，供目標賽事查「對上一次對賽尾盤」
             tail = grp.tail(1)
             pair_latest = {(int(pa), int(pb)): (ko, int(i), h, g, ho, ao)
@@ -172,9 +194,10 @@ def load_pool(conn, max_age=1800):
                                tail['handicap'].tolist(), tail['giver'].tolist(),
                                tail['home_odds'].tolist(), tail['away_odds'].tolist())}
         if 'pv_h' not in df.columns:
-            for c in ('pv_h', 'pv_ho', 'pv_ao'):
+            for c in ('pv_h', 'pv_ho', 'pv_ao', 'pv10_h', 'pv10_ho', 'pv10_ao'):
                 df[c] = np.nan
             df['pv_g'] = None
+            df['pv10_g'] = None
         # 每場「主隊」對上一次比賽（任何對手）嘅尾盤 —— 第16/17項用
         line_of = {}
         if len(allm):
@@ -663,6 +686,67 @@ def screen(conn, t, sel=None):
     else:
         items['17'] = {'title': '第16項延伸', 'ref': r16, 'error': '不適用', 'pool': dict(pools)}
 
+    # 5A / 5B：對上一次對賽【pre_10m 開賽前10分鐘】同今場 pre_10m 相同 ＋【尾盤】同今場尾盤相同（雙重相同）
+    T_10m = tline(odds, 'pre_10m')
+    now = datetime.datetime.now()
+    try:
+        ko = datetime.datetime.strptime(str(t['kickoff'])[:19], '%Y-%m-%d %H:%M:%S')
+    except Exception:
+        ko = None
+    err5a = None
+    # 尾盤參照：冇尾盤（未開賽）→ 用查詢時間即時最新盤
+    Tc_ref = T_close
+    c_note = ''
+    if Tc_ref is None:
+        best_lb = None
+        for lb, o in odds.items():
+            if o.get('h') is None:
+                continue
+            if best_lb is None or str(lb) > str(best_lb):
+                best_lb = lb
+        if best_lb is not None:
+            o = odds[best_lb]
+            Tc_ref = {'h': o['h'], 'g': o['g'], 'ho': o['ho'], 'ao': o['ao']}
+            c_note = f'（今場未有尾盤，用查詢時間即時最新盤：{best_lb}）'
+        else:
+            err5a = '未有資料：今場無任何盤口'
+    # pre_10m 參照
+    Tm_ref = T_10m
+    m_note = ''
+    if Tm_ref is None and err5a is None:
+        if ko is not None and now < ko - datetime.timedelta(minutes=10):
+            err5a = '未有資料：查詢時間在開賽前10分鐘之前'
+        elif Tc_ref is not None:
+            Tm_ref = Tc_ref
+            m_note = '（今場未有 pre_10m 記錄，用即時最新盤代替）'
+        else:
+            err5a = '未有資料：今場無任何盤口'
+    t5a = '對上一次對賽「開賽前10分鐘」同今場 pre_10m ＋「尾盤」同今場尾盤 雙重相同'
+    if err5a:
+        items['5A'] = {'title': t5a + ' → 上/下/走',
+                       'ref': err5a, 'error': err5a, 'pool': dict(pools)}
+        items['5B'] = {'title': '同5A篩選 → 盤口分佈 ＋ 各水位 上/下/走 率',
+                       'ref': err5a, 'error': err5a, 'pool': dict(pools)}
+    else:
+        m5a = line_eq(df, 'pv10', Tm_ref) & line_eq(df, 'pv', Tc_ref)
+        masks['5A'] = m5a
+        masks['5B'] = m5a
+        r5a = (f"今場開賽前10分鐘：{fmt_line(Tm_ref['h'], Tm_ref['g'])} 主{Tm_ref['ho']}/客{Tm_ref['ao']}{m_note}　"
+               f"今場尾盤：{fmt_line(Tc_ref['h'], Tc_ref['g'])} 主{Tc_ref['ho']}/客{Tc_ref['ao']}{c_note}　"
+               "篩選：歷史場次嘅【對上一次對賽】開賽前10分鐘盤 及【對上一次對賽】尾盤，"
+               "同上面兩組各自完全相同（盤口100%一樣，水位±0.03）")
+        items['5A'] = {'title': t5a + ' → 上/下/走',
+                       'ref': r5a, 'pool': dict(pools), **pair(df[m5a])}
+        sub5a = df[m5a]
+        sub5a_lg = sub5a[sub5a['league'] == lg]
+        items['5B'] = {'title': '同5A篩選 → 盤口分佈 ＋ 各水位 上/下/走 率',
+                       'ref': r5a, 'pool': dict(pools),
+                       'all': {'n': len(sub5a), 'pool': pool_all,
+                               'dist': dist_table(sub5a), 'zones': zone_rates(sub5a)},
+                       'league': {'n': len(sub5a_lg), 'pool': pool_lg,
+                                  'dist': dist_table(sub5a_lg), 'zones': zone_rates(sub5a_lg)}}
+
+
     # 18：主隊主場排名 − 客隊客場排名 差距淨值（±1）＋ 同今場尾盤 100% 相同盤口 → 結果＋各水位率
     if pre.get('home_home_rank') and pre.get('away_away_rank'):
         d18 = pre['home_home_rank'] - pre['away_away_rank']
@@ -730,20 +814,20 @@ def screen(conn, t, sel=None):
                    'ref': '喺下面剔選條件再按「提交」（第14、17項係分析項、第20項係組合本身，都不能剔）；結果分 全資料庫／同聯賽／同賽事類別（聯賽/杯賽）',
                    'pool': dict(pools)}
     if sel:
-        sel = [int(s) for s in sel if str(s).strip()]
-        bad = [s for s in sel if s in (14, 17, 20)]
-        none_items = [s for s in sel if s not in (14, 17, 20) and masks.get(s) is None]
-        none_items += [s for s in sel if s not in masks and s not in (14, 17, 20)]
+        sel = [str(s).strip() for s in sel if str(s).strip()]
+        masks_s = {str(k): v for k, v in masks.items()}
+        bad = [s for s in sel if s in ('14', '17', '20')]
+        none_items = [s for s in sel if s not in ('14', '17', '20') and masks_s.get(s) is None]
         if bad:
             items['20'] = {**items['20'],
                            'error': '第14、17項係分析項（淨差距）、第20項係組合篩查本身，無篩選條件，不能剔選'}
         elif none_items:
             items['20'] = {**items['20'],
-                           'error': f'剔選咗而家不適用嘅項目：第{"、".join(map(str, sorted(set(none_items))))}項（目標賽事數據不足）'}
+                           'error': f'剔選咗而家不適用嘅項目：第{"、".join(sorted(set(none_items), key=lambda x: (len(x), x)))}項（目標賽事數據不足）'}
         else:
-            m = masks[sel[0]].copy()
+            m = masks_s[sel[0]].copy()
             for s in sel[1:]:
-                m &= masks[s]
+                m &= masks_s[s]
             sub = df[m]
             items['20'] = {'title': '組合篩查：剔選第1-19項，同時符合全部剔選條件',
                            'ref': '已剔選：' + '、'.join(f'第{s}項' for s in sel),
@@ -775,7 +859,10 @@ def screen(conn, t, sel=None):
                              'g': T_init['g']} if T_init else None),
                    'h4': ({'line': fmt_line(T_4h['h'], T_4h['g']),
                            'ho': T_4h['ho'], 'ao': T_4h['ao'],
-                           'g': T_4h['g']} if T_4h else None)},
+                           'g': T_4h['g']} if T_4h else None),
+                   'h10': ({'line': fmt_line(T_10m['h'], T_10m['g']),
+                            'ho': T_10m['ho'], 'ao': T_10m['ao'],
+                            'g': T_10m['g']} if T_10m else None)},
         'zones': ZONES,
         'items': items,
     }
