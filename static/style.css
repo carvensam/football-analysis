@@ -5,10 +5,22 @@
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--txt);
-       font-family: "Microsoft JhengHei", "PingFang SC", sans-serif; font-size: 14px; }
+       font-family: "Microsoft JhengHei", "PingFang SC", sans-serif; font-size: 14px;
+       padding-bottom: 76px; }
+/* 頂部：橫額＋控制列一齊黏頂 */
+.top-wrap { position: sticky; top: 0; z-index: 10; }
+/* 金色橫額 */
+.gold-banner { background: linear-gradient(180deg, #ffe082 0%, #f5c13d 45%, #d4a017 100%);
+  color: #241a02; text-align: center; font-weight: 900;
+  font-size: clamp(22px, 6vw, 38px); letter-spacing: 4px;
+  padding: 10px 8px 12px; text-shadow: 0 1px 0 rgba(255,255,255,.35);
+  border-bottom: 2px solid #8a6a0d; }
+/* 底部金色橫額：永久釘喺屏幕最底，字 = 內文 3 倍大（14px × 3 = 42px） */
+.gold-banner-bottom { position: fixed; bottom: 0; left: 0; right: 0; z-index: 10;
+  font-size: 42px; letter-spacing: 8px; padding: 14px 8px 18px;
+  border-bottom: none; border-top: 2px solid #8a6a0d; }
 header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-         padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--line);
-         position: sticky; top: 0; z-index: 9; }
+         padding: 12px 18px; background: var(--panel); border-bottom: 1px solid var(--line); }
 header h1 { font-size: 18px; margin: 0; }
 .hdr-ctl { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 select, .btn { background: var(--panel2); color: var(--txt); border: 1px solid var(--line);
