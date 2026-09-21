@@ -32,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '3.3'
+SERVER_VERSION = '3.3.2'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -181,6 +181,28 @@ def _update_worker():
             except Exception:
                 n_fail += 1
         st['odds_refresh'] = f'{n_ok} 場成功 / {n_fail} 場失敗'
+        # ②b 未開賽但完全冇盤口嘅場次（未來72小時內）補爬——
+        # 舊快照/新插入場次可能從未抓過賠率，冇呢步佢哋永遠冇盤口顯示
+        todo2 = conn.execute(
+            'SELECT m.id, m.kickoff FROM matches m '
+            'WHERE m.home_score IS NULL '
+            "AND m.kickoff >= datetime('now','localtime') "
+            "AND m.kickoff <= datetime('now','localtime','+72 hours') "
+            'AND NOT EXISTS(SELECT 1 FROM odds_asian o '
+            'WHERE o.match_id=m.id AND o.company_id=12) '
+            'ORDER BY m.kickoff').fetchall()
+        n_fill_ok = n_fill_fail = 0
+        for i, (mid, ko) in enumerate(todo2):
+            _update_state['phase'] = (
+                f'補爬缺少盤口嘅場次 {i + 1}/{len(todo2)}')
+            try:
+                if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
+                    n_fill_ok += 1
+                else:
+                    n_fill_fail += 1
+            except Exception:
+                n_fill_fail += 1
+        st['odds_fill'] = f'{n_fill_ok} 場成功 / {n_fill_fail} 場失敗'
         _update_state['error'] = None
         print(f"[update] 完成：{st}", flush=True)
         ok = True
