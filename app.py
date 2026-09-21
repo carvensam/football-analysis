@@ -120,6 +120,10 @@ def played():
                     'score': None if hs is None else f'{hs}-{aws}', 'line': line})
     conn.close()
     return out
+
+
+def do_fetch(mid, force=False):
+    """即場抓取單場賽事嘅賠率（盤口＋水位）"""
     with _fetch_lock:
         if not force and time.time() - _last_fetch.get(mid, 0) < 120:
             return {'ok': True, 'cached': True}

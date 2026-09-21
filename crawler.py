@@ -568,6 +568,38 @@ def save_season(conn, titan_id, season_label, is_current, parsed):
     return season_id, n_matches
 
 
+def save_with_sub_leagues(conn, fetcher, titan_id, season_label, is_current,
+                          text, parsed, expand=False):
+    """保存賽季檔；若聯賽採子聯賽結構（arrSubLeague，如州錦標賽分組賽+淘汰階段
+    各自獨立數據檔 s<id>_<subId>.js），補取各子檔，避免只入庫其中一個階段
+    （巴西聖保羅州錦標賽曾因此只入庫決賽 2 場）。"""
+    season_id, n = save_season(conn, titan_id, season_label, is_current, parsed)
+    if not expand:
+        return season_id, n
+    m = re.search(r'var arrSubLeague = \[(.*?)\];', text, re.S)
+    if not m:
+        return season_id, n
+    try:
+        subs = [int(row[0]) for row in js_array_to_py('[' + m.group(1) + ']')]
+    except Exception:
+        return season_id, n
+    for sub in subs:
+        sub_url = (f'https://zq.titan007.com/jsData/matchResult/'
+                   f'{season_label}/s{titan_id}_{sub}.js?version=1')
+        sub_text = fetcher.get(sub_url)
+        if (not sub_text or sub_text.lstrip().startswith('<')
+                or 'jh[' not in sub_text):
+            continue
+        try:
+            _, n2 = save_season(conn, titan_id, season_label, is_current,
+                                parse_season_js(sub_text))
+            n += n2
+        except Exception:
+            log(conn, 'ERROR', f'子聯賽檔解析失敗 s{titan_id}_{sub} {season_label}\n'
+                + traceback.format_exc())
+    return season_id, n
+
+
 def _save_standing(conn, season_id, st, now):
     conn.execute(
         'INSERT INTO standings(season_id,team_id,scope,grp,rank,played,win,draw,'
@@ -745,8 +777,9 @@ def run(cfg, args):
                     log(conn, 'ERROR', f'賽季檔解析失敗 {tid} {season_label}\n'
                         + traceback.format_exc())
                     continue
-                season_id, n_matches = save_season(conn, tid, season_label,
-                                                   is_current, parsed)
+                season_id, n_matches = save_with_sub_leagues(
+                    conn, fetcher, tid, season_label, is_current, text, parsed,
+                    expand=('_' in prefix))
 
                 # 盤口（可斷點續爬）
                 todo = conn.execute(
@@ -833,7 +866,8 @@ def recent_update(conn, cfg, days=3, progress=None):
                     log(conn, 'WARN', f'賽季檔下載失敗 {tid} {season_label}')
                     continue
                 parsed = parse_season_js(text)
-                save_season(conn, tid, season_label, 1, parsed)
+                save_with_sub_leagues(conn, fetcher, tid, season_label, 1,
+                                      text, parsed, expand=('_' in prefix))
                 stats['seasons'] += 1
             except Exception:
                 log(conn, 'ERROR',
