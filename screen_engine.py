@@ -103,6 +103,48 @@ _pool_cache = {'df': None, 'prev_h2h': None, 'pair_latest': None, 'ts': 0}
 _pool_lock = threading.Lock()
 
 
+def _prev_convert(h, g, ho, ao, same):
+    """對上一次對賽盤 → 今場主隊角度『對比盤』（2026-09-21 用戶確認版）。
+    same=True（該場主隊當時都係主場）→ 直比，用原始值；
+    same=False（今場主隊當時作客）→ 互換：
+      讓球：跟蹤隊角度 s' = s + 0.5（¼格，主場優勢 HAV=0.25）
+      水位：HR 模型逆推 —— hr1 = Hv1 + (0.5−P1)×1.25；hr2 = −hr1 + 2×HAV；
+            P2 = 0.5 − (hr2 − Hv2)/1.25（限 0.05–0.95）；
+            R 用原盤自身雙向返還率，只接受 0.939±0.04（0.899–0.979）嘅盤。
+    回傳 (h2, g2, ho2, ao2)；不可用嘅列 h2=NaN（line_eq 自然比唔中）。"""
+    idx = h.index
+    h2 = pd.Series(np.nan, index=idx, dtype=float)
+    g2 = pd.Series('none', index=idx, dtype=object)
+    ho2 = pd.Series(np.nan, index=idx, dtype=float)
+    ao2 = pd.Series(np.nan, index=idx, dtype=float)
+    valid = h.notna() & ho.notna() & ao.notna()
+    if not valid.any():
+        return h2, g2, ho2, ao2
+    gm = g.fillna('none')
+    hv1 = pd.Series(0.0, index=idx)
+    hv1 = hv1.mask(gm == 'home', h).mask(gm == 'away', -h)
+    o_h = ho + 1.0
+    o_a = ao + 1.0
+    inv = 1.0 / o_h + 1.0 / o_a
+    r1 = 1.0 / inv                     # 原盤自身雙向返還率
+    p1 = (1.0 / o_h) / inv             # 上回主隊歸一化勝率
+    hr2 = -(hv1 + (0.50 - p1) * 1.25) + 0.5    # 2×HAV = 0.5
+    hv2 = ((0.5 - hv1) * 4).round() / 4        # 今場主隊角度新讓球（¼格）
+    p2 = (0.50 - (hr2 - hv2) / 1.25).clip(0.05, 0.95)
+    m_same = valid & same
+    m_swap = valid & ~same & (r1 >= 0.899) & (r1 <= 0.979)
+    h2[m_same] = h[m_same]
+    g2[m_same] = gm[m_same]
+    ho2[m_same] = ho[m_same]
+    ao2[m_same] = ao[m_same]
+    h2[m_swap] = hv2[m_swap].abs()
+    g2[m_swap] = np.where(hv2[m_swap] > 0, 'home',
+                          np.where(hv2[m_swap] < 0, 'away', 'none'))
+    ho2[m_swap] = (r1[m_swap] / p2[m_swap]) - 1.0
+    ao2[m_swap] = (r1[m_swap] / (1.0 - p2[m_swap])) - 1.0
+    return h2, g2, ho2, ao2
+
+
 def load_pool(conn, max_age=1800):
     """載入歷史數據池（約 7 萬場），結果記憶 30 分鐘；多執行緒同時呼叫只會建立一次"""
     import time
@@ -168,38 +210,29 @@ def load_pool(conn, max_age=1800):
             allm['_pv_g'] = grp['giver'].shift(1)
             allm['_pv_ho'] = grp['home_odds'].shift(1)
             allm['_pv_ao'] = grp['away_odds'].shift(1)
-            # 「對上一次對賽」嘅 pre_10m（雙重相同篩選用）
+            # 「對上一次對賽」嘅 pre_10m（開賽前10分鐘）（雙重相同篩選用）
             allm['_pv10_h'] = grp['h10'].shift(1)
             allm['_pv10_g'] = grp['g10'].shift(1)
             allm['_pv10_ho'] = grp['ho10'].shift(1)
             allm['_pv10_ao'] = grp['ao10'].shift(1)
-            # 對上一次對賽場次 id / 主隊 id（計算今場主隊當時角色：主場 or 作客）
-            allm['_pv_pid'] = grp['id'].shift(1)
-            allm['_pv_hid'] = grp['home_id'].shift(1)
-            # 主客互換正規化（第 3/4/5/5A 項）：今場主隊上次作客 → 讓↔受讓對調（g 框架不變、水位主客對調）
-            _swap = allm['_pv_h'].notna() & (allm['_pv_hid'] != allm['home_id'])
-            allm['_pvN_h'] = allm['_pv_h']
-            allm['_pvN_g'] = allm['_pv_g']
-            allm['_pvN_ho'] = np.where(_swap, allm['_pv_ao'], allm['_pv_ho'])
-            allm['_pvN_ao'] = np.where(_swap, allm['_pv_ho'], allm['_pv_ao'])
-            allm['_pv10N_h'] = allm['_pv10_h']
-            allm['_pv10N_g'] = allm['_pv10_g']
-            allm['_pv10N_ho'] = np.where(_swap, allm['_pv10_ao'], allm['_pv10_ho'])
-            allm['_pv10N_ao'] = np.where(_swap, allm['_pv10_ho'], allm['_pv10_ao'])
+            # 「對上一次對賽」嘅主隊 id（判斷同主客方向／需唔需要互換）
+            allm['_pv_home'] = grp['home_id'].shift(1)
             has = allm['_pv_h'].notna()
             if has.any():
                 sub = allm.loc[has]
                 prev = dict(zip(sub['id'].astype(int).tolist(),
                                 zip(sub['_pv_h'], sub['_pv_g'], sub['_pv_ho'], sub['_pv_ao'],
-                                    sub['_pv_pid'], sub['_pv_hid'])))
-                mprev = allm.loc[has, ['id', '_pvN_h', '_pvN_g', '_pvN_ho', '_pvN_ao',
-                                       '_pv10N_h', '_pv10N_g', '_pv10N_ho', '_pv10N_ao']]
+                                    sub['_pv_home'])))
+                mprev = allm.loc[has, ['id', '_pv_h', '_pv_g', '_pv_ho', '_pv_ao',
+                                       '_pv10_h', '_pv10_g', '_pv10_ho', '_pv10_ao',
+                                       '_pv_home']]
                 df = df.merge(mprev, on='id', how='left')
-                df = df.rename(columns={'_pvN_h': 'pvN_h', '_pvN_g': 'pvN_g',
-                                        '_pvN_ho': 'pvN_ho', '_pvN_ao': 'pvN_ao',
-                                        '_pv10N_h': 'pv10N_h', '_pv10N_g': 'pv10N_g',
-                                        '_pv10N_ho': 'pv10N_ho', '_pv10N_ao': 'pv10N_ao'})
-            # pair → 最新一場對賽 (kickoff, id, h, g, ho, ao, home_id, away_id)，供目標賽事查「對上一次對賽尾盤」
+                df = df.rename(columns={'_pv_h': 'pv_h', '_pv_g': 'pv_g',
+                                        '_pv_ho': 'pv_ho', '_pv_ao': 'pv_ao',
+                                        '_pv10_h': 'pv10_h', '_pv10_g': 'pv10_g',
+                                        '_pv10_ho': 'pv10_ho', '_pv10_ao': 'pv10_ao',
+                                        '_pv_home': 'pv_home_id'})
+            # pair → 最新一場對賽 (kickoff, id, h, g, ho, ao, 主隊id, 客隊id)，供目標賽事查「對上一次對賽尾盤」
             tail = grp.tail(1)
             pair_latest = {(int(pa), int(pb)): (ko, int(i), h, g, ho, ao, int(hid), int(aid))
                            for pa, pb, ko, i, h, g, ho, ao, hid, aid in zip(
@@ -208,11 +241,20 @@ def load_pool(conn, max_age=1800):
                                tail['handicap'].tolist(), tail['giver'].tolist(),
                                tail['home_odds'].tolist(), tail['away_odds'].tolist(),
                                tail['home_id'].tolist(), tail['away_id'].tolist())}
-        if 'pvN_h' not in df.columns:
-            for c in ('pvN_h', 'pvN_ho', 'pvN_ao', 'pv10N_h', 'pv10N_ho', 'pv10N_ao'):
+        if 'pv_h' not in df.columns:
+            for c in ('pv_h', 'pv_ho', 'pv_ao', 'pv10_h', 'pv10_ho', 'pv10_ao',
+                      'pv_home_id'):
                 df[c] = np.nan
-            df['pvN_g'] = None
-            df['pv10N_g'] = None
+            df['pv_g'] = None
+            df['pv10_g'] = None
+        # 互換轉換（對比盤）：pvN＝尾盤版、pv10N＝開賽前10分鐘版；pv_same＝對上一次對賽同主客方向
+        df['pv_same'] = df['pv_home_id'].notna() & (df['pv_home_id'] == df['home_id'])
+        for src_pfx, dst_pfx in (('pv', 'pvN'), ('pv10', 'pv10N')):
+            h2, g2, ho2, ao2 = _prev_convert(df[f'{src_pfx}_h'], df[f'{src_pfx}_g'],
+                                             df[f'{src_pfx}_ho'], df[f'{src_pfx}_ao'],
+                                             df['pv_same'])
+            df[f'{dst_pfx}_h'], df[f'{dst_pfx}_g'] = h2, g2
+            df[f'{dst_pfx}_ho'], df[f'{dst_pfx}_ao'] = ho2, ao2
         # 每場「主隊」對上一次比賽（任何對手）嘅尾盤 —— 第16/17項用
         line_of = {}
         if len(allm):
@@ -251,39 +293,6 @@ def load_pool(conn, max_age=1800):
         return df, prev
 
 
-def _norm_prev_line(h, g, ho, ao, cur_home_id, prev_home_id):
-    """主客互換正規化：將「對上一次對賽」條線轉做今場主隊角度。
-    今場主隊上次作客 → 讓↔受讓對調（g 框架不變、水位主客對調）；
-    今場主隊上次都係主場 → 原樣。"""
-    if h is None:
-        return None
-    if isinstance(g, float) and g != g:   # NaN → None
-        g = None
-    if prev_home_id == cur_home_id:
-        return {'h': h, 'g': g, 'ho': ho, 'ao': ao, 'swapped': False}
-    return {'h': h, 'g': g, 'ho': ao, 'ao': ho, 'swapped': True}
-
-
-def _prev_h2h_info(conn, t, prev_line, pv_id, pv_home_id):
-    """對上一次對賽資料：原始尾盤 + 主客互換後對比盤 + 對上一次對賽 pre_10m（5A 用）"""
-    if not prev_line or prev_line[0] is None:
-        return None
-    h, g, ho, ao = prev_line
-    role = 'home' if pv_home_id == t['home_id'] else 'away'
-    info = {'h': h, 'g': g, 'ho': ho, 'ao': ao, 'role': role,
-            'N': _norm_prev_line(h, g, ho, ao, t['home_id'], pv_home_id)}
-    p10 = None
-    if pv_id:
-        p10 = conn.execute(
-            'SELECT handicap, giver, home_odds, away_odds FROM odds_asian '
-            'WHERE match_id=? AND label=\'pre_10m\' AND company_id=12', (pv_id,)).fetchone()
-    if p10 and p10[0] is not None:
-        info['h10'], info['g10'], info['ho10'], info['ao10'] = p10
-        info['N10'] = _norm_prev_line(p10[0], p10[1], p10[2], p10[3],
-                                      t['home_id'], pv_home_id)
-    return info
-
-
 def get_target(conn, match_id):
     """目標賽事：基本資料 + 三個時點盤 + 開賽前 43 項 + 對上一次對賽尾盤"""
     row = conn.execute(
@@ -310,19 +319,38 @@ def get_target(conn, match_id):
     load_pool(conn)
     pair = tuple(sorted((t['home_id'], t['away_id'])))
     cand = _pool_cache['pair_latest'].get(pair)
-    pv_id = pv_home_id = None
-    prev_line = None
-    if cand is not None:
-        if cand[1] == t['id']:
-            # 目標賽事自己已是雙方最新一場 → 取佢之前嗰場
-            e = _pool_cache['prev_h2h'].get(t['id'])
-            if e:
-                prev_line = e[:4]
-                pv_id, pv_home_id = int(e[4]), int(e[5])
-        elif cand[0] < t['kickoff']:
-            prev_line = cand[2:6]
-            pv_id, pv_home_id = cand[1], cand[6]
-    t['prev_h2h'] = _prev_h2h_info(conn, t, prev_line, pv_id, pv_home_id)
+    if cand is None:
+        t['prev_h2h'] = None
+    elif cand[1] == t['id']:
+        # 目標賽事自己已是雙方最新一場 → 取佢之前嗰場
+        t['prev_h2h'] = _pool_cache['prev_h2h'].get(t['id'])
+    elif cand[0] < t['kickoff']:
+        t['prev_h2h'] = (cand[2], cand[3], cand[4], cand[5], cand[6])
+    else:
+        t['prev_h2h'] = None
+    # 顯示用：互換後對比盤（同 _prev_convert 嘅純量版）
+    t['prev_conv'] = None
+    pv = t['prev_h2h']
+    if pv and pv[0] is not None and pv[2] is not None and pv[3] is not None:
+        same_role = pv[4] == t['home_id']
+        conv = {'same': same_role, 'ok': True, 'h': pv[0], 'g': pv[1],
+                'ho': pv[2], 'ao': pv[3]}
+        if not same_role:
+            hv1 = pv[0] if pv[1] == 'home' else (-pv[0] if pv[1] == 'away' else 0.0)
+            o_h, o_a = pv[2] + 1.0, pv[3] + 1.0
+            inv = 1.0 / o_h + 1.0 / o_a
+            r1 = 1.0 / inv
+            if 0.899 <= r1 <= 0.979:
+                p1 = (1.0 / o_h) / inv
+                hr2 = -(hv1 + (0.50 - p1) * 1.25) + 0.5
+                hv2 = round((0.5 - hv1) * 4) / 4
+                p2 = min(0.95, max(0.05, 0.50 - (hr2 - hv2) / 1.25))
+                conv.update({'h': abs(hv2),
+                             'g': 'home' if hv2 > 0 else ('away' if hv2 < 0 else None),
+                             'ho': r1 / p2 - 1.0, 'ao': r1 / (1.0 - p2) - 1.0})
+            else:
+                conv['ok'] = False
+        t['prev_conv'] = conv
     # 今次主隊對上一次比賽（任何對手）尾盤 —— 第16/17項用
     prow = conn.execute(
         'SELECT m.id, m.home_id, oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
@@ -522,28 +550,38 @@ def screen(conn, t, sel=None):
                     f"篩選：歷史場次嘅【{tname}】同【尾盤】都同基準完全相同（水位±0.03）"),
             **pair(df[m])}
 
-    # 3 / 4 / 5：對上一次對賽尾盤（主客互換後）vs 今次第X時點
-    def pv_ref_text():
-        pv = t.get('prev_h2h')
-        if not pv:
-            return '雙方過往無對賽記錄'
-        base = (f"雙方對上一次對賽尾盤：{fmt_line(pv['h'], pv['g'])} 主{pv['ho']}/客{pv['ao']}"
-                f"（今場主隊當時{'主場' if pv['role'] == 'home' else '作客'}）")
-        if pv.get('N', {}).get('swapped'):
-            base += (f"　主客互換後對比盤：{fmt_line(pv['N']['h'], pv['N']['g'])}"
-                     f" 主{pv['N']['ho']}/客{pv['N']['ao']}")
-        return base
+    # 3 / 4 / 5：對上一次對賽尾盤（互換後對比盤）vs 今次第X時點；Z 版=只計同主客方向
+    pvc = t.get('prev_conv')
+    if pvc and pvc['ok']:
+        raw = f"{fmt_line(t['prev_h2h'][0], t['prev_h2h'][1])} 主{t['prev_h2h'][2]}/客{t['prev_h2h'][3]}"
+        if pvc['same']:
+            prev_txt = f"雙方對上一次對賽尾盤：{raw}（今場主隊當時都係主場，同主客直比）"
+        else:
+            prev_txt = (f"雙方對上一次對賽尾盤：{raw}　→　互換後對比盤："
+                        f"{fmt_line(pvc['h'], pvc['g'])} 主{pvc['ho']:.2f}/客{pvc['ao']:.2f}")
+    elif t.get('prev_h2h'):
+        prev_txt = (f"雙方對上一次對賽尾盤：{fmt_line(t['prev_h2h'][0], t['prev_h2h'][1])} "
+                    f"主{t['prev_h2h'][2]}/客{t['prev_h2h'][3]}（返還率超出 93.9%±0.04，互換不適用）")
+    else:
+        prev_txt = '雙方過往無對賽記錄'
     for no, Tref, tname in ((3, T_init, '初盤'), (4, T_4h, '開賽前4小時'), (5, T_close, '尾盤')):
         if Tref is None:
             items[str(no)] = {'error': f'目標賽事缺少{tname}，請先獲取賠率', 'pool': dict(pools)}
+            items[f'{no}Z'] = {'error': f'目標賽事缺少{tname}，請先獲取賠率', 'pool': dict(pools)}
             continue
         m = line_eq(df, 'pvN', Tref)
+        mZ = m & df['pv_same']
         masks[no] = m
+        masks[f'{no}Z'] = mZ
+        base_ref = (f"今次{tname}：{fmt_line(Tref['h'], Tref['g'])} 主{Tref['ho']}/客{Tref['ao']}　" + prev_txt)
         items[str(no)] = {
-            'title': f'對上一次對賽尾盤（主客互換）對 今次{tname}（盤口100%一樣，水位±0.03）',
-            'ref': (f"今次{tname}：{fmt_line(Tref['h'], Tref['g'])} 主{Tref['ho']}/客{Tref['ao']}　"
-                    + pv_ref_text()),
+            'title': f'對上一次對賽尾盤 對 今次{tname}（互換後對比，盤口100%一樣，水位±0.03）',
+            'ref': base_ref,
             **pair(df[m])}
+        items[f'{no}Z'] = {
+            'title': f'對上一次對賽尾盤 對 今次{tname}【同主客版】（盤口100%一樣，水位±0.03）',
+            'ref': base_ref + '　只計「對上一次對賽都係同主客方向」嘅歷史場次',
+            **pair(df[mZ])}
 
     # 6 / 7：勝和負比例 ±7%
     def form_filter(hsc, asc):
@@ -778,36 +816,27 @@ def screen(conn, t, sel=None):
             err5a = '未有資料：查詢時間在開賽前10分鐘之前'
         elif Tc_ref is not None:
             Tm_ref = Tc_ref
-            m_note = '（今場未有 pre_10m 記錄，用即時最新盤代替）'
+            m_note = '（今場未有開賽前10分鐘記錄，用即時最新盤代替）'
         else:
             err5a = '未有資料：今場無任何盤口'
-    t5a = '對上一次對賽「開賽前10分鐘」同今場 pre_10m ＋「尾盤」同今場尾盤 雙重相同（經主客互換）'
+    t5a = '開賽前10分鐘至尾盤變化：對上一次對賽「開賽前10分鐘」同今場「開賽前10分鐘」相同 ＋「尾盤」同今場「尾盤」相同'
+    t5a_ref = ('歷史場次嘅對上一次對賽：開賽前10分鐘嗰條線同今場開賽前10分鐘完全相同、'
+               '尾盤嗰條線同今場尾盤完全相同（盤口100%一樣，水位±0.03；對上一次對賽已做主客互換對比）')
     if err5a:
-        items['5A'] = {'title': t5a + ' → 上/下/走',
-                       'ref': err5a, 'error': err5a, 'pool': dict(pools)}
-        items['5B'] = {'title': '同5A篩選 → 盤口分佈 ＋ 各水位 上/下/走 率',
-                       'ref': err5a, 'error': err5a, 'pool': dict(pools)}
+        for k, ti in (('5A', t5a + ' → 上/下/走'),
+                      ('5B', '同5A篩選 → 盤口分佈 ＋ 各水位 上/下/走 率'),
+                      ('5AZ', t5a + '【同主客版】 → 上/下/走'),
+                      ('5BZ', '同5AZ篩選 → 盤口分佈 ＋ 各水位 上/下/走 率')):
+            items[k] = {'title': ti, 'ref': err5a, 'error': err5a, 'pool': dict(pools)}
     else:
         m5a = line_eq(df, 'pv10N', Tm_ref) & line_eq(df, 'pvN', Tc_ref)
+        m5az = m5a & df['pv_same']
         masks['5A'] = m5a
         masks['5B'] = m5a
-        pv = t.get('prev_h2h')
-        pv_txt = ''
-        if pv:
-            pv_txt = (f"　雙方對上一次對賽：尾盤 {fmt_line(pv['h'], pv['g'])} 主{pv['ho']}/客{pv['ao']}"
-                      f"（今場主隊當時{'主場' if pv['role'] == 'home' else '作客'}）")
-            if pv.get('N', {}).get('swapped'):
-                pv_txt += f"→ 互換後 {fmt_line(pv['N']['h'], pv['N']['g'])} 主{pv['N']['ho']}/客{pv['N']['ao']}"
-            if pv.get('h10') is not None:
-                pv_txt += (f"；開賽前10分鐘 {fmt_line(pv['h10'], pv['g10'])} 主{pv['ho10']}/客{pv['ao10']}")
-                if pv.get('N10', {}).get('swapped'):
-                    pv_txt += (f"→ 互換後 {fmt_line(pv['N10']['h'], pv['N10']['g'])}"
-                               f" 主{pv['N10']['ho']}/客{pv['N10']['ao']}")
+        masks['5AZ'] = m5az
+        masks['5BZ'] = m5az
         r5a = (f"今場開賽前10分鐘：{fmt_line(Tm_ref['h'], Tm_ref['g'])} 主{Tm_ref['ho']}/客{Tm_ref['ao']}{m_note}　"
-               f"今場尾盤：{fmt_line(Tc_ref['h'], Tc_ref['g'])} 主{Tc_ref['ho']}/客{Tc_ref['ao']}{c_note}"
-               f"{pv_txt}　"
-               "篩選：歷史場次嘅【對上一次對賽】（經主客互換）開賽前10分鐘盤 及尾盤，"
-               "同上面兩組各自完全相同（盤口100%一樣，水位±0.03）")
+               f"今場尾盤：{fmt_line(Tc_ref['h'], Tc_ref['g'])} 主{Tc_ref['ho']}/客{Tc_ref['ao']}{c_note}　" + t5a_ref)
         items['5A'] = {'title': t5a + ' → 上/下/走',
                        'ref': r5a, 'pool': dict(pools), **pair(df[m5a])}
         sub5a = df[m5a]
@@ -818,6 +847,17 @@ def screen(conn, t, sel=None):
                                'dist': dist_table(sub5a), 'zones': zone_rates(sub5a)},
                        'league': {'n': len(sub5a_lg), 'pool': pool_lg,
                                   'dist': dist_table(sub5a_lg), 'zones': zone_rates(sub5a_lg)}}
+        r5az = r5a + '　只計「對上一次對賽都係同主客方向」嘅歷史場次'
+        items['5AZ'] = {'title': t5a + '【同主客版】 → 上/下/走',
+                        'ref': r5az, 'pool': dict(pools), **pair(df[m5az])}
+        sub5az = df[m5az]
+        sub5az_lg = sub5az[sub5az['league'] == lg]
+        items['5BZ'] = {'title': '同5AZ篩選 → 盤口分佈 ＋ 各水位 上/下/走 率',
+                        'ref': r5az, 'pool': dict(pools),
+                        'all': {'n': len(sub5az), 'pool': pool_all,
+                                'dist': dist_table(sub5az), 'zones': zone_rates(sub5az)},
+                        'league': {'n': len(sub5az_lg), 'pool': pool_lg,
+                                   'dist': dist_table(sub5az_lg), 'zones': zone_rates(sub5az_lg)}}
 
 
     # 18：主隊主場排名 − 客隊客場排名 差距淨值（±1）＋ 同今場尾盤 100% 相同盤口 → 結果＋各水位率
@@ -882,8 +922,8 @@ def screen(conn, t, sel=None):
         items['19'] = {'title': '主隊總排名 − 客隊總排名 差距淨值（±1）＋同今場尾盤相同盤口 → 結果＋各水位 上/下/走 率',
                        'ref': r19, 'error': '不適用', 'pool': dict(pools)}
 
-    # 20：組合篩查（剔選第1-19項，AND 全部條件）
-    items['20'] = {'title': '組合篩查：剔選第1-19項，同時符合全部剔選條件',
+    # 20：組合篩查（剔選第1-19項連同主客版 3Z/4Z/5Z/5A/5AZ，AND 全部條件）
+    items['20'] = {'title': '組合篩查：剔選第1-19項（含 3Z/4Z/5Z/5A/5AZ 同主客版），同時符合全部剔選條件',
                    'ref': '喺下面剔選條件再按「提交」（第14、17項係分析項、第20項係組合本身，都不能剔）；結果分 全資料庫／同聯賽／同賽事類別（聯賽/杯賽）',
                    'pool': dict(pools)}
     if sel:
@@ -902,7 +942,7 @@ def screen(conn, t, sel=None):
             for s in sel[1:]:
                 m &= masks_s[s]
             sub = df[m]
-            items['20'] = {'title': '組合篩查：剔選第1-19項，同時符合全部剔選條件',
+            items['20'] = {'title': '組合篩查：剔選第1-19項（含 3Z/4Z/5Z/5A/5AZ 同主客版），同時符合全部剔選條件',
                            'ref': '已剔選：' + '、'.join(f'第{s}項' for s in sel),
                            'sel': sel, 'pool': dict(pools),
                            'all': outcome_counts(sub),

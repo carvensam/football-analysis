@@ -359,25 +359,26 @@ function closePicksOverlay() {
 // ===== 精選（七重準則全通過，永久保留＋自動結算）=====
 let ftOvTimer = null;
 let ftScanTimer = null;
+let ftZ = false;   // false=精選；true=精選Z（同主客版，第⑤項用 5Z）
 
 function _ocLine(o) {
   if (!o) return '無數據';
   return `上${pct(o.up_r)} 下${pct(o.down_r)}` + (o.push_r != null ? ` 走${pct(o.push_r)}` : '') + `（n=${o.n}）`;
 }
 
-function _ftShareText(p) {
+function _ftShareText(p, z) {
   const b = p.brief || {};
   const dName = p.direction === 'up' ? '上盤' : '下盤';
   const L = [];
-  L.push('⚽ FootballAnalysis 精選');
+  L.push('⚽ FootballAnalysis 精選' + (z ? 'Z（同主客版）' : ''));
   L.push(p.league);
   L.push(`${rn(p.home, p.rank_home)} vs ${rn(p.away, p.rank_away)}`);
   L.push(`開賽：${p.kickoff}`);
   if (p.line) L.push(`尾盤：${p.line}${p.odds ? ' ' + p.odds : ''}`);
-  L.push(`方向：${dName}（①⑤⑧⑫⑮⑱ 同方向全部≥50%）`);
-  const i1 = b.i1 || {}, i5 = b.i5 || {}, i8 = b.i8 || {};
+  L.push(`方向：${dName}（①⑤${z ? 'Z' : ''}⑧⑫⑮⑱ 同方向全部≥50%）`);
+  const i1 = b.i1 || {}, i5 = b[z ? 'i5z' : 'i5'] || {}, i8 = b.i8 || {};
   if (i1.all) L.push(`① 同初盤及尾盤：全庫 ${_ocLine(i1.all)}`);
-  if (i5.all) L.push(`⑤ 對上對賽尾盤：全庫 ${_ocLine(i5.all)}`);
+  if (i5.all) L.push(`⑤${z ? 'Z' : ''} 對上對賽尾盤${z ? '（同主客）' : ''}：全庫 ${_ocLine(i5.all)}`);
   if (i8.all) L.push(`⑧ 主客入失球±3：全庫 ${_ocLine(i8.all)}`);
   const i12 = b.i12 || {}, i15 = b.i15 || {};
   if (i12.cur) L.push(`⑫ 主場客場排名±2·同尾盤：全庫 ${_ocLine(i12.cur)}`);
@@ -408,8 +409,8 @@ function _gapPlain(g, curLine) {   // 純文字版（分享用）
   return parts.join('；') || null;
 }
 
-async function _ftShare(p, btn) {
-  const text = _ftShareText(p);
+async function _ftShare(p, btn, z) {
+  const text = _ftShareText(p, z);
   const menu = btn.parentElement.querySelector('.ft-menu');
   if (menu) { menu.remove(); return; }
   const m = document.createElement('div');
@@ -433,9 +434,10 @@ async function _ftShare(p, btn) {
   };
 }
 
-function _ftCard(p) {
+function _ftCard(p, z) {
   const b = p.brief || {};
   const dName = p.direction === 'up' ? '上盤' : '下盤';
+  const i5b = b[z ? 'i5z' : 'i5'] || {};
   const res = !p.played ? '<span style="color:var(--dim)">未開賽</span>'
     : (p.result === 'W' ? '<b class="r-up">✅ 命中</b>'
       : p.result === 'L' ? '<b class="r-down">❌ 未中</b>'
@@ -459,7 +461,7 @@ function _ftCard(p) {
     </div>
     <div class="pk-items">
       <div class="pk-it"><div class="t">① 同初盤及尾盤</div><div class="v">${_pairTxt(b.i1)}</div></div>
-      <div class="pk-it"><div class="t">⑤ 對上對賽尾盤</div><div class="v">${_pairTxt(b.i5)}</div></div>
+      <div class="pk-it"><div class="t">⑤${z ? 'Z' : ''} 對上對賽尾盤${z ? '（同主客）' : ''}</div><div class="v">${_pairTxt(i5b)}</div></div>
       <div class="pk-it"><div class="t">⑧ 主客入失球±3</div><div class="v">${_pairTxt(b.i8)}</div></div>
       <div class="pk-it"><div class="t">⑫ 主場客場排名±2</div><div class="v">${i12v}</div></div>
       <div class="pk-it"><div class="t">⑮ 排名±2＋同尾盤</div><div class="v">${i15v}</div></div>
@@ -492,19 +494,19 @@ function _ftCheckTxt(p) {
 async function renderFeaturedOverlay() {
   const body = document.getElementById('ftOvBody');
   let d;
-  try { d = await jget('/api/featured/full'); }
+  try { d = await jget('/api/featured/full' + (ftZ ? '?z=1' : '')); }
   catch (e) { body.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
   const s = d.stats || {};
   const rate = s.hit_rate != null ? (s.hit_rate * 100).toFixed(1) + '%' : '—';
   document.getElementById('ftOvTitle').textContent =
-    `★ 精選｜${s.total || 0} 場（未開賽 ${s.pending || 0}｜已完場 ${s.played || 0}）｜命中 ${s.wins || 0} 場｜命中率 ${rate}`;
+    `★ 精選${ftZ ? 'Z（同主客版）' : ''}｜${s.total || 0} 場（未開賽 ${s.pending || 0}｜已完場 ${s.played || 0}）｜命中 ${s.wins || 0} 場｜命中率 ${rate}`;
   const scan = d.scan || {};
   document.getElementById('ftScanInfo').textContent =
     scan.running ? `掃描中 ${scan.done}/${scan.total}…` :
-    (scan.last ? `上次掃描：${scan.last}（+${scan.added} 場）` : '從未掃描');
+    (scan.last ? `上次掃描：${scan.last}（精選 +${scan.added} 場／精選Z +${scan.added_z || 0} 場）` : '從未掃描');
   let h = '';
   if ((d.pending || []).length) {
-    h += `<div class="pk-sec-t">未開賽（順開賽時間排）</div>` + d.pending.map(_ftCard).join('');
+    h += `<div class="pk-sec-t">未開賽（順開賽時間排）</div>` + d.pending.map(p => _ftCard(p, ftZ)).join('');
   }
   const played = d.played || [];
   if (played.length) {
@@ -516,14 +518,14 @@ async function renderFeaturedOverlay() {
         h += `<div class="ft-date">${esc(dd)}</div>`;
         lastDate = dd;
       }
-      h += _ftCard(p);
+      h += _ftCard(p, ftZ);
     }
   }
   if (!h) h = '<div class="note">暫無精選場次。撳「🔍 掃描精選」喺全部即將開賽嘅場次入面搵（約 1-3 分鐘）。</div>';
   body.innerHTML = h;
   body.querySelectorAll('.ft-share').forEach((btn, i) => {
     const all = [...(d.pending || []), ...played];
-    btn.onclick = () => _ftShare(all[i], btn);
+    btn.onclick = () => _ftShare(all[i], btn, ftZ);
   });
   body.querySelectorAll('.ft-refresh').forEach(btn => {
     btn.onclick = async () => {
@@ -551,7 +553,7 @@ async function pollFtScan() {
     return;
   }
   document.getElementById('ftScanInfo').textContent =
-    (s.last ? `上次掃描：${s.last}（+${s.added} 場）` : '從未掃描') +
+    (s.last ? `上次掃描：${s.last}（精選 +${s.added} 場／精選Z +${s.added_z || 0} 場）` : '從未掃描') +
     (s.error ? '｜出錯：' + s.error : '');
   document.getElementById('btnFtScan').disabled = false;
   renderFeaturedOverlay();
@@ -564,7 +566,8 @@ async function startFtScan() {
   pollFtScan();
 }
 
-function openFeaturedOverlay() {
+function openFeaturedOverlay(z) {
+  ftZ = !!z;
   document.getElementById('ftOverlay').style.display = 'flex';
   renderFeaturedOverlay();
   // 超過 30 分鐘無掃描過 → 自動掃描
@@ -842,8 +845,9 @@ function i15ResultTable(it) {
 
 function item20HTML(it, t, titles) {
   let boxes = '';
-  for (let k = 1; k <= 19; k++) {
-    if (k === 14 || k === 17) continue;   // 分析項，不能剔
+  const I20_KEYS = ['1', '2', '3', '3Z', '4', '4Z', '5', '5Z', '5A', '5AZ',
+                    '6', '7', '8', '9', '10', '11', '12', '13', '15', '16', '18', '19'];
+  for (const k of I20_KEYS) {
     boxes += `<div class="i16-row"><label title="${esc(titles[k] || '')}">
       <input type="checkbox" class="i16-cb" value="${k}" ${it.sel && it.sel.includes(String(k)) ? 'checked' : ''}>
       <b>${k}.</b> ${esc(titles[k] || '')}</label></div>`;
@@ -859,9 +863,9 @@ function itemPreview(k, it) {
   const fmtOC = oc => (oc && oc.n != null)
     ? `${oc.up}／${oc.n}（上 ${pct(oc.up_r)}｜下 ${pct(oc.down_r)}）` : '—';
   const kn = +k;
-  if (k === '5A' || (k !== '5B' && !isNaN(kn) && kn <= 9))
+  if (k === '5A' || k === '5AZ' || (k !== '5B' && k !== '5BZ' && !isNaN(kn) && kn <= 9))
     return `<span class="pv">｜全庫 ${fmtOC(it.all)}　同聯賽 ${fmtOC(it.league)}</span>`;
-  if (k === '5B' || (!isNaN(kn) && kn <= 13) || k === '15' || k === '16' || k === '18' || k === '19')
+  if (k === '5B' || k === '5BZ' || (!isNaN(kn) && kn <= 13) || k === '15' || k === '16' || k === '18' || k === '19')
     return `<span class="pv">｜全庫樣本 ${(it.all && it.all.n) || 0} 場　同聯賽 ${(it.league && it.league.n) || 0} 場</span>`;
   if (k === '14' || k === '17') {
     const m = it.all && it.all.mode, d = it.all && it.all.d50;
@@ -905,7 +909,8 @@ function renderResult(res) {
   }
   const curZone = zoneIdx(curWater);
 
-  const ORDER = ['1', '2', '3', '4', '5', '5A', '5B', '6', '7', '8', '9', '10',
+  const ORDER = ['1', '2', '3', '3Z', '4', '4Z', '5', '5Z', '5A', '5AZ', '5B', '5BZ',
+                 '6', '7', '8', '9', '10',
                  '11', '12', '13', '14', '15', '16', '17', '18', '19', '20'];
   for (const k of ORDER) {
     const it = res.items[String(k)];
@@ -916,9 +921,9 @@ function renderResult(res) {
       body = it.error ? `<div class="err">${esc(it.error)}</div>` : item20HTML(it, t, titles);
     } else if (it.error) {
       body = `<div class="err">${!isNaN(kn) && kn >= 10 && it.ref ? '' : esc(it.ref || '')} ${esc(it.error)}</div>`;
-    } else if (k === '5A' || (!isNaN(kn) && kn <= 9)) {
+    } else if (k === '5A' || k === '5AZ' || (!isNaN(kn) && kn <= 9)) {
       body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '') + outcomeTable(it);
-    } else if (k === '5B' || (!isNaN(kn) && kn <= 13)) {
+    } else if (k === '5B' || k === '5BZ' || (!isNaN(kn) && kn <= 13)) {
       body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '') + distSection(it, curLine, curZone);
     } else if (k === '15') {
       body = (it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '') + zoneSection(it, curWater);
@@ -944,7 +949,7 @@ function renderResult(res) {
         <h4 style="margin:8px 0 4px">全庫</h4>${gapCard('分佈最多的盤口', it.all && it.all.mode)}${gapCard('上盤勝率最接近 50% 的盤口（至少5場）', it.all && it.all.d50)}
         <h4 style="margin:12px 0 4px">同聯賽（${esc(t.league)}）</h4>${gapCard('分佈最多的盤口', it.league && it.league.mode)}${gapCard('上盤勝率最接近 50% 的盤口（至少5場）', it.league && it.league.d50)}`;
     }
-    h += `<details><summary><span class="sum-t">${k}. ${esc(it.title)}</span>${it.ref && (k === '5A' || (!isNaN(kn) && kn <= 9)) ? `<span class="sub">${esc(it.ref)}</span>` : ''}${itemPreview(k, it)}</summary><div class="body">${body}</div></details>`;
+    h += `<details><summary><span class="sum-t">${k}. ${esc(it.title)}</span>${it.ref && (k === '5A' || k === '5AZ' || (!isNaN(kn) && kn <= 9)) ? `<span class="sub">${esc(it.ref)}</span>` : ''}${itemPreview(k, it)}</summary><div class="body">${body}</div></details>`;
   }
   // 我的選擇（上/下盤）——放喺頁最底
   h += `<div class="tbtns pk-bar">
@@ -1033,7 +1038,8 @@ $('#btnPicksBig').onclick = openPicksOverlay;
 $('#pkOvClose').onclick = closePicksOverlay;
 
 // ===== 精選 · 大版面 =====
-$('#btnFeatured').onclick = openFeaturedOverlay;
+$('#btnFeatured').onclick = () => openFeaturedOverlay(false);
+$('#btnFeaturedZ').onclick = () => openFeaturedOverlay(true);
 $('#ftOvClose').onclick = closeFeaturedOverlay;
 $('#btnFtScan').onclick = startFtScan;
 
@@ -1043,7 +1049,7 @@ $('#ckOvClose').onclick = closeCheckOverlay;
 $('#btnCkScan').onclick = startCkScan;
 
 // ===== 過往賽果 =====
-let rsFilter = {league: '', hc: '', gv: '', win: ''};   // '' = 全部；win: '' / 'W' 贏超50% / 'L' 輸超50%
+let rsFilter = {league: '', hc: '', gv: '', win: '', scope: 'featured'};   // '' = 全部；win: '' / 'W' 贏超50% / 'L' 輸超50%；scope: featured / featuredz
 
 function _pct_(v) { return v == null ? '—' : (v * 100).toFixed(1) + '%'; }
 
@@ -1169,7 +1175,10 @@ function _rsFilterBar(d) {
     }));
   const winOpts = [['', '全部勝負'], ['W', '贏超50%'], ['L', '輸超50%']]
     .map(([v, t]) => `<option value="${v}" ${rsFilter.win === v ? 'selected' : ''}>${t}</option>`);
+  const scopeOpts = [['featured', '精選'], ['featuredz', '精選Z（同主客）']]
+    .map(([v, t]) => `<option value="${v}" ${rsFilter.scope === v ? 'selected' : ''}>${t}</option>`);
   return `<div class="rs-filter">
+    <label>範圍 <select id="rsScope">${scopeOpts.join('')}</select></label>
     <label>聯賽 <select id="rsLg">${lgOpts.join('')}</select></label>
     <label>盤口 <select id="rsLn">${lnOpts.join('')}</select></label>
     <label>勝負 <select id="rsWin">${winOpts.join('')}</select></label>
@@ -1180,7 +1189,7 @@ function _rsFilterBar(d) {
 async function renderResultsOverlay() {
   const body = document.getElementById('rsOvBody');
   body.innerHTML = '<div class="empty">載入中…</div>';
-  const q = new URLSearchParams({limit: '1000', scope: 'featured'});
+  const q = new URLSearchParams({limit: '1000', scope: rsFilter.scope || 'featured'});
   if (rsFilter.league) q.set('league', rsFilter.league);
   if (rsFilter.hc !== '') { q.set('hc', rsFilter.hc); q.set('gv', rsFilter.gv || 'none'); }
   let d;
@@ -1192,8 +1201,9 @@ async function renderResultsOverlay() {
     ? ((d.lines.find(o => String(o.hc) === String(f.hc) && o.gv === (f.gv || 'none')) || {}).line)
     : null;
   const fTxt = (f.league ? '｜' + f.league : '') + (fLine ? '｜' + fLine : '');
+  const scopeName = rsFilter.scope === 'featuredz' ? '精選Z' : '精選';
   document.getElementById('rsOvTitle').textContent =
-    `📋 過往賽果（精選）${fTxt}｜已開賽 ${(d.items || []).length} 場｜已結算統計 ${s.total || 0} 場`;
+    `📋 過往賽果（${scopeName}）${fTxt}｜已開賽 ${(d.items || []).length} 場｜已結算統計 ${s.total || 0} 場`;
   const cell = (lab, val, sub) =>
     `<div class="rs-stat"><div class="rs-lab">${lab}</div><div class="rs-val">${val}</div>` +
     (sub ? `<div class="rs-sub">${sub}</div>` : '') + '</div>';
@@ -1210,7 +1220,7 @@ async function renderResultsOverlay() {
   h += cell('我的選擇命中率', _pct_(s.pk_r),
     s.pk_w != null ? `中${s.pk_w} 錯${s.pk_l} 走${s.pk_p || 0}` : '');
   h += '</div>';
-  h += `<div class="rs-trend-w"><div class="rs-trend-t">精選逐日命中走勢（最近 ${(d.trend || []).length} 日，跟篩選；綠≥50%・紅&lt;50%）</div>
+  h += `<div class="rs-trend-w"><div class="rs-trend-t">${scopeName}逐日命中走勢（最近 ${(d.trend || []).length} 日，跟篩選；綠≥50%・紅&lt;50%）</div>
     <canvas id="rsTrend" class="rs-trend"></canvas></div>`;
   const rsItems = d.items || [];
   h += _rsRatioTable(rsItems, m => m.league, '按聯賽 贏／輸比例（跟篩選）');
@@ -1226,7 +1236,11 @@ async function renderResultsOverlay() {
   }
   if (!(d.items || []).length) h += '<div class="note">暫無已開賽嘅精選場次。撳「★ 精選」→「🔍 掃描精選」開始累積記錄。</div>';
   body.innerHTML = h;
-  // 篩選聯動
+  // 範圍／篩選聯動
+  document.getElementById('rsScope').onchange = ev => {
+    rsFilter.scope = ev.target.value;
+    renderResultsOverlay();
+  };
   document.getElementById('rsLg').onchange = ev => {
     rsFilter.league = ev.target.value;
     renderResultsOverlay();
@@ -1335,13 +1349,14 @@ async function _flShare(m, btn) {
 
 async function renderFeatLogOverlay() {
   const body = document.getElementById('flOvBody');
+  const flZ = document.getElementById('flScope').value === '1';
   let d;
-  try { d = await jget('/api/featlog'); }
+  try { d = await jget('/api/featlog' + (flZ ? '?z=1' : '')); }
   catch (e) { body.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
   const s = d.stats || {};
   const rate = s.hit_rate != null ? (s.hit_rate * 100).toFixed(1) + '%' : '—';
   document.getElementById('flOvTitle').textContent =
-    `📜 過往紀錄｜${s.total || 0} 場（未開賽 ${s.pending || 0}｜已完場 ${s.played || 0}）｜命中 ${s.wins || 0} 場｜命中率 ${rate}`;
+    `📜 過往紀錄（${flZ ? '精選Z' : '精選'}）｜${s.total || 0} 場（未開賽 ${s.pending || 0}｜已完場 ${s.played || 0}）｜命中 ${s.wins || 0} 場｜命中率 ${rate}`;
   let h = '';
   if ((d.pending || []).length) {
     h += `<div class="pk-sec-t">未開賽（順開賽時間排）</div>` + d.pending.map(_flCard).join('');
@@ -1383,6 +1398,7 @@ function closeFeatLogOverlay() {
 }
 $('#btnFeatLog').onclick = openFeatLogOverlay;
 $('#flOvClose').onclick = closeFeatLogOverlay;
+document.getElementById('flScope').onchange = renderFeatLogOverlay;
 if (location.search.indexOf('autolog=1') >= 0) {
   setTimeout(openFeatLogOverlay, 800);
 }

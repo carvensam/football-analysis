@@ -32,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '3.2'
+SERVER_VERSION = '3.3'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -241,23 +241,44 @@ def log_featured(conn, mid, direction):
         (mid, direction, time.strftime('%Y-%m-%d %H:%M:%S'), hc, gv, ho, ao))
 
 
+def log_featured_z(conn, mid, direction):
+    """精選Z 版嘅過往紀錄（同 log_featured，但寫入 featured_z_log，完全分開）。"""
+    row = conn.execute(
+        "SELECT handicap, giver, home_odds, away_odds FROM odds_asian "
+        "WHERE match_id=? AND company_id=12 "
+        "ORDER BY (label='closing') DESC, label DESC LIMIT 1", (mid,)).fetchone()
+    hc, gv, ho, ao = row if row else (None, None, None, None)
+    conn.execute(
+        'INSERT INTO featured_z_log(match_id, direction, added_at, handicap, '
+        'giver, home_odds, away_odds) VALUES(?,?,?,?,?,?,?) '
+        'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction, '
+        'handicap=excluded.handicap, giver=excluded.giver, '
+        'home_odds=excluded.home_odds, away_odds=excluded.away_odds',
+        (mid, direction, time.strftime('%Y-%m-%d %H:%M:%S'), hc, gv, ho, ao))
+
+
 def do_featured_refresh(mid):
     """精選單場重新整理：重抓該場最新盤口賠率，重算該場精選資格。
-    仍合準則 → 保留／更新方向；唔再合 → 未結算移出；已完場歷史保留。"""
+    仍合準則 → 保留／更新方向；唔再合 → 未結算移出；已完場歷史保留。
+    （精選 同 精選Z 一併重算）"""
     st = do_fetch(mid, True)
     if not st.get('ok'):
         return {'ok': False, 'error': st.get('error', '抓取賠率失敗'), 'fetch': st}
     conn = db()
     try:
         screen_engine._pool_cache['ts'] = 0   # 用新盤口重新載入數據池
-        d = None
+        d = dz = None
         try:
-            d = _featured_direction(_screen_brief(mid))
+            b = _screen_brief(mid)
+            d = _featured_direction(b)
+            dz = _featured_direction(b, z=True)
         except Exception:
             pass
         row = conn.execute('SELECT result FROM featured WHERE match_id=?',
                            (mid,)).fetchone()
-        removed = False
+        rowz = conn.execute('SELECT result FROM featured_z WHERE match_id=?',
+                            (mid,)).fetchone()
+        removed = removed_z = False
         if d:
             conn.execute(
                 'INSERT INTO featured(match_id, direction, added_at) VALUES(?,?,?) '
@@ -267,10 +288,20 @@ def do_featured_refresh(mid):
         elif row and row[0] is None:
             conn.execute('DELETE FROM featured WHERE match_id=?', (mid,))
             removed = True
+        if dz:
+            conn.execute(
+                'INSERT INTO featured_z(match_id, direction, added_at) VALUES(?,?,?) '
+                'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction',
+                (mid, dz, time.strftime('%Y-%m-%d %H:%M:%S')))
+            log_featured_z(conn, mid, dz)
+        elif rowz and rowz[0] is None:
+            conn.execute('DELETE FROM featured_z WHERE match_id=?', (mid,))
+            removed_z = True
         conn.commit()
     finally:
         conn.close()
-    return {'ok': True, 'direction': d, 'removed': removed}
+    return {'ok': True, 'direction': d, 'direction_z': dz,
+            'removed': removed, 'removed_z': removed_z}
 
 
 # ============ 我的選擇（上/下盤 記錄 + 勝出率統計） ============
@@ -290,11 +321,26 @@ def init_picks():
         match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
         added_at TEXT, handicap REAL, giver TEXT,
         home_odds REAL, away_odds REAL)''')
+    # 精選Z（2026-09-21）：同主客版精選，紀錄同命中率完全分開
+    conn.execute('''CREATE TABLE IF NOT EXISTS featured_z(
+        match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
+        added_at TEXT, result TEXT, settled_at TEXT)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS featured_z_log(
+        match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
+        added_at TEXT, handicap REAL, giver TEXT,
+        home_odds REAL, away_odds REAL)''')
     conn.execute(
         "INSERT OR IGNORE INTO featured_log("
         "match_id, direction, added_at, handicap, giver, home_odds, away_odds) "
         "SELECT f.match_id, f.direction, f.added_at, oc.handicap, oc.giver, "
         "oc.home_odds, oc.away_odds FROM featured f "
+        "LEFT JOIN odds_asian oc ON oc.match_id=f.match_id "
+        "AND oc.label='closing' AND oc.company_id=12")
+    conn.execute(
+        "INSERT OR IGNORE INTO featured_z_log("
+        "match_id, direction, added_at, handicap, giver, home_odds, away_odds) "
+        "SELECT f.match_id, f.direction, f.added_at, oc.handicap, oc.giver, "
+        "oc.home_odds, oc.away_odds FROM featured_z f "
         "LEFT JOIN odds_asian oc ON oc.match_id=f.match_id "
         "AND oc.label='closing' AND oc.company_id=12")
     conn.commit()
@@ -525,6 +571,7 @@ def _screen_brief(mid):
             'cur_water': up_water,
             'i1': _pair_brief(items.get('1')),
             'i5': _pair_brief(items.get('5')),
+            'i5z': _pair_brief(items.get('5Z')),
             'i8': _pair_brief(items.get('8')),
             'i12': _dist_brief(items.get('12'), cur_line),
             'i15': _zone_brief(items.get('15'), up_water),
@@ -605,12 +652,12 @@ def get_picks_full():
 
 # ============ 精選（七重準則全通過嘅場次，永久保留＋自動結算） ============
 
-_feat_scan = {'running': False, 'done': 0, 'total': 0, 'added': 0,
+_feat_scan = {'running': False, 'done': 0, 'total': 0, 'added': 0, 'added_z': 0,
               'last': None, 'error': None}
 
 
-def _featured_direction(b, gates=True):
-    """七重準則（2026-09-19 最終版）：
+def _featured_direction(b, gates=True, z=False):
+    """七重準則（2026-09-19 最終版；2026-09-21 加 z=精選Z：第⑤項改用 5Z 同主客版）：
     方向揀選：第①⑤項一齊睇——「上」：①⑤ 全部已存在範圍（全庫及同聯賽）上盤率≥50%；
     否則「下」：①⑤ 全部已存在範圍下盤率≥50%；上→下順序，兩者都唔得→唔入選。
     gates=True 時跟住 ①⑤⑧⑫⑮⑱：每項【全庫或同聯賽其中一個】同方向 ≥50% 即合格。
@@ -618,6 +665,7 @@ def _featured_direction(b, gates=True):
     全部通過返回 'up'/'down'，任何一項不達標返回 None。"""
     if not b:
         return None
+    k5 = 'i5z' if z else 'i5'
 
     def rate(oc, d):
         if not oc:
@@ -635,7 +683,7 @@ def _featured_direction(b, gates=True):
     def dir_pick(d):
         # ①⑤：全部已存在嘅範圍都要同方向 ≥50%（範圍冇數據就略過）
         found = False
-        for k in ('i1', 'i5'):
+        for k in ('i1', k5):
             it = b.get(k) or {}
             for oc in (it.get('all'), it.get('lg')):
                 r = rate(oc, d)
@@ -654,7 +702,7 @@ def _featured_direction(b, gates=True):
     if not gates:
         return d
     # ①⑤⑧：全庫或同聯賽其中一個同方向 ≥50%
-    for k in ('i1', 'i5', 'i8'):
+    for k in ('i1', k5, 'i8'):
         it = b.get(k) or {}
         if not ok(it.get('all'), it.get('lg'), d):
             return None
@@ -689,10 +737,12 @@ def _featured_scan_job():
             "ORDER BY m.kickoff").fetchall()
         _feat_scan['total'] = len(rows)
         screen_engine.load_pool(conn)   # 預熱數據池
-        added = 0
+        added = added_z = 0
         for (mid,) in rows:
             try:
-                d = _featured_direction(_screen_brief(mid))
+                b = _screen_brief(mid)
+                d = _featured_direction(b)
+                dz = _featured_direction(b, z=True)
                 if d and not conn.execute(
                         'SELECT 1 FROM featured WHERE match_id=?', (mid,)).fetchone():
                     conn.execute(
@@ -702,10 +752,20 @@ def _featured_scan_job():
                     log_featured(conn, mid, d)
                     conn.commit()
                     added += 1
+                if dz and not conn.execute(
+                        'SELECT 1 FROM featured_z WHERE match_id=?', (mid,)).fetchone():
+                    conn.execute(
+                        'INSERT INTO featured_z(match_id, direction, added_at) '
+                        'VALUES(?,?,?)',
+                        (mid, dz, time.strftime('%Y-%m-%d %H:%M:%S')))
+                    log_featured_z(conn, mid, dz)
+                    conn.commit()
+                    added_z += 1
             except Exception:
                 pass
             _feat_scan['done'] += 1
         _feat_scan['added'] = added
+        _feat_scan['added_z'] = added_z
         _feat_scan['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
     except Exception as e:
         _feat_scan['error'] = str(e)
@@ -721,6 +781,8 @@ def _recompute_featured_after_update():
         conn = db()
         conn.execute('DELETE FROM featured WHERE match_id IN '
                      '(SELECT id FROM matches WHERE home_score IS NULL)')
+        conn.execute('DELETE FROM featured_z WHERE match_id IN '
+                     '(SELECT id FROM matches WHERE home_score IS NULL)')
         conn.commit()
         conn.close()
         screen_engine._pool_cache['ts'] = 0   # 令 load_pool 重新載入新盤口
@@ -732,9 +794,10 @@ def _recompute_featured_after_update():
         traceback.print_exc()
 
 
-def get_featured_full():
+def get_featured_full(z=False):
     """精選全量：未開賽順時間排先；已完場最新排先（永不刪除）。
-    順便結算新完場場次（以入選方向計 贏/輸/走）。"""
+    z=True 讀精選Z（featured_z）。順便結算新完場場次（以入選方向計 贏/輸/走）。"""
+    tbl = 'featured_z' if z else 'featured'
     conn = db()
     now = time.strftime('%Y-%m-%d %H:%M:%S')
     pending_rows = conn.execute(
@@ -742,7 +805,7 @@ def get_featured_full():
         'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
         'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
         'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
-        'FROM featured f JOIN matches m ON m.id=f.match_id '
+        f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
         'JOIN competitions c ON c.titan_id=s.titan_id '
         'JOIN teams ht ON ht.titan_id=m.home_id '
@@ -760,7 +823,7 @@ def get_featured_full():
         'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
         'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
         'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
-        'FROM featured f JOIN matches m ON m.id=f.match_id '
+        f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
         'JOIN competitions c ON c.titan_id=s.titan_id '
         'JOIN teams ht ON ht.titan_id=m.home_id '
@@ -789,7 +852,7 @@ def get_featured_full():
                 # 自動結算（以入選方向計）
                 res = 'P' if r == 'P' else ('W' if (r == 'A') == (d == 'up') else 'L')
                 c2 = db()
-                c2.execute('UPDATE featured SET result=?, settled_at=? WHERE match_id=?',
+                c2.execute(f'UPDATE {tbl} SET result=?, settled_at=? WHERE match_id=?',
                            (res, now, mid))
                 c2.commit()
                 c2.close()
@@ -820,7 +883,8 @@ def get_results(limit=1000, league=None, hc=None, gv=None, scope='featured'):
     五項命中率：上盤命中率（方向=上嘅精選命中）、下盤命中率（方向=下）、
     總命中率／精選命中率（全部精選已結算）、我的選擇命中率。"""
     conn = db()
-    featured = (scope == 'featured')
+    featured = (scope in ('featured', 'featuredz'))
+    tbl = 'featured_z' if scope == 'featuredz' else 'featured'
     where = ("WHERE m.kickoff < datetime('now','localtime')" if featured
              else 'WHERE m.home_score IS NOT NULL')
     args = []
@@ -837,7 +901,7 @@ def get_results(limit=1000, league=None, hc=None, gv=None, scope='featured'):
             line_args.append(gv)
     if featured:
         base_from = (
-            'FROM featured f JOIN matches m ON m.id=f.match_id '
+            f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
             'JOIN seasons s ON s.id=m.season_id '
             'JOIN competitions c ON c.titan_id=s.titan_id '
             'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
@@ -1041,17 +1105,18 @@ def get_results(limit=1000, league=None, hc=None, gv=None, scope='featured'):
 
 # ============ 過往紀錄（精選一出現即自動紀錄尾盤快照，永久保留，計一場） ============
 
-def get_featlog():
-    """過往紀錄：任何渠道入選精選都會自動影低當刻尾盤（featured_log）。
+def get_featlog(z=False):
+    """過往紀錄：任何渠道入選精選都會自動影低當刻尾盤（featured_log / featured_z_log）。
     同一場多次紀錄 → 計一場（保留首次入選時間，尾盤快照用最新）。
-    結算以 log 影低嘅尾盤快照計，唔係而家嘅 closing。"""
+    結算以 log 影低嘅尾盤快照計，唔係而家嘅 closing。z=True 讀精選Z。"""
+    tbl = 'featured_z_log' if z else 'featured_log'
     conn = db()
     now = time.strftime('%Y-%m-%d %H:%M:%S')
     rows = conn.execute(
         'SELECT l.match_id, l.direction, l.added_at, l.handicap, l.giver, '
         'l.home_odds, l.away_odds, m.kickoff, m.home_score, m.away_score, '
         'ht.name_tc, at.name_tc, c.req_name '
-        'FROM featured_log l JOIN matches m ON m.id=l.match_id '
+        f'FROM {tbl} l JOIN matches m ON m.id=l.match_id '
         'JOIN seasons s ON s.id=m.season_id '
         'JOIN competitions c ON c.titan_id=s.titan_id '
         'JOIN teams ht ON ht.titan_id=m.home_id '
@@ -1536,10 +1601,7 @@ class Handler(BaseHTTPRequestHandler):
             mid = int(q.get('id', ['0'])[0])
             sel = None
             if q.get('sel'):
-                try:
-                    sel = [int(x) for x in q['sel'][0].split(',') if x.strip()]
-                except ValueError:
-                    sel = None
+                sel = [x.strip() for x in q['sel'][0].split(',') if x.strip()] or None
             try:
                 self._send(200, json.dumps(do_screen(mid, sel), ensure_ascii=False))
             except Exception as e:
@@ -1571,7 +1633,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == '/api/featured/full':
             try:
-                self._send(200, json.dumps(get_featured_full(), ensure_ascii=False))
+                qs = parse_qs(u.query)
+                z = qs.get('z', [''])[0] in ('1', 'true')
+                self._send(200, json.dumps(get_featured_full(z=z), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -1609,7 +1673,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == '/api/featlog':
             try:
-                self._send(200, json.dumps(get_featlog(), ensure_ascii=False))
+                qs = parse_qs(u.query)
+                z = qs.get('z', [''])[0] in ('1', 'true')
+                self._send(200, json.dumps(get_featlog(z=z), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()

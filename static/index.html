@@ -22,6 +22,7 @@
     <button id="btnFetchAll" class="btn accent">獲取全部賠率</button>
     <button id="btnUpdate" class="btn" title="更新賽果＋新場次＋已存在場次嘅盤口及賠率全部刷新（約 5-10 分鐘）">⟳ 更新賽事</button>
     <button id="btnFeatured" class="btn gold" title="七重準則全通過嘅精選場次">★ 精選</button>
+    <button id="btnFeaturedZ" class="btn gold" title="同主客版精選：第⑤項改用 5Z（只計對上一次對賽同主客方向）">★ 精選Z</button>
     <button id="btnCheck" class="btn" title="8 組合歷史開出上/下盤比例">✓ Check 下先</button>
     <button id="btnResults" class="btn" title="精選已開賽場次賽果＋五項命中率統計">📋 過往賽果</button>
     <button id="btnFeatLog" class="btn" title="精選一出現即自動紀錄（尾盤快照，永久保留，計一場）">📜 過往紀錄</button>
@@ -100,6 +101,10 @@
   <div class="pk-ov-head">
     <button class="btn ov-home" title="返回主頁">🏠 主頁</button>
     <b id="flOvTitle">過往紀錄</b>
+    <select id="flScope" title="切換精選／精選Z 紀錄">
+      <option value="" selected>精選</option>
+      <option value="1">精選Z</option>
+    </select>
     <span id="flInfo" class="ft-scan-info">精選一出現即自動紀錄</span>
     <button id="flOvClose" class="btn">✕ 關閉</button>
   </div>
