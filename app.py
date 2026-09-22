@@ -1967,23 +1967,24 @@ if __name__ == '__main__':
         try:
             import datetime as dt
             conn = db()
+            # 用 crawler 每次寫入嘅 matches.updated_at 判斷快照新鮮度
+            # （MAX(kickoff) 唔得——成季賽程一早入咗庫，舊快照都有「最近」嘅過去場次）
             row = conn.execute(
-                "SELECT MAX(kickoff) FROM matches WHERE kickoff <= "
-                "datetime('now','localtime')").fetchone()
+                'SELECT MAX(updated_at) FROM matches').fetchone()
             conn.close()
-            latest = row[0] if row and row[0] else ''
-            stale = (not latest or latest < dt.datetime.now().strftime('%Y-%m-%d %H:%M'))
-            # 最新已開賽場次超過 12 小時前 → 視為舊快照
+            latest = row[0] if row and row[0] else None
+            stale = True
             if latest:
                 try:
-                    stale = (dt.datetime.now() - dt.datetime.strptime(latest, '%Y-%m-%d %H:%M')).total_seconds() > 12 * 3600
+                    t = dt.datetime.strptime(latest, '%Y-%m-%d %H:%M:%S')
+                    stale = (dt.datetime.now() - t).total_seconds() > 12 * 3600
                 except Exception:
-                    pass
+                    stale = True
             if stale:
-                print('[boot] 數據快照過舊，自動開始更新…', flush=True)
+                print('[boot] 數據快照過舊（%s），自動開始更新…' % latest, flush=True)
                 do_update(auto=True)
             else:
-                print('[boot] 數據新鮮，跳過自動更新', flush=True)
+                print('[boot] 數據新鮮（%s），跳過自動更新' % latest, flush=True)
         except Exception:
             import traceback
             traceback.print_exc()
