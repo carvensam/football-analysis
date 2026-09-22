@@ -3,10 +3,17 @@ services:
   - type: web
     name: football-analysis
     runtime: docker
-    plan: free
+    # plan 唔寫死——保留服務而家嘅方案（付費版先支援永久硬碟）
     healthCheckPath: /api/ready
+    # 永久硬碟：數據庫放呢度，重新部署／重啟都唔會冇數據
+    disk:
+      name: football-data
+      mountPath: /data
+      sizeGB: 1
     envVars:
-      # 數據庫 release asset（build 階段下載焗入映像）
-      # 更新數據：上新 asset 後改呢條 URL 再 commit，Render 會自動重新部署
+      # 數據庫放永久硬碟（app.py 啟動時會由映像種子複製一次）
+      - key: DB_PATH
+        value: /data/football.db
+      # 數據庫 release asset（build 階段下載焗入映像做種子）
       - key: DB_URL
-        value: https://github.com/carvensam/football-analysis/releases/download/db-20260918/football.db
+        value: https://github.com/carvensam/football-analysis/releases/download/db-20260920/football.db

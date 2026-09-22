@@ -32,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '3.3.3'
+SERVER_VERSION = '3.3.4'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -1946,6 +1946,13 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == '__main__':
+    # 雲端：數據庫放永久硬碟（/data）。首次啟動（硬碟全新）由映像焗入嘅種子複製一份
+    if not os.path.exists(DB_PATH):
+        seed = os.path.join(BASE_DIR, 'football.db')   # Dockerfile 焗入嘅快照
+        if os.path.exists(seed) and os.path.abspath(seed) != os.path.abspath(DB_PATH):
+            import shutil
+            shutil.copy(seed, DB_PATH)
+            print(f'[boot] 永久硬碟未見數據庫，已由映像種子複製到 {DB_PATH}', flush=True)
     port = int(os.environ.get('PORT') or (sys.argv[1] if len(sys.argv) > 1 else 7100))
     host = os.environ.get('HOST', '127.0.0.1')
     try:
