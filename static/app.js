@@ -1058,6 +1058,11 @@ $('#btnCheck').onclick = openCheckOverlay;
 $('#ckOvClose').onclick = closeCheckOverlay;
 $('#btnCkScan').onclick = startCkScan;
 
+// ===== 設定・完整說明 =====
+$('#btnSettings').onclick = () => { $('#setOverlay').style.display = 'flex'; };
+$('#setOvClose').onclick = () => { $('#setOverlay').style.display = 'none'; };
+if (location.hash === '#settings') $('#setOverlay').style.display = 'flex';
+
 // ===== 過往賽果 =====
 let rsFilter = {league: '', hc: '', gv: '', win: '', scope: 'featured'};   // '' = 全部；win: '' / 'W' 贏超50% / 'L' 輸超50%；scope: featured / featuredz
 
