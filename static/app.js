@@ -57,10 +57,20 @@ async function waitPool() {
   return poolReady;
 }
 
-async function jget(url) { const r = await fetch(url); return r.json(); }
-async function jpost(url, body) {
-  const r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+// 伺服器更新緊（重新部署/重啟）時會吐 HTML 維護頁，偵測到就俾個清楚訊息＋自動重試
+async function _jfetch(url, opt, tries) {
+  const r = await fetch(url, opt);
+  const ct = r.headers.get('content-type') || '';
+  if (!ct.includes('json')) {
+    if (tries > 0) { await new Promise(res => setTimeout(res, 8000)); return _jfetch(url, opt, tries - 1); }
+    throw new Error('伺服器更新緊／重啟中，請稍候 30 秒再試（或撳「⟳ 更新賽事」）');
+  }
+  if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
+}
+async function jget(url) { return _jfetch(url, {}, 2); }
+async function jpost(url, body) {
+  return _jfetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)}, 0);
 }
 
 function esc(s){ return (s||'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }

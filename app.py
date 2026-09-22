@@ -32,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '3.3.2'
+SERVER_VERSION = '3.3.3'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -1960,4 +1960,32 @@ if __name__ == '__main__':
     _auto_scans()
     threading.Thread(target=_warmup, daemon=True).start()
     threading.Thread(target=_result_catchup_job, daemon=True).start()
+    # 開機自動更新：雲端每次重新部署會用返舊數據快照起機（數據過舊），
+    # 偵測到數據 stale 就喺背景自動更新（賽果＋新場次＋補爬缺少嘅盤口），無需人手撳；
+    # 本機數據新鮮就唔會白行一次
+    def _boot_auto_update():
+        try:
+            import datetime as dt
+            conn = db()
+            row = conn.execute(
+                "SELECT MAX(kickoff) FROM matches WHERE kickoff <= "
+                "datetime('now','localtime')").fetchone()
+            conn.close()
+            latest = row[0] if row and row[0] else ''
+            stale = (not latest or latest < dt.datetime.now().strftime('%Y-%m-%d %H:%M'))
+            # 最新已開賽場次超過 12 小時前 → 視為舊快照
+            if latest:
+                try:
+                    stale = (dt.datetime.now() - dt.datetime.strptime(latest, '%Y-%m-%d %H:%M')).total_seconds() > 12 * 3600
+                except Exception:
+                    pass
+            if stale:
+                print('[boot] 數據快照過舊，自動開始更新…', flush=True)
+                do_update(auto=True)
+            else:
+                print('[boot] 數據新鮮，跳過自動更新', flush=True)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+    threading.Timer(5, _boot_auto_update).start()
     httpd.serve_forever()
