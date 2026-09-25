@@ -32,7 +32,7 @@ import screen_engine
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '3.3.4'
+SERVER_VERSION = '4.0.0'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -237,6 +237,115 @@ def update_status():
     if d['last_done']:
         d['last_done_ago'] = int(time.time() - d['last_done'])
     return d
+
+
+# ============ V2 快速窗口更新：只更新未來 24小時／30分鐘／10分鐘 場次嘅盤口賠率 ============
+# 賽事清單直接由 matches 表按開賽時間攞（每日中午 12 時自動更新時已入庫未來 48 小時場次），
+# 唔使重新掃瞄邊啲場，直接逐場抓最新盤口。
+_win_state = {'running': False, 'window': '', 'phase': '', 'done': 0, 'total': 0,
+              'ok': 0, 'fail': 0, 'last': None, 'error': None}
+WIN_SQL = {
+    '24h': ("AND m.kickoff <= datetime('now','localtime','+24 hours')", '未來24小時'),
+    '30m': ("AND m.kickoff <= datetime('now','localtime','+30 minutes')", '未來30分鐘'),
+    '10m': ("AND m.kickoff <= datetime('now','localtime','+10 minutes')", '未來10分鐘'),
+}
+
+
+def _window_update_worker(win):
+    import crawler
+    with open(os.path.join(crawler.BASE_DIR, 'config.json'), encoding='utf-8') as f:
+        cfg = json.load(f)
+    cfg['max_requests_before_rest'] = 999999999
+    cfg['rest_minutes'] = 0
+    cond, wname = WIN_SQL[win]
+    conn = sqlite3.connect(DB_PATH, timeout=180)
+    try:
+        todo = conn.execute(
+            'SELECT m.id, m.kickoff FROM matches m '
+            'WHERE m.home_score IS NULL '
+            "AND m.kickoff >= datetime('now','localtime') " + cond + ' '
+            'ORDER BY m.kickoff').fetchall()
+        _win_state.update(total=len(todo), done=0, ok=0, fail=0)
+        fetcher = crawler.Fetcher(conn, cfg)
+        for i, (mid, ko) in enumerate(todo):
+            _win_state['phase'] = f'更新{wname}盤口及賠率 {i + 1}/{len(todo)}'
+            try:
+                if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
+                    _win_state['ok'] += 1
+                else:
+                    _win_state['fail'] += 1
+            except Exception:
+                _win_state['fail'] += 1
+        _win_state['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        _win_state['error'] = None
+        print(f"[win-update] {wname} 完成：{_win_state['ok']} 成 / "
+              f"{_win_state['fail']} 敗 / 共 {len(todo)} 場", flush=True)
+    except Exception:
+        traceback.print_exc()
+        _win_state['error'] = traceback.format_exc(limit=3)
+    finally:
+        conn.close()
+        _win_state['running'] = False
+        _win_state['phase'] = ''
+    # 盤口有變 → 精選資格可能變，重算一次
+    if not _win_state['error']:
+        try:
+            _recompute_featured_after_update()
+        except Exception:
+            pass
+
+
+def do_update_window(win):
+    """人手撳『更新未來24／30／10』：後台起線程逐場抓，立即回應 started"""
+    if win not in WIN_SQL:
+        return {'ok': False, 'error': '未知窗口'}
+    if _win_state['running']:
+        return {'ok': False, 'running': True, 'error': '窗口更新進行中'}
+    _win_state.update(running=True, window=win, error=None,
+                      phase='準備中…', done=0, total=0)
+    threading.Thread(target=_window_update_worker, daemon=True,
+                     args=(win,)).start()
+    return {'ok': True, 'started': True}
+
+
+def win_status():
+    d = dict(_win_state)
+    d['ok'] = True
+    d['window_name'] = WIN_SQL.get(d['window'], ('', ''))[1]
+    return d
+
+
+# ============ V2 背景排程：每日 12 時起每 2 小時自動更新未來 24 小時盤口直至尾盤 ============
+# （12/14/16/18/20/22/24 時；賽果補抓沿用 15 分鐘巡邏。手機 APP 閂咗都會行——
+#   排程喺 Render 伺服器端，唔係手機端。）
+_sched_state = {'last_mark': '', 'runs': 0, 'last_error': None}
+
+
+def _v2_sched_job():
+    import datetime as dt
+    while True:
+        time.sleep(300)   # 每 5 分鐘睇一次
+        try:
+            now = dt.datetime.now()
+            if now.hour < 12:
+                continue
+            # 今日 12 時起每 2 小時一個刻度：12,14,16,18,20,22,(24=翌日0)
+            base = now.replace(hour=12, minute=0, second=0, microsecond=0)
+            if now < base:
+                continue
+            elapsed = (now - base).total_seconds()
+            mark_n = int(elapsed // 7200)          # 過咗幾多個 2 小時刻度
+            mark = (base + dt.timedelta(hours=2 * mark_n)).strftime('%Y-%m-%d %H:%M')
+            if _sched_state['last_mark'] >= mark:
+                continue
+            if _win_state['running'] or _update_state['running']:
+                continue   # 有更新緊就等下個刻度
+            _sched_state['last_mark'] = mark
+            _sched_state['runs'] += 1
+            print(f'[sched] 到咗 {mark} 刻度，自動更新未來24小時盤口', flush=True)
+            do_update_window('24h')
+        except Exception:
+            _sched_state['last_error'] = traceback.format_exc(limit=3)
 
 
 def do_screen(mid, sel=None):
@@ -1649,6 +1758,9 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/update-window-status':
+            self._send(200, json.dumps(win_status(), ensure_ascii=False))
+            return
         if u.path == '/api/picks/full':
             try:
                 self._send(200, json.dumps(get_picks_full(), ensure_ascii=False))
@@ -1729,6 +1841,17 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._send(200, json.dumps(do_update(bool(body.get('auto'))),
                                            ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/update-window':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(
+                    do_update_window(str(body.get('window', ''))), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -1967,6 +2090,8 @@ if __name__ == '__main__':
     _auto_scans()
     threading.Thread(target=_warmup, daemon=True).start()
     threading.Thread(target=_result_catchup_job, daemon=True).start()
+    # V2 排程：每日 12 時起每 2 小時自動更新未來 24 小時盤口直至尾盤（伺服器端，手機閂咗都行）
+    threading.Thread(target=_v2_sched_job, daemon=True).start()
     # 開機自動更新：雲端每次重新部署會用返舊數據快照起機（數據過舊），
     # 偵測到數據 stale 就喺背景自動更新（賽果＋新場次＋補爬缺少嘅盤口），無需人手撳；
     # 本機數據新鮮就唔會白行一次

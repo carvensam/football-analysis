@@ -900,7 +900,10 @@ function renderResult(res) {
       ${lineBox('尾盤（檢查基準）', t.close)}
       ${lineBox('初盤', t.init)}
       ${lineBox('開賽前4小時', t.h4)}
+      ${lineBox('開賽前30分鐘', t.h30)}
+      ${lineBox('開賽前15分鐘', t.h15)}
       ${lineBox('開賽前10分鐘', t.h10)}
+      ${lineBox('開賽前5分鐘', t.h5)}
     </div>
     <div class="tbtns">
       <button class="btn" id="btnRefreshLine">⟳ 重新整理盤口及水位</button>
@@ -1513,6 +1516,40 @@ $('#btnUpdate').onclick = async () => {
   try { await startUpdate(false); }
   finally { setTimeout(() => { $('#btnUpdate').disabled = false; }, 1200); }
 };
+
+// ===== V2 快速窗口更新（更新未來24小時／30分鐘／10分鐘嘅盤口賠率）=====
+let winBusy = false;
+async function startWinUpdate(win, btn) {
+  if (winBusy) { setStatus('⟳ 有窗口更新進行緊，唔好重複撳…'); return; }
+  winBusy = true;
+  btn.disabled = true;
+  const orig = btn.textContent;
+  try {
+    const r = await jpost('/api/update-window', {window: win});
+    if (r.error) { setStatus('⚡ ' + r.error); return; }
+    for (;;) {
+      const s = await jget('/api/update-window-status');
+      if (!s.running) {
+        if (s.error) { setStatus('⚡ 更新出錯：' + String(s.error).split('\n')[0]); return; }
+        setStatus(`✓ ${s.window_name}盤口更新完成：成功 ${s.ok} 場／失敗 ${s.fail} 場／共 ${s.total} 場`);
+        break;
+      }
+      setStatus(`⚡ ${s.phase || '更新緊盤口'}…`);
+      await new Promise(rs => setTimeout(rs, 2000));
+    }
+    await loadList();
+    if (curMatch) openMatch(curMatch);
+  } catch (e) {
+    setStatus('⚡ 更新失敗：' + e);
+  } finally {
+    winBusy = false;
+    btn.disabled = false;
+    btn.textContent = orig;
+  }
+}
+$('#btnWin24').onclick = () => startWinUpdate('24h', $('#btnWin24'));
+$('#btnWin30').onclick = () => startWinUpdate('30m', $('#btnWin30'));
+$('#btnWin10').onclick = () => startWinUpdate('10m', $('#btnWin10'));
 
 // 每次開 APP 自動更新一次（伺服器會節流：30 分鐘內只跑一次）
 setTimeout(() => startUpdate(true), 2500);

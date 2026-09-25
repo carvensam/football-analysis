@@ -786,6 +786,9 @@ def screen(conn, t, sel=None):
 
     # 5A / 5B：對上一次對賽【pre_10m 開賽前10分鐘】同今場 pre_10m 相同 ＋【尾盤】同今場尾盤相同（雙重相同）
     T_10m = tline(odds, 'pre_10m')
+    T_30m = tline(odds, 'pre_30m')
+    T_15m = tline(odds, 'pre_15m')
+    T_5m = tline(odds, 'pre_5m')
     now = datetime.datetime.now()
     try:
         ko = datetime.datetime.strptime(str(t['kickoff'])[:19], '%Y-%m-%d %H:%M:%S')
@@ -975,7 +978,16 @@ def screen(conn, t, sel=None):
                            'g': T_4h['g']} if T_4h else None),
                    'h10': ({'line': fmt_line(T_10m['h'], T_10m['g']),
                             'ho': T_10m['ho'], 'ao': T_10m['ao'],
-                            'g': T_10m['g']} if T_10m else None)},
+                            'g': T_10m['g']} if T_10m else None),
+                   'h30': ({'line': fmt_line(T_30m['h'], T_30m['g']),
+                            'ho': T_30m['ho'], 'ao': T_30m['ao'],
+                            'g': T_30m['g']} if T_30m else None),
+                   'h15': ({'line': fmt_line(T_15m['h'], T_15m['g']),
+                            'ho': T_15m['ho'], 'ao': T_15m['ao'],
+                            'g': T_15m['g']} if T_15m else None),
+                   'h5': ({'line': fmt_line(T_5m['h'], T_5m['g']),
+                           'ho': T_5m['ho'], 'ao': T_5m['ao'],
+                           'g': T_5m['g']} if T_5m else None)},
         'zones': ZONES,
         'items': items,
     }
