@@ -63,7 +63,7 @@ async function refreshUpdInfo(){
 }
 
 /* ---------- 分頁 ---------- */
-const PAGES = ['home','feat','featz','check','picks','results','featlog','settings','detail'];
+const PAGES = ['home','feat','featz','check','picks','results','featlog','v1','settings','detail'];
 let curPage = 'home';
 function goto(pg){
   curPage = pg;
@@ -76,6 +76,7 @@ function goto(pg){
     picks: () => loadPicksPage(),
     results: () => loadResults(),
     featlog: () => loadFeatlog(),
+    v1: () => loadV1(),
     settings: () => loadSettings(),
     home: () => loadHome()}[pg] || (() => {}))();
   window.scrollTo(0, 0);
@@ -168,6 +169,7 @@ async function pollUpdateLoop(){
   loadHome();
   if (curPage === 'feat') loadFeatured(false);
   if (curPage === 'featz') loadFeatured(true);
+  if (curPage === 'v1') loadV1();
 }
 
 /* ---------- 詳情頁 ---------- */
@@ -465,6 +467,133 @@ async function pollFtScan(z){
   $(z ? '#btnFtzScan' : '#btnFtScan').disabled = false;
   info.textContent = `完成｜新增 ${s.added || 0}${s.added_z ? '（Z ' + s.added_z + '）' : ''}${s.error ? '｜錯誤：' + s.error : ''}`;
   loadFeatured(z);
+}
+
+/* ---------- 舊版本（V1 版面・V2 十六字頭規則逆向重塑） ---------- */
+const V1_MAP_NOTE = `<div class="note">逆向重塑：呢頁嘅精選／精選Z<b>用嘅係 V2 而家嘅十六字頭規則</b>（同「精選」頁完全同一套準則揀場），
+只係展示用返 V1 舊項目名。每格標明對應 V2 邊條規則：
+① 同初盤及尾盤＝V2 項目1（字頭 gate ①用項目2 四小時版）｜
+⑤ 對上對賽尾盤＝V2 項目13・純盤口（字頭 gate ②）；⑤Z 同主客＝字頭 I–P 同主隊範圍｜
+⑧ 主客入失球±3＝V2 項目25／26｜
+⑫ 主場客場排名±2＝V2 項目27｜
+⑮ 排名±2＋同尾盤＝V2 項目27＋同尾盤條件｜
+⑱ 排名差距±1＋同尾盤＝V2 項目32｜
+⑭ 差距＝V2 項目30 分佈最多盤／項目33 最接近50%盤（字頭 gate ③④）｜
+⑰ 差距＝V2 項目30／33・上次比賽樣本版｜
+✓ Check＝V2 項目31 今賽比上賽深/淺/不變＋組合統計。</div>`;
+
+function _v1Card(p, z){
+  const b = p.brief || {};
+  const dName = p.direction === 'up' ? '上盤' : '下盤';
+  const res = !p.played ? '<span style="color:var(--dim)">未開賽</span>'
+    : p.result === 'W' ? '<b class="r-up">✅ 命中</b>'
+    : p.result === 'L' ? '<b class="r-down">❌ 未中</b>'
+    : p.result === 'P' ? '<b>➖ 走盤</b>' : '<span style="color:var(--dim)">待結算</span>';
+  const i12 = b.i12, i15 = b.i15, i18 = b.i18;
+  const i12v = !i12 ? '不適用' : `n=${i12.n}` + (i12.top ? `<br>最多【${esc(i12.top.line || '')}】上${pct(i12.top.up_r)} 下${pct(i12.top.down_r)}` : '');
+  const i15v = !i15 ? '不適用' : `n=${i15.n}` + (i15.zone ? `<br>今場水位【${esc(i15.zone.zone || '')}】上${pct(i15.zone.up_r)} 下${pct(i15.zone.down_r)} 走${pct(i15.zone.push_r)}` : '');
+  const i18v = !i18 ? '不適用' : `全庫 ${_ocTxt(i18.all)}<br><span style="opacity:.75">同聯賽 ${_ocTxt(i18.lg)}</span>`;
+  const chk = p.check;
+  const chkTxt = !chk ? '<span style="color:var(--dim)">唔中 Check 任何一格</span>'
+    : chk.error ? `<span style="color:var(--down)">Check 計算失敗：${esc(chk.error)}</span>`
+    : `<b style="color:#ffd766">🎯 中咗 Check</b>：⑭${_stateZh(chk.g14)}＋⑰${_stateZh(chk.g17)} → 上 ${pct(chk.up_r)}／下 ${pct(chk.down_r)}<span style="color:var(--dim)">（${chk.n} 場）</span>`;
+  return `<div class="fcard" data-mid="${p.id}">
+    <div class="f-top">
+      <span class="f-time">${esc((p.kickoff || '').slice(5, 16))}　${esc(p.league)}</span>
+      <span class="f-teams">${esc(rn(p.home, p.rank_home))} vs ${esc(rn(p.away, p.rank_away))}</span>
+      ${p.score ? `<span class="f-score">${esc(p.score)}</span>` : ''}
+      <span class="tag ${p.direction}">${dName}</span>
+      <span>${res}</span>
+      <span class="f-btns">
+        <button class="btn ft-refresh">⟳ 重新整理</button>
+        <button class="btn ft-share">⇗ 分享</button>
+      </span>
+    </div>
+    <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
+    <div class="grid6">
+      <div class="gi"><div class="t">① 同初盤及尾盤</div><div class="v">${_pairTxt(b.i1)}</div><div class="sub">＝V2 項目1</div></div>
+      <div class="gi"><div class="t">⑤${z ? 'Z' : ''} 對上對賽尾盤${z ? '（同主客）' : ''}</div><div class="v">${_pairTxt(z ? b.i5z : b.i5)}</div><div class="sub">＝V2 項目13${z ? '・字頭I–P同主隊' : ''}</div></div>
+      <div class="gi"><div class="t">⑧ 主客入失球±3</div><div class="v">${_pairTxt(b.i8)}</div><div class="sub">＝V2 項目25/26</div></div>
+      <div class="gi"><div class="t">⑫ 主場客場排名±2</div><div class="v">${i12v}</div><div class="sub">＝V2 項目27</div></div>
+      <div class="gi"><div class="t">⑮ 排名±2＋同尾盤</div><div class="v">${i15v}</div><div class="sub">＝V2 項目27＋同尾盤</div></div>
+      <div class="gi"><div class="t">⑱ 排名差距±1＋同尾盤</div><div class="v">${i18v}</div><div class="sub">＝V2 項目32</div></div>
+    </div>
+    <div class="gaprow"><span class="lab">⑭ 差距</span>${_gapTxt(b.g14)}<div class="sub" style="margin-top:2px">＝V2 項目30 最多盤／項目33 50%盤</div></div>
+    <div class="gaprow"><span class="lab">⑰ 差距</span>${_gapTxt(b.g17)}<div class="sub" style="margin-top:2px">＝V2 項目30／33・上次比賽樣本版</div></div>
+    <div class="gaprow"><span class="lab">✓ Check</span>${chkTxt}<div class="sub" style="margin-top:2px">＝V2 項目31 深淺不變＋組合</div></div>
+  </div>`;
+}
+
+function _v1StatsBar(s, z){
+  return `<div class="statbar">
+    <span>${z ? 'V1精選Z' : 'V1精選'}：未開賽 <b>${s.pending}</b></span><span>已完場 <b>${s.played}</b></span>
+    <span>贏 <b class="r-up">${s.wins}</b></span><span>輸 <b class="r-down">${s.losses}</b></span>
+    <span>走 <b>${s.pushes}</b></span>
+    <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>`;
+}
+
+async function loadV1(){
+  const listEl = $('#v1List'), zlistEl = $('#v1zList');
+  listEl.innerHTML = '<div class="note">載入中…</div>';
+  zlistEl.innerHTML = '<div class="note">載入中…</div>';
+  let d, dz;
+  try {
+    [d, dz] = await Promise.all([
+      jget('/api/v1/featured/full'), jget('/api/v1/featured/full?z=1')]);
+  } catch (e) {
+    listEl.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>';
+    return;
+  }
+  const scan = d.scan || {};
+  $('#v1ScanInfo').textContent = scan.running
+    ? `掃描中 ${scan.done}/${scan.total}…`
+    : (scan.last ? `上次掃描：${scan.last}｜新增 ${scan.added || 0}（Z ${scan.added_z || 0}）` : '');
+  $('#v1Stats').innerHTML = _v1StatsBar(d.stats, false) + V1_MAP_NOTE;
+  $('#v1zStats').innerHTML = _v1StatsBar(dz.stats, true);
+
+  const render = (dd, el, z) => {
+    let h = '';
+    if (dd.pending.length) h += `<div class="day-h">🔜 V1${z ? '精選Z' : '精選'}・未開賽（${dd.pending.length} 場・順開賽時間）</div>` + dd.pending.map(p => _v1Card(p, z)).join('');
+    if (dd.played.length) h += `<div class="day-h">📼 V1${z ? '精選Z' : '精選'}・已完場（${dd.played.length} 場・最新排先，永久保留）</div>` + dd.played.map(p => _v1Card(p, z)).join('');
+    if (!h) h = `<div class="note">暫無 V1${z ? '精選Z' : '精選'}場次。撳「🔍 重新掃描 V1」即刻篩過。</div>`;
+    el.innerHTML = h;
+    [...el.querySelectorAll('.fcard')].forEach(c => {
+      const mid = +c.dataset.mid;
+      c.querySelector('.ft-refresh').onclick = async ev => {
+        ev.stopPropagation();
+        toast('重新整理中…');
+        await jpost('/api/v1/featured/refresh', {id: mid});
+        toast('完成'); loadV1();
+      };
+      c.querySelector('.ft-share').onclick = async ev => {
+        ev.stopPropagation();
+        const p = [...dd.pending, ...dd.played].find(x => x.id === mid);
+        if (p) shareText(ftShareText(p, z));
+      };
+      c.onclick = () => openDetail(mid);
+    });
+  };
+  render(d, listEl, false);
+  render(dz, zlistEl, true);
+}
+$('#btnV1Scan').onclick = async function(){
+  this.disabled = true;
+  await jpost('/api/v1/featured/scan', {});
+  pollV1Scan();
+};
+let v1ScanTimer = null;
+async function pollV1Scan(){
+  clearTimeout(v1ScanTimer);
+  const s = await jget('/api/v1/featured/scan-status');
+  const info = $('#v1ScanInfo');
+  if (s.running) {
+    info.textContent = `掃描中 ${s.done}/${s.total}…`;
+    v1ScanTimer = setTimeout(pollV1Scan, 5000);
+    return;
+  }
+  $('#btnV1Scan').disabled = false;
+  info.textContent = `完成｜新增 ${s.added || 0}（Z ${s.added_z || 0}）${s.error ? '｜錯誤：' + s.error : ''}`;
+  loadV1();
 }
 
 /* ---------- Check 下先（V2 2 行×3×3） ---------- */

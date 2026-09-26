@@ -39,7 +39,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '4.1.2'
+SERVER_VERSION = '4.2.0'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -472,6 +472,13 @@ def init_picks():
         match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
         added_at TEXT, handicap REAL, giver TEXT,
         home_odds REAL, away_odds REAL)''')
+    # 舊版本（2026-09-26）：V1 七重準則精選／精選Z，同 V2 完全分開
+    conn.execute('''CREATE TABLE IF NOT EXISTS v1_featured(
+        match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
+        added_at TEXT, result TEXT, settled_at TEXT)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS v1_featured_z(
+        match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
+        added_at TEXT, result TEXT, settled_at TEXT)''')
     conn.execute(
         "INSERT OR IGNORE INTO featured_log("
         "match_id, direction, added_at, handicap, giver, home_odds, away_odds) "
@@ -966,6 +973,10 @@ def _recompute_featured_after_update():
                      '(SELECT id FROM matches WHERE home_score IS NULL)')
         conn.execute('DELETE FROM featured_z WHERE match_id IN '
                      '(SELECT id FROM matches WHERE home_score IS NULL)')
+        conn.execute('DELETE FROM v1_featured WHERE match_id IN '
+                     '(SELECT id FROM matches WHERE home_score IS NULL)')
+        conn.execute('DELETE FROM v1_featured_z WHERE match_id IN '
+                     '(SELECT id FROM matches WHERE home_score IS NULL)')
         conn.commit()
         conn.close()
         screen_engine._pool_cache['ts'] = 0   # 令 load_pool 重新載入新盤口
@@ -978,6 +989,8 @@ def _recompute_featured_after_update():
         print('[update] 重算精選…', flush=True)
         if not _feat_scan['running']:
             threading.Thread(target=_featured_scan_job, daemon=True).start()
+        if not _v1_scan['running']:
+            threading.Thread(target=_v1_scan_job, daemon=True).start()
     except Exception:
         import traceback
         traceback.print_exc()
@@ -1086,6 +1099,191 @@ def get_featured_full(z=False):
              'hit_rate': wins / (wins + losses) if (wins + losses) else None}
     return {'stats': stats, 'pending': pending, 'played': played,
             'scan': {k: _feat_scan[k] for k in ('running', 'done', 'total', 'added', 'last', 'error')}}
+
+
+# ============ 舊版本：V1 七重準則精選（同 V2 十六字頭完全分開） ============
+
+_v1_scan = {'running': False, 'done': 0, 'total': 0, 'added': 0, 'added_z': 0,
+            'last': None, 'error': None}
+
+
+def _v1_scan_job():
+    """V1（舊版本分頁）掃描：入選規則＝V2 而家嘅十六字頭規則（逆向重塑），
+    每場跑 v2_engine.featured_letters，結果寫入 v1_featured / v1_featured_z
+    （同 V2 表完全分開，方便新舊對照）。卡片用 V1 舊項目名展示，並標明對應 V2 規則。"""
+    global _v1_scan
+    if _v1_scan['running']:
+        return
+    _v1_scan.update(running=True, done=0, added=0, added_z=0, error=None)
+    conn = db()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT m.id FROM matches m "
+            "JOIN odds_asian oc ON oc.match_id=m.id "
+            "AND oc.label='closing' AND oc.company_id=12 AND oc.handicap IS NOT NULL "
+            "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','localtime') "
+            "ORDER BY m.kickoff").fetchall()
+        _v1_scan['total'] = len(rows)
+        import v2_engine
+        v2_engine.load_v2_pool(conn)   # 預熱數據池
+        added = added_z = 0
+        for (mid,) in rows:
+            try:
+                t = screen_engine.get_target(conn, mid)
+                if not t:
+                    continue
+                fl = v2_engine.featured_letters(conn, t) or {}
+                d = fl.get('direction')
+                passed = fl.get('passed_letters') or []
+                if d and not conn.execute(
+                        'SELECT 1 FROM v1_featured WHERE match_id=?', (mid,)).fetchone():
+                    conn.execute(
+                        'INSERT INTO v1_featured(match_id, direction, added_at) '
+                        'VALUES(?,?,?)',
+                        (mid, d, time.strftime('%Y-%m-%d %H:%M:%S')))
+                    log_featured(conn, mid, d)
+                    conn.commit()
+                    added += 1
+                dz = None
+                if passed:
+                    zpass = [e for e in (fl.get('letters') or [])
+                             if e.get('mix') == '同主隊' and e['letter'] in passed]
+                    if zpass:
+                        dz = zpass[0]['dir']
+                if dz and not conn.execute(
+                        'SELECT 1 FROM v1_featured_z WHERE match_id=?', (mid,)).fetchone():
+                    conn.execute(
+                        'INSERT INTO v1_featured_z(match_id, direction, added_at) '
+                        'VALUES(?,?,?)',
+                        (mid, dz, time.strftime('%Y-%m-%d %H:%M:%S')))
+                    log_featured_z(conn, mid, dz)
+                    conn.commit()
+                    added_z += 1
+            except Exception:
+                pass
+            _v1_scan['done'] += 1
+        _v1_scan['added'] = added
+        _v1_scan['added_z'] = added_z
+        _v1_scan['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception as e:
+        _v1_scan['error'] = str(e)
+    finally:
+        conn.close()
+        _v1_scan['running'] = False
+
+
+def get_v1_featured_full(z=False):
+    """V1 精選全量：結構同 get_featured_full 一樣（冇 letters）。
+    z=True 讀 v1_featured_z。"""
+    tbl = 'v1_featured_z' if z else 'v1_featured'
+    conn = db()
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    base = (
+        'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
+        'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
+        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, NULL, '
+        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
+        f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
+        'JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        'JOIN teams ht ON ht.titan_id=m.home_id '
+        'JOIN teams at ON at.titan_id=m.away_id '
+        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+        "AND oc.label='closing' AND oc.company_id=12 "
+        'LEFT JOIN match_prestandings ps ON ps.match_id=m.id '
+        "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
+        "AND hr.scope='total' AND hr.grp='' "
+        "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
+        "AND ar.scope='total' AND ar.grp='' ")
+    pending_rows = conn.execute(
+        base + 'WHERE m.kickoff >= ? ORDER BY m.kickoff', (now,)).fetchall()
+    played_rows = conn.execute(
+        base + 'WHERE m.kickoff < ? ORDER BY m.kickoff DESC', (now,)).fetchall()
+    conn.close()
+
+    def build(row):
+        try:
+            return _build_featured_rec(row, tbl, now)
+        except Exception:
+            traceback.print_exc()
+            (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, _letters,
+             hr_, ar_) = row
+            return {'id': mid, 'direction': d, 'added_at': added,
+                    'kickoff': ko, 'home': h, 'away': a, 'league': lg,
+                    'rank_home': hr_, 'rank_away': ar_,
+                    'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+                    'odds': f'主{ho}/客{ao}' if ho is not None else None,
+                    'played': ko < now, 'brief': None, 'check': None,
+                    'letters': None}
+
+    pending = list(_BUILD_POOL.map(build, pending_rows))
+    played = list(_BUILD_POOL.map(build, played_rows))
+    wins = sum(1 for r in played if r.get('result') == 'W')
+    losses = sum(1 for r in played if r.get('result') == 'L')
+    pushes = sum(1 for r in played if r.get('result') == 'P')
+    stats = {'total': len(pending) + len(played), 'pending': len(pending),
+             'played': len(played), 'wins': wins, 'losses': losses,
+             'pushes': pushes,
+             'hit_rate': wins / (wins + losses) if (wins + losses) else None}
+    return {'stats': stats, 'pending': pending, 'played': played,
+            'scan': {k: _v1_scan[k] for k in ('running', 'done', 'total', 'added', 'added_z', 'last', 'error')}}
+
+
+def do_v1_featured_refresh(mid):
+    """V1 單場重新整理：重抓最新盤口賠率，用 V2 十六字頭規則重算該場資格。"""
+    st = do_fetch(mid, True)
+    if not st.get('ok'):
+        return {'ok': False, 'error': st.get('error', '抓取賠率失敗'), 'fetch': st}
+    conn = db()
+    try:
+        screen_engine._pool_cache['ts'] = 0
+        try:
+            import v2_engine
+            v2_engine.invalidate_pool()
+        except Exception:
+            pass
+        d = dz = None
+        try:
+            t = screen_engine.get_target(conn, mid)
+            if t:
+                fl = v2_engine.featured_letters(conn, t) or {}
+                d = fl.get('direction')
+                passed = fl.get('passed_letters') or []
+                if passed:
+                    zpass = [e for e in (fl.get('letters') or [])
+                             if e.get('mix') == '同主隊' and e['letter'] in passed]
+                    if zpass:
+                        dz = zpass[0]['dir']
+        except Exception:
+            pass
+        row = conn.execute('SELECT result FROM v1_featured WHERE match_id=?',
+                           (mid,)).fetchone()
+        rowz = conn.execute('SELECT result FROM v1_featured_z WHERE match_id=?',
+                            (mid,)).fetchone()
+        removed = removed_z = False
+        if d:
+            conn.execute(
+                'INSERT INTO v1_featured(match_id, direction, added_at) VALUES(?,?,?) '
+                'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction',
+                (mid, d, time.strftime('%Y-%m-%d %H:%M:%S')))
+            log_featured(conn, mid, d)
+        elif row and row[0] is None:
+            conn.execute('DELETE FROM v1_featured WHERE match_id=?', (mid,))
+            removed = True
+        if dz:
+            conn.execute(
+                'INSERT INTO v1_featured_z(match_id, direction, added_at) VALUES(?,?,?) '
+                'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction',
+                (mid, dz, time.strftime('%Y-%m-%d %H:%M:%S')))
+            log_featured_z(conn, mid, dz)
+        elif rowz and rowz[0] is None:
+            conn.execute('DELETE FROM v1_featured_z WHERE match_id=?', (mid,))
+            removed_z = True
+        conn.commit()
+    finally:
+        conn.close()
+    return {'ok': True, 'direction': d, 'direction_z': dz,
+            'removed': removed, 'removed_z': removed_z}
 
 
 # ============ 過往賽果（已完場＋尾盤 → 上/下/走盤＋五項命中率統計＋篩選＋走勢） ============
@@ -1956,6 +2154,19 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/featured/scan-status':
             self._send(200, json.dumps(_feat_scan, ensure_ascii=False))
             return
+        if u.path == '/api/v1/featured/full':
+            try:
+                qs = parse_qs(u.query)
+                z = qs.get('z', [''])[0] in ('1', 'true')
+                self._send(200, json.dumps(get_v1_featured_full(z=z), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v1/featured/scan-status':
+            self._send(200, json.dumps(_v1_scan, ensure_ascii=False))
+            return
         if u.path == '/api/check/full':
             try:
                 self._send(200, json.dumps(get_check(), ensure_ascii=False))
@@ -2108,6 +2319,33 @@ class Handler(BaseHTTPRequestHandler):
                     threading.Thread(target=_check_scan_job, daemon=True).start()
                 self._send(200, json.dumps({'started': True, 'running': True},
                                            ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v1/featured/scan':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                if body.get('reset'):
+                    conn = db()
+                    conn.execute('DELETE FROM v1_featured')
+                    conn.execute('DELETE FROM v1_featured_z')
+                    conn.commit()
+                    conn.close()
+                if not _v1_scan['running']:
+                    threading.Thread(target=_v1_scan_job, daemon=True).start()
+                self._send(200, json.dumps({'started': True, 'running': True,
+                                            'reset': bool(body.get('reset'))},
+                                           ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v1/featured/refresh':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(
+                    do_v1_featured_refresh(int(body.get('id'))), ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return

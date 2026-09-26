@@ -100,6 +100,7 @@ details summary::-webkit-details-marker{display:none}
 details summary::before{content:'▸';color:var(--gold);font-size:12px}
 details[open] summary::before{content:'▾'}
 details summary .sub{color:var(--dim);font-weight:400;font-size:12px}
+.gi .sub,.gaprow .sub{color:var(--dim);font-size:11px;line-height:1.35;margin-top:2px}
 details .body{padding:4px 12px 12px;border-top:1px solid var(--line)}
 /* ---- 表 ---- */
 table.ck-table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
@@ -172,6 +173,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:#6b5a14}
     <button class="tab" data-pg="picks">我的選擇 <span id="pkCnt"></span></button>
     <button class="tab" data-pg="results">📋 過往賽果</button>
     <button class="tab" data-pg="featlog">📜 過往紀錄</button>
+    <button class="tab" data-pg="v1">📼 舊版本</button>
     <button class="tab" data-pg="settings">⚙️ 設定</button>
   </nav>
 </header>
@@ -258,6 +260,18 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:#6b5a14}
     </div>
     <div id="flStats"></div>
     <div id="flList"><div class="note">載入中…</div></div>
+  </section>
+
+  <!-- 舊版本（V1 精選／精選Z） -->
+  <section class="pg" id="pg-v1">
+    <div class="toolbar">
+      <button class="btn accent" id="btnV1Scan">🔍 重新掃描 V1</button>
+      <span class="hint" id="v1ScanInfo"></span>
+    </div>
+    <div id="v1Stats"></div>
+    <div id="v1List"><div class="note">載入中…</div></div>
+    <div id="v1zStats"></div>
+    <div id="v1zList"></div>
   </section>
 
   <!-- 設定 -->
