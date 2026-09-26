@@ -39,7 +39,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '4.1.0'
+SERVER_VERSION = '4.1.1'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 

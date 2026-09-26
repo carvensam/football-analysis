@@ -525,9 +525,13 @@ async function loadResults(){
     byDay[day] = byDay[day] || {w: 0, l: 0};
     byDay[day][w ? 'w' : 'l']++;
   }
+  const winFilter = $('#rsWin').value;
   const ratioTbl = (obj, lab, keyLab) => {
-    const ks = Object.keys(obj).sort((a, b) => (obj[b].w + obj[b].l) - (obj[a].w + obj[a].l)).slice(0, 30);
-    if (!ks.length) return '';
+    let ks = Object.keys(obj).sort((a, b) => (obj[b].w + obj[b].l) - (obj[a].w + obj[a].l));
+    if (winFilter === 'win') ks = ks.filter(k => { const e = obj[k].w + obj[k].l; return e > 0 && obj[k].w / e > 0.5; });
+    if (winFilter === 'lose') ks = ks.filter(k => { const e = obj[k].w + obj[k].l; return e > 0 && obj[k].l / e > 0.5; });
+    ks = ks.slice(0, 30);
+    if (!ks.length) return `<h4 style="margin:10px 0 4px">${lab}</h4><div class="note">無符合「${winFilter === 'win' ? '贏超50%' : '輸超50%'}」嘅項目</div>`;
     return `<h4 style="margin:10px 0 4px">${lab}</h4><table class="ck-table"><thead><tr><th>${keyLab}</th><th>贏</th><th>輸</th><th>贏率</th></tr></thead><tbody>` +
       ks.map(k => { const o = obj[k]; const e = o.w + o.l; return `<tr><td>${esc(k)}</td><td class="r-up">${o.w}</td><td class="r-down">${o.l}</td><td><b>${pct(o.w / e)}</b></td></tr>`; }).join('') + '</tbody></table>';
   };
@@ -549,6 +553,7 @@ async function loadResults(){
 $('#rsScope').onchange = loadResults;
 $('#rsLg').onchange = loadResults;
 $('#rsLn').onchange = loadResults;
+$('#rsWin').onchange = loadResults;
 
 /* ---------- 過往紀錄 ---------- */
 async function loadFeatlog(){
