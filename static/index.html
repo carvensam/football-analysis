@@ -1,304 +1,278 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>FootballAnalysis</title>
-<link rel="icon" type="image/png" href="/static/icon.png">
-<link rel="stylesheet" href="/static/style.css">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FootballAnalysis V2</title>
+<style>
+:root{
+  --bg:#0d1117; --bg2:#161d27; --card:#1a2230; --line:#2b3648;
+  --tx:#e8e2d5; --dim:#8b94a3; --up:#3fb96c; --down:#e05c5c;
+  --gold:#d4af37; --gold2:#f5d76e; --accent:#5b8def;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--bg); color:var(--tx);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans TC",sans-serif;
+  font-size:15px; line-height:1.55;
+  padding:52px 0 56px; /* 上下金橫額高度 */
+}
+a{color:var(--accent)}
+/* ---- 金色橫額（頂：冷靜．最強念力／底：悶住贏） ---- */
+.gold-banner{
+  position:fixed; left:0; right:0; height:52px; z-index:50;
+  background:linear-gradient(180deg,#e6c34a,#b8932a);
+  color:#3a2c05; display:flex; align-items:center; justify-content:center;
+  font-weight:900; letter-spacing:.12em; white-space:nowrap;
+  font-size:40px; line-height:52px;
+}
+.gold-banner.top{top:0;border-bottom:2px solid #8a6d1a}
+.gold-banner.bottom{bottom:0;border-top:2px solid #8a6d1a}
+/* ---- 頂部列 ---- */
+#topbar{
+  position:sticky; top:52px; z-index:40; margin:0 -10px;
+  background:var(--bg2); border-bottom:1px solid var(--line);
+  display:flex; align-items:center; gap:8px; padding:6px 10px; flex-wrap:wrap;
+}
+#status{font-size:12px;color:var(--dim);white-space:nowrap}
+#status b{color:var(--up)}
+#status .err{color:var(--down)}
+#tabs{display:flex;gap:4px;flex-wrap:wrap;flex:1}
+.tab{
+  background:var(--card); color:var(--tx); border:1px solid var(--line);
+  border-radius:16px; padding:5px 12px; font-size:13px; cursor:pointer;
+}
+.tab.on{background:var(--gold); color:#3a2c05; border-color:var(--gold); font-weight:700}
+.tab:disabled{opacity:.5}
+/* ---- 主區 ---- */
+#main{max-width:980px;margin:0 auto;padding:10px}
+.pg{display:none}
+.pg.on{display:block}
+/* ---- 按掣 ---- */
+.btn{
+  background:var(--card); color:var(--tx); border:1px solid var(--line);
+  border-radius:8px; padding:6px 12px; font-size:14px; cursor:pointer;
+}
+.btn:hover{border-color:var(--accent)}
+.btn.accent{background:var(--accent); border-color:var(--accent); color:#fff}
+.btn.warn{background:#7a4a12; border-color:#a06a1f; color:#ffd9a0}
+.btn:disabled{opacity:.45;cursor:default}
+.toolbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0}
+.toolbar select{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:14px}
+/* ---- 場次卡 ---- */
+.day-h{
+  margin:14px 0 6px; padding:4px 10px; background:var(--bg2);
+  border-left:3px solid var(--gold); font-weight:700; font-size:14px;
+  color:var(--gold2); border-radius:0 6px 6px 0;
+}
+.mrow{
+  display:flex; align-items:center; gap:8px; flex-wrap:wrap;
+  background:var(--card); border:1px solid var(--line); border-radius:10px;
+  padding:8px 10px; margin:6px 0; cursor:pointer;
+}
+.mrow:hover{border-color:var(--gold)}
+.mrow .ko{font-size:12px;color:var(--dim);min-width:88px}
+.mrow .lg{font-size:12px;color:var(--gold2);min-width:70px}
+.mrow .tm{flex:1;min-width:180px;font-weight:600}
+.mrow .tm .r{color:var(--dim);font-weight:400;font-size:12px}
+.mrow .ln{font-size:12px;color:var(--dim);text-align:right}
+.mrow .ln b{color:var(--tx)}
+.mrow .od{font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.mrow .od.has{color:var(--up);border-color:#2c5c3c}
+.mrow .sc{font-weight:800;color:var(--gold2);font-size:16px}
+/* ---- 詳情頁 ---- */
+.tcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin:10px 0}
+.tcard h2{font-size:19px;margin-bottom:4px}
+.tcard .meta{color:var(--dim);font-size:13px;margin-bottom:8px}
+.lines{display:grid;grid-template-columns:repeat(auto-fit,minmax(128px,1fr));gap:6px}
+.linebox{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:6px 8px}
+.linebox .lb-t{font-size:11px;color:var(--dim)}
+.linebox .lb-v{font-size:14px;font-weight:700;margin-top:2px}
+.linebox .lb-v small{color:var(--dim);font-weight:400}
+/* ---- 摺疊項 ---- */
+details{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:6px 0}
+details summary{
+  list-style:none;cursor:pointer;padding:9px 12px;display:flex;gap:8px;
+  align-items:baseline;flex-wrap:wrap;font-weight:600;font-size:14px;
+}
+details summary::-webkit-details-marker{display:none}
+details summary::before{content:'▸';color:var(--gold);font-size:12px}
+details[open] summary::before{content:'▾'}
+details summary .sub{color:var(--dim);font-weight:400;font-size:12px}
+details .body{padding:4px 12px 12px;border-top:1px solid var(--line)}
+/* ---- 表 ---- */
+table.ck-table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
+table.ck-table th,table.ck-table td{
+  border:1px solid var(--line);padding:4px 8px;text-align:center}
+table.ck-table th{background:var(--bg2);color:var(--gold2);font-weight:700}
+table.ck-table td.hl,table.ck-table tr.hl td{background:#6b5a14}
+.r-up{color:var(--up)} .r-down{color:var(--down)}
+.note{color:var(--dim);font-size:12px;margin:6px 0}
+.err{color:#ffb0b0;background:#4a1d1d;border:1px solid #7a2d2d;border-radius:8px;padding:6px 10px;font-size:13px;margin:6px 0}
+.tag{display:inline-block;padding:2px 10px;border-radius:12px;font-size:12px;font-weight:700}
+.tag.up{background:#1c4a2c;color:#7ee2a0}
+.tag.down{background:#4a1d1d;color:#ff9d9d}
+.tag.lt{background:#3a2c6b;color:#c9b8ff}
+.tag.dim{background:var(--bg2);color:var(--dim)}
+/* ---- 精選／選擇卡 ---- */
+.fcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:8px 0}
+.fcard .f-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.fcard .f-time{color:var(--dim);font-size:12px}
+.fcard .f-teams{font-weight:700;flex:1;min-width:170px}
+.fcard .f-score{font-weight:800;color:var(--gold2)}
+.fcard .f-btns{display:flex;gap:6px}
+.grid6{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:6px;margin-top:8px}
+.gi{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:12px}
+.gi .t{color:var(--dim);font-size:11px}
+.gi .v{font-size:12px;margin-top:2px}
+.gaprow{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:12px;margin-top:6px}
+.gaprow .lab{color:var(--gold2);font-weight:700;margin-right:6px}
+.statbar{display:flex;gap:10px;flex-wrap:wrap;background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin:8px 0;font-size:14px}
+.statbar b{color:var(--gold2)}
+/* ---- 走勢 ---- */
+.trend{display:flex;gap:3px;align-items:flex-end;height:70px;margin:10px 0;border-bottom:1px solid var(--line);padding:0 4px}
+.trend .bar{flex:1;min-width:8px;border-radius:3px 3px 0 0;position:relative}
+.trend .bar.hi{background:var(--up)} .trend .bar.lo{background:var(--down)}
+.trend .bar:hover::after{
+  content:attr(data-tip);position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
+  background:#000;color:#fff;font-size:11px;padding:2px 6px;border-radius:4px;white-space:nowrap}
+/* ---- 設定 ---- */
+.set-doc details{margin:8px 0}
+.set-tb{width:100%;border-collapse:collapse;font-size:13px}
+.set-tb th,.set-tb td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+.set-tb th{background:var(--bg2);color:var(--gold2);white-space:nowrap}
+.set-sec p{margin:6px 0;font-size:13px}
+.toast{
+  position:fixed;left:50%;bottom:70px;transform:translateX(-50%);
+  background:#000d;border:1px solid var(--gold);color:var(--gold2);
+  padding:8px 18px;border-radius:20px;font-size:14px;z-index:99;display:none;
+}
+.checkwrap{overflow-x:auto}
+.hint{font-size:12px;color:var(--dim)}
+/* 手機 */
+@media (max-width:640px){
+  body{font-size:14px;padding:44px 0 48px}
+  .gold-banner{height:44px;font-size:32px;line-height:44px}
+  #topbar{top:44px}
+  .mrow .ko{min-width:70px}
+}
+</style>
 </head>
 <body>
-<div class="top-wrap">
-<div class="gold-banner">冷靜．最強念力</div>
-<header>
-  <div class="hdr-ctl">
-    <select id="hours">
-      <option value="24">未來24小時</option>
-      <option value="48" selected>未來48小時</option>
-      <option value="168">未來7天</option>
-      <option value="0">全部即將開賽</option>
-    </select>
-    <button id="btnRefresh" class="btn">重新整理賽事</button>
-    <button id="btnFetchAll" class="btn accent">獲取全部賠率</button>
-    <button id="btnUpdate" class="btn" title="更新賽果＋新場次＋已存在場次嘅盤口及賠率全部刷新（約 5-10 分鐘）">⟳ 更新賽事</button>
-    <button id="btnWin24" class="btn" title="只更新未來24小時開賽場次嘅盤口及賠率（唔重新掃瞄邊啲場，直接用已入庫嘅開賽時間）">⚡ 更新未來24</button>
-    <button id="btnWin30" class="btn" title="只更新未來30分鐘開賽場次嘅盤口及賠率">⚡ 更新未來30</button>
-    <button id="btnWin10" class="btn" title="只更新未來10分鐘開賽場次嘅盤口及賠率">⚡ 更新未來10</button>
-    <button id="btnFeatured" class="btn gold" title="七重準則全通過嘅精選場次">★ 精選</button>
-    <button id="btnFeaturedZ" class="btn gold" title="同主客版精選：第⑤項改用 5Z（只計對上一次對賽同主客方向）">★ 精選Z</button>
-    <button id="btnCheck" class="btn" title="8 組合歷史開出上/下盤比例">✓ Check 下先</button>
-    <button id="btnResults" class="btn" title="精選已開賽場次賽果＋五項命中率統計">📋 過往賽果</button>
-    <button id="btnFeatLog" class="btn" title="精選一出現即自動紀錄（尾盤快照，永久保留，計一場）">📜 過往紀錄</button>
-    <button id="btnSettings" class="btn" title="全部按鍵、規則、設定、展示意思嘅詳細說明">⚙️ 設定</button>
-    <span id="status" class="status"></span>
-  </div>
-</header>
-</div>
+<div class="gold-banner top">冷靜．最強念力</div>
 
-<main>
-  <section id="listPane">
-    <details id="picksPanel">
-      <summary><span id="picksSum">我的選擇</span><button id="btnPicksBig" class="btn">⤢ 大版面</button></summary>
-      <div id="picksBox">載入中…</div>
-    </details>
-    <h2>即將開賽</h2>
-    <div id="matchList"><div class="empty">載入中…</div></div>
-    <h2>已開賽（最近120小時）</h2>
-    <div id="playedList"><div class="empty">載入中…</div></div>
+<header id="topbar">
+  <span id="status">啟動中…</span>
+  <nav id="tabs">
+    <button class="tab on" data-pg="home">🏠 主頁</button>
+    <button class="tab" data-pg="feat">★ 精選 <span id="ftCnt"></span></button>
+    <button class="tab" data-pg="featz">★ 精選Z <span id="ftzCnt"></span></button>
+    <button class="tab" data-pg="check">✓ Check 下先</button>
+    <button class="tab" data-pg="picks">我的選擇 <span id="pkCnt"></span></button>
+    <button class="tab" data-pg="results">📋 過往賽果</button>
+    <button class="tab" data-pg="featlog">📜 過往紀錄</button>
+    <button class="tab" data-pg="settings">⚙️ 設定</button>
+  </nav>
+</header>
+
+<main id="main">
+  <!-- 主頁 -->
+  <section class="pg on" id="pg-home">
+    <div class="toolbar">
+      <select id="hoursSel">
+        <option value="24">未來24小時</option>
+        <option value="48" selected>未來48小時</option>
+        <option value="168">未來7天</option>
+        <option value="0">全部（不設上限）</option>
+      </select>
+      <button class="btn" id="btnReload">重新整理賽事</button>
+      <button class="btn" id="btnFetchAll">獲取全部賠率</button>
+      <button class="btn warn" id="btnUpdate">⟳ 更新賽事</button>
+      <button class="btn accent" id="btnWin24">⚡ 更新未來24</button>
+      <button class="btn accent" id="btnWin30">⚡ 更新未來30分鐘</button>
+      <button class="btn accent" id="btnWin10">⚡ 更新未來10分鐘</button>
+      <span class="hint" id="updInfo"></span>
+    </div>
+    <div id="homeList"><div class="note">載入中…</div></div>
   </section>
-  <section id="resultPane">
-    <div id="placeholder" class="empty big">← 點選一場賽事開始篩查<br><small>未有賠率的場次請先按「獲取賠率」</small></div>
-    <div id="result" style="display:none"></div>
+
+  <!-- 精選 -->
+  <section class="pg" id="pg-feat">
+    <div class="toolbar">
+      <button class="btn accent" id="btnFtScan">🔍 重新掃描精選</button>
+      <span class="hint" id="ftScanInfo"></span>
+    </div>
+    <div id="ftStats"></div>
+    <div id="ftList"><div class="note">載入中…</div></div>
+  </section>
+
+  <!-- 精選Z -->
+  <section class="pg" id="pg-featz">
+    <div class="toolbar">
+      <button class="btn accent" id="btnFtzScan">🔍 重新掃描精選Z</button>
+      <span class="hint" id="ftzScanInfo"></span>
+    </div>
+    <div id="ftzStats"></div>
+    <div id="ftzList"><div class="note">載入中…</div></div>
+  </section>
+
+  <!-- Check 下先 -->
+  <section class="pg" id="pg-check">
+    <div id="ckBody"><div class="note">載入中…</div></div>
+  </section>
+
+  <!-- 我的選擇 -->
+  <section class="pg" id="pg-picks">
+    <div id="pkStats"></div>
+    <div id="pkList"><div class="note">載入中…</div></div>
+  </section>
+
+  <!-- 過往賽果 -->
+  <section class="pg" id="pg-results">
+    <div class="toolbar">
+      <label class="hint">範圍
+        <select id="rsScope">
+          <option value="featured" selected>精選</option>
+          <option value="featuredz">精選Z</option>
+        </select></label>
+      <label class="hint">聯賽 <select id="rsLg"><option value="">全部</option></select></label>
+      <label class="hint">盤口 <select id="rsLn"><option value="">全部</option></select></label>
+      <span class="hint" id="rsInfo"></span>
+    </div>
+    <div id="rsBody"><div class="note">載入中…</div></div>
+  </section>
+
+  <!-- 過往紀錄 -->
+  <section class="pg" id="pg-featlog">
+    <div class="toolbar">
+      <label class="hint">紀錄
+        <select id="flZ"><option value="" selected>精選</option><option value="1">精選Z</option></select></label>
+      <span class="hint">精選一出現即自動紀錄（尾盤快照，永久保留，計一場）</span>
+    </div>
+    <div id="flStats"></div>
+    <div id="flList"><div class="note">載入中…</div></div>
+  </section>
+
+  <!-- 設定 -->
+  <section class="pg" id="pg-settings">
+    <div class="set-doc" id="setBody"></div>
+  </section>
+
+  <!-- 詳情（場次） -->
+  <section class="pg" id="pg-detail">
+    <div class="toolbar">
+      <button class="btn" id="btnBack">← 返主頁</button>
+      <button class="btn warn" id="btnDetFetch">獲取賠率</button>
+      <button class="btn accent" id="btnDetRefresh">⟳ 重新整理盤口及水位</button>
+      <span class="hint" id="detMsg"></span>
+    </div>
+    <div id="detBody"><div class="note">載入中…</div></div>
   </section>
 </main>
-<div id="pkOverlay" style="display:none">
-  <div class="gold-banner">冷靜．最強念力</div>
-  <div class="pk-ov-head">
-    <button class="btn ov-home" title="返回主頁">🏠 主頁</button>
-    <b id="pkOvTitle">我的選擇</b>
-    <span id="pkOvStatus" class="ft-scan-info"></span>
-    <button class="btn ov-refresh" title="更新最新即時盤口及賠率，並重算（包括精選）">⟳ 刷新盤口</button>
-    <button id="pkOvClose" class="btn">✕ 關閉</button>
-  </div>
-  <div class="pk-ov-body" id="pkOvBody">載入中…</div>
-  <div class="gold-banner gold-banner-bottom in-ov">悶住贏</div>
-</div>
-<div id="ftOverlay" style="display:none">
-  <div class="gold-banner">冷靜．最強念力</div>
-  <div class="pk-ov-head">
-    <button class="btn ov-home" title="返回主頁">🏠 主頁</button>
-    <b id="ftOvTitle">精選</b>
-    <span id="ftScanInfo" class="ft-scan-info"></span>
-    <button class="btn ov-refresh" title="更新最新即時盤口及賠率，並重算（包括精選）">⟳ 刷新盤口</button>
-    <button id="btnFtScan" class="btn">🔍 掃描精選</button>
-    <button id="ftOvClose" class="btn">✕ 關閉</button>
-  </div>
-  <div class="pk-ov-body" id="ftOvBody">載入中…</div>
-  <div class="gold-banner gold-banner-bottom in-ov">悶住贏</div>
-</div>
-<div id="ckOverlay" style="display:none">
-  <div class="gold-banner">冷靜．最強念力</div>
-  <div class="pk-ov-head">
-    <button class="btn ov-home" title="返回主頁">🏠 主頁</button>
-    <b id="ckOvTitle">Check 下先</b>
-    <span id="ckScanInfo" class="ft-scan-info"></span>
-    <button class="btn ov-refresh" title="更新最新即時盤口及賠率，並重算（包括精選）">⟳ 刷新盤口</button>
-    <button id="btnCkScan" class="btn">🔍 回測掃描</button>
-    <button id="ckOvClose" class="btn">✕ 關閉</button>
-  </div>
-  <div class="pk-ov-body" id="ckOvBody">載入中…</div>
-  <div class="gold-banner gold-banner-bottom in-ov">悶住贏</div>
-</div>
-<div id="rsOverlay" style="display:none">
-  <div class="gold-banner">冷靜．最強念力</div>
-  <div class="pk-ov-head">
-    <button class="btn ov-home" title="返回主頁">🏠 主頁</button>
-    <b id="rsOvTitle">過往賽果</b>
-    <span id="rsInfo" class="ft-scan-info"></span>
-    <button id="rsOvClose" class="btn">✕ 關閉</button>
-  </div>
-  <div class="pk-ov-body" id="rsOvBody">載入中…</div>
-  <div class="gold-banner gold-banner-bottom in-ov">悶住贏</div>
-</div>
-<div id="flOverlay" style="display:none">
-  <div class="gold-banner">冷靜．最強念力</div>
-  <div class="pk-ov-head">
-    <button class="btn ov-home" title="返回主頁">🏠 主頁</button>
-    <b id="flOvTitle">過往紀錄</b>
-    <select id="flScope" title="切換精選／精選Z 紀錄">
-      <option value="" selected>精選</option>
-      <option value="1">精選Z</option>
-    </select>
-    <span id="flInfo" class="ft-scan-info">精選一出現即自動紀錄</span>
-    <button id="flOvClose" class="btn">✕ 關閉</button>
-  </div>
-  <div class="pk-ov-body" id="flOvBody">載入中…</div>
-  <div class="gold-banner gold-banner-bottom in-ov">悶住贏</div>
-</div>
-<div id="setOverlay" style="display:none">
-  <div class="gold-banner">冷靜．最強念力</div>
-  <div class="pk-ov-head">
-    <button class="btn ov-home" title="返回主頁">🏠 主頁</button>
-    <b>⚙️ 設定・完整說明</b>
-    <span class="ft-scan-info">每個掣、每條規則、每個數字嘅意思</span>
-    <button id="setOvClose" class="btn">✕ 關閉</button>
-  </div>
-  <div class="pk-ov-body set-doc" id="setOvBody">
 
-<details open><summary>① 主頁每一個掣</summary>
-<div class="set-sec">
-<table class="set-tb">
-<tr><th>掣</th><th>功能（最詳細）</th></tr>
-<tr><td>未來24/48/7天/全部</td><td>「即將開賽」清單嘅時間範圍。揀「全部」= 不設上限列出所有未開賽場次（次序照開賽時間排，最近排先嘅日期排最上）。預設 48 小時。</td></tr>
-<tr><td>重新整理賽事</td><td>純粹重新载入賽事清單（由資料庫讀取，唔上網）。想睇最新開賽時間變動後個清單先撳。唔會更新任何賠率。</td></tr>
-<tr><td>獲取全部賠率</td><td>幫「即將開賽」清單入面<b>未獲取賠率</b>嘅場次逐一上網抓取盤口及水位（球探網 titan007，易勝博公司盤）。每場之間有間隔避免被封，約 1-3 秒一場。場次多會行一陣。抓完場次卡會變「已有賠率」。</td></tr>
-<tr><td>⟳ 更新賽事</td><td><b>最全面嘅更新</b>，四合一：① 賽果——最近 3 日已完場場次補上比分；② 新場次——68 個聯賽現行賽季檔重新下載，新排出嘅場次入庫；③ 已存在場次嘅盤口及賠率全部強制刷新（攞最新即時盤）；④ 補爬——未來 72 小時內完全冇盤口嘅場次自動補抓。需時約 4-8 分鐘，期間頂部狀態列會顯示進度（邊個聯賽、幾多場）。30 分鐘內自動模式只會行一次；人手撳無限制。</td></tr>
-<tr><td>⚡ 更新未來24</td><td><b>快掣</b>：只更新<b>未來 24 小時</b>內開賽場次嘅盤口及賠率。場次清單直接用資料庫已入庫嘅開賽時間（每日中午 12 時自動更新時已攞咗未來 48 小時賽程），<b>唔使重新掃瞄邊啲場</b>，即刻逐場抓最新盤。需時視場數（約 1-3 秒一場）。</td></tr>
-<tr><td>⚡ 更新未來30</td><td><b>快掣</b>：只更新<b>未來 30 分鐘</b>內開賽場次嘅盤口及賠率。臨開賽前想睇最新走盤用佢，十幾秒搞掂。</td></tr>
-<tr><td>⚡ 更新未來10</td><td><b>快掣</b>：只更新<b>未來 10 分鐘</b>內開賽場次嘅盤口及賠率。最後衝刺用，幾秒搞掂。</td></tr>
-<tr><td>★ 精選</td><td>開「精選」大版面：喺全部即將開賽場次入面，用<b>七重準則</b>（詳見 ⑤）自動篩出嘅場次。顯示入選場次、每場嘅各項統計、同歷史命中率。</td></tr>
-<tr><td>★ 精選Z</td><td>「精選」嘅<b>同主客版</b>：唯一分別係第⑤項改用 5Z（對上一次對賽只計「同一主隊作主場、同一客隊作客場」嘅對賽）。其餘六重準則同精選完全一樣。兩邊命中率獨立計。</td></tr>
-<tr><td>✓ Check 下先</td><td>開「Check 下先」大版面：將「方向（上/下盤）＋ 今場盤口對比第⑭項 50% 盤嘅深淺 ＋ 對比第⑰項 50% 盤嘅深淺」砌成 <b>8 種組合</b>，回溯歷史開出上盤/下盤嘅比例（詳見 ⑥）。</td></tr>
-<tr><td>📋 過往賽果</td><td>「精選」已完場場次嘅賽果頁：最頂五項命中率統計＋逐日走勢圖＋可按聯賽/盤口/勝負篩選（詳見 ⑧）。</td></tr>
-<tr><td>📜 過往紀錄</td><td>「精選一出現即自動紀錄」嘅流水帳（尾盤快照，永久保留，同一場計一場）。頂部掣可切換睇精選／精選Z 嘅紀錄。</td></tr>
-<tr><td>⚙️ 設定</td><td>本頁。</td></tr>
-</table>
-<p class="note">場次卡（即將開賽區）：撳任何一場 → 右邊開始篩查。「已有賠率 · Ns前更新」= 呢場盤口抓過嘅時間；「未獲取賠率」= 仲未上網抓，篩查前要按「獲取全部賠率」或入場後按「獲取賠率」。場次卡上嘅 <b>主X.XX/客X.XX</b> 係該場尾盤（或最新即時）盤口同水位。</p>
-<p class="note">已開賽區（最近 120 小時）：已開場嘅場次連比分保留喺主頁，最多 1200 場、最新排先，照樣可以撳入去睇晒第 1-20 項結果。</p>
-<p class="note">「我的選擇」面板：主頁左上方可摺疊；「⤢ 大版面」開全頁版（詳見 ⑦）。狀態列（頂部）：✓ 數據池就緒＝歷史數據載入完成可以篩查；顯示版本號＝伺服器版本。</p>
-</div>
-</details>
-
-<details><summary>② 名詞字典（睇結果前一定要識）</summary>
-<div class="set-sec">
-<table class="set-tb">
-<tr><th>名詞</th><th>意思</th></tr>
-<tr><td>上盤</td><td><b>讓球嗰方</b>。主讓半球 → 上盤＝主隊；客讓平/半 → 上盤＝客隊。<b>平手盤特別約定：上盤＝平手主隊、下盤＝平手客隊</b>（全套系統用同一約定，計盤同顯示都係）。</td></tr>
-<tr><td>下盤</td><td>受讓嗰方（或平手盤嘅客隊，見上）。</td></tr>
-<tr><td>走盤</td><td>讓球結果剛好打和（例如主讓一球贏 1-0）。唔計入上/下盤勝率嘅分母。</td></tr>
-<tr><td>贏1／輸1</td><td>第⑮項及水位表專用：淨贏多過 1 球叫「贏1」、淨輸多過 1 球叫「輸1」。<b>冇「贏0.5」呢類半盤結果</b>——讓平/半贏一球都算贏1、讓半/一贏一球屬走盤、讓半/一贏兩球先叫贏1。半格盤（.25/.75）會拆開兩邊各計半注。</td></tr>
-<tr><td>盤口寫法</td><td>主讓半球＝主隊讓 0.5 球；客讓半/一＝客隊讓 0.75 球；平手＝0。「受讓」即被讓球。</td></tr>
-<tr><td>水位</td><td>賠率（讓球盤），0.69 即投注 1 贏 0.69。主隊水位/客隊水位分開顯示，<b>唔係</b>淨係讓球方嗰個。</td></tr>
-<tr><td>水位分區</td><td>將上盤水位分成 10 個區：≤0.69｜0.70｜0.75｜0.80｜0.85｜0.90｜0.95｜1.00｜1.05｜≥1.10（每格 0.05）。分佈表用嚟睇「同一條件下，水位喺邊個區間最易贏」。</td></tr>
-<tr><td>初盤</td><td>博彩公司最早開出嘅盤口。</td></tr>
-<tr><td>開賽前4小時（pre_4h）</td><td>臨開賽 4 小時嗰刻嘅快照。</td></tr>
-<tr><td>開賽前30分鐘（pre_30m）</td><td>臨開賽 30 分鐘嗰刻嘅快照。</td></tr>
-<tr><td>開賽前15分鐘（pre_15m）</td><td>臨開賽 15 分鐘嗰刻嘅快照。</td></tr>
-<tr><td>開賽前10分鐘（pre_10m）</td><td>臨開賽 10 分鐘嗰刻嘅快照。</td></tr>
-<tr><td>開賽前5分鐘（pre_5m）</td><td>臨開賽 5 分鐘嗰刻嘅快照。</td></tr>
-<tr><td>尾盤（closing）</td><td>開賽前最後一刻嘅封盤盤口。<b>檢查/篩查一律以尾盤為準</b>；未開賽場次未有尾盤，就用查詢時間嘅即時最新盤代替（頁面會註明）。</td></tr>
-<tr><td>全資料庫（全庫）</td><td>成個歷史數據庫（約十萬場有完整盤口嘅完場賽事）入面符合條件嘅場次。</td></tr>
-<tr><td>同聯賽</td><td>只計同一個聯賽（例如巴西乙級聯賽）入面嘅場次。</td></tr>
-<tr><td>同類別</td><td>只計同一賽事類別——聯賽計聯賽、杯賽計杯賽（例如巴西乙同英冠同屬「聯賽」類）。</td></tr>
-<tr><td>讓深／讓淺</td><td>兩個盤口嘅差距，一定以<b>讓球方角度</b>表達：主讓半一 → 主讓平半＝「主讓淺咗半球(0.5)」；平手 → 主讓平半＝「主讓深咗¼格(0.25)」；客讓平半 → 平手＝「客讓淺咗¼格(0.25)」；客讓半球 → 客讓半一＝「客讓深咗¼格(0.25)」；主讓平半 → 客讓平半＝「主讓深咗半球(0.5)」。方向轉彎時會註明「主受讓」。</td></tr>
-<tr><td>返還率</td><td>主客兩邊水位 implied 概率加埋（1/主水＋1/客水）。系統計算用 93.9%（±0.04）做互換模型嘅基準。</td></tr>
-</table>
-</div>
-</details>
-
-<details><summary>③ 篩查結果頁面點睇</summary>
-<div class="set-sec">
-<p>撳一場賽事後，右邊顯示該場嘅<b>尾盤／初盤／開賽前4小時／開賽前30分鐘／開賽前15分鐘／開賽前10分鐘／開賽前5分鐘</b>七個時點嘅盤口水位，跟住係第 1-20 項。每項都有：</p>
-<p class="note">📌 <b>參照</b>：今場用嚟比較嘅基準（例如「基準＝今場尾盤：主讓半球 主0.92/客0.96」）。<br>
-📊 <b>上/下/走 盤結果</b>：「上盤 12 (52.2%)」＝ 上盤贏 12 場、佔 52.2%；括號前係場數、括號內係百分比；走盤唔計分母。每項分<b>全資料庫</b>同<b>同聯賽</b>兩欄，下面註明分母（賽事總數）。<br>
-📈 <b>分佈表</b>（第 10-13、16、5B 項）：歷史場次嘅尾盤分佈喺邊啲盤口，每個盔口再细分上盤水位 10 區嘅勝率。<br>
-🔁 <b>重新整理盤口及水位</b>：強制重新上網抓該場最新盤口，然後自動重新篩查——賠率會變，結果跟住變。</p>
-</div>
-</details>
-
-<details><summary>④ 篩查第 1-20 項・每條規則詳解</summary>
-<div class="set-sec">
-<p class="note">通用規則：凡係「盤口&amp;水位」比較——<b>盤口要 100% 一模一樣</b>（邊個讓、讓幾多都要同），<b>水位容差 ±0.03</b>。凡「比例類似」——勝/和/負每項 ±7%。</p>
-<table class="set-tb">
-<tr><th>項</th><th>規則（最詳細）</th></tr>
-<tr><td>1</td><td><b>同初盤及尾盤</b>：搵歷史場次，佢哋嘅「初盤」同「尾盤」都同今場尾盤完全相同（盤口一樣，兩個時點水位各±0.03）。睇呢啲場最終開上定下。</td></tr>
-<tr><td>2</td><td><b>同開賽前4小時及尾盤</b>：同上，但第一個時點改用「開賽前4小時」。</td></tr>
-<tr><td>3</td><td><b>對上一次對賽尾盤 對 今次初盤</b>：今場主隊同客隊對上一次碰頭嗰場嘅尾盤（已做主客互換，見⑤）同今場初盤完全相同。例如上次 A 主場讓平半、今次 B 主場，互換後對比盤係「B 讓平半」，就用佢同今場初盤比。</td></tr>
-<tr><td>4</td><td>同上，但比較時點係「開賽前4小時」。</td></tr>
-<tr><td>5</td><td>同上，但比較時點係「尾盤」。</td></tr>
-<tr><td>5A</td><td><b>開賽前10分鐘至尾盤變化（雙重相同）</b>：歷史場次嘅對上一次對賽，「開賽前10分鐘嗰條線」同今場開賽前10分鐘相同、而且「尾盤嗰條線」同今場尾盤相同——兩關都要過（都係盤口 100% 同、水位 ±0.03，對上一次對賽已互換）。未開賽場次用查詢時間嘅即時盤代替尾盤；如果連開賽前10分鐘都未到，會顯示「未有資料」。</td></tr>
-<tr><td>5B</td><td>用 5A 嘅篩選結果，顯示盤口分佈＋各水位上/下/走率（分佈圖版）。</td></tr>
-<tr><td>3Z/4Z/5Z/5AZ/5BZ</td><td>Z＝<b>同主客版</b>：上面第 3/4/5/5A/5B 項嘅條件不變，但只計「對上一次對賽都係同一主隊作主場、同一客隊作客場」嘅歷史對賽（即唔做主客互換，直接用原始盤比）。</td></tr>
-<tr><td>6</td><td><b>主客場走勢類似</b>：開賽前，主隊「主場」嘅勝/和/負比例 同 客隊「客場」嘅勝/和/負比例，六個數每個都 ±7% 以內嘅歷史場次。睇佢哋開上定下。</td></tr>
-<tr><td>7</td><td><b>總計走勢類似</b>：主隊（主場＋客場合計）勝/和/負 同 客隊總計勝/和/負，每項 ±7%。</td></tr>
-<tr><td>8</td><td><b>主客場攻守類似</b>：主隊主場「入球、失球、得失球差」同 客隊客場三項，每項 ±3 球以內嘅歷史場次。</td></tr>
-<tr><td>9</td><td><b>總計攻守類似</b>：主隊總計 入/失/差 同 客隊總計 入/失/差，各 ±3 球。</td></tr>
-<tr><td>10</td><td>用第 6 項篩出嘅場次 → 顯示<b>盤口分佈</b>（歷史尾盤係邊啲盤口）＋每個盤口再<b>细分上盤水位10區嘅上/下/走率</b>。分全庫／同聯賽。</td></tr>
-<tr><td>11</td><td>第 7 項版本嘅分佈圖（條件改為總計走勢）。</td></tr>
-<tr><td>12</td><td><b>排名類似</b>：開賽前主隊「主場排名」同客隊「客場排名」，各 ±2 名以內嘅歷史場次 → 盤口分佈＋水位分佈。（例如主場第3、客場第9，就搵主場排名 1-5 兼客場排名 7-11 嘅場次）</td></tr>
-<tr><td>13</td><td>總排名版：主隊總排名同客隊總排名各 ±2 → 分佈圖。</td></tr>
-<tr><td>14</td><td><b>第12項樣本嘅兩個參考盤</b>：喺第 12 項場次入面搵 ① <b>分佈最多嘅盤口</b>（邊個盤口場數最多）同 ② <b>上盤勝率最接近 50% 嘅盤口</b>（至少 5 場先計），再分別計佢哋同今場尾盤嘅<b>淨差距</b>（讓深/讓幾多，用②字典嘅表達方式）。每個都會列出場數同上/下/走率。呢項係<b>分析項</b>，唔係篩選條件。</td></tr>
-<tr><td>15</td><td><b>排名＋同盤口嘅水位表</b>：第 12 項條件（主場排名±2、客場排名±2）<b>再加</b>「尾盤盤口同今場 100% 相同」，然後按上盤水位 10 區列出各區嘅上盤率／下盤率／走盤率。<b>贏盤只計贏1、走、輸1</b>（見字典）。睇「今場水位落喺邊區，該區歷史偏向邊面」。</td></tr>
-<tr><td>16</td><td><b>主隊上一次比賽嘅延續</b>：今場主隊對上一場比賽（不論對手）嘅「角色（主/客）＋讓/受讓＋讓球數」三樣完全相同嘅歷史場次 → 呢啲場次嘅主隊今次做主場時嘅盤口分佈＋各水位上/下/走率。例如主隊上次作客讓半球，就搵「上次都係作客讓半球」嘅隊，今次返到主場開咩盤、邊面易贏。</td></tr>
-<tr><td>17</td><td><b>第16項樣本嘅兩個參考盤</b>：同第 14 項邏輯，但樣本改為第 16 項。都係分析項。</td></tr>
-<tr><td>18</td><td><b>排名差距淨值</b>：主隊主場排名 − 客隊客場排名 嘅差距（例如 3−9＝−6），搵歷史場次「主場排名−客場排名」都係 −6±1 兼<b>尾盤同今場完全相同</b>嘅場 → 上/下/走結果＋各水位率。</td></tr>
-<tr><td>19</td><td>總排名版嘅差距淨值（±1）＋同今場尾盤相同盤口 → 結果＋水位率。</td></tr>
-<tr><td>20</td><td><b>組合篩查</b>：喺第 1-19 項（連 3Z/4Z/5Z/5A/5AZ 同主客版）剔選多個條件，按「提交」後搵<b>同時符合全部剔選條件</b>嘅歷史場次。結果分三欄：全資料庫／同聯賽／同賽事類別，每欄都有上/下/走場數同百分比＋分母。第 14、17 項係分析項（冇篩選條件）、第 20 項係組合本身，所以三者<b>不能剔</b>；剔咗會彈提示。剔選咗而家唔適用嘅項（例如該場冇排名數據）都會彈提示話你知邊項。</td></tr>
-</table>
-<p class="note">💡 黃色 highlight：第 10-13 項分佈表——<b>盤口同今場一樣嗰行成行黃底</b>；<b>上盤水位分區包含今場水位嗰列成列黃底</b>（第 15/16/18/19 項水位表：包含今場水位嘅區間行黃底）。一眼睇到「而家呢個盤、呢個水位」喺歷史嘅位置。</p>
-</div>
-</details>
-
-<details><summary>⑤ 對上一次對賽「主客互換」點計（第 3/4/5/5A 項後面嘅邏輯）</summary>
-<div class="set-sec">
-<p>今場主隊（例如 B 隊）對上一次對賽可能係<b>作客</b>嗰時踢嘅。為公平比較，系統將上次嗰條盤<b>轉換做「今場主隊角度」嘅對比盤</b>：</p>
-<table class="set-tb">
-<tr><th>上次（A主場）</th><th>互換後對比盤（B主場）</th></tr>
-<tr><td>A 讓平半 0.92/0.92</td><td>B 讓平半 0.92/0.92（水位總和 1.85±0.02）</td></tr>
-<tr><td>A 讓平半 1.00/0.85</td><td>B 讓平半 0.85/1.00（水位主客對調）</td></tr>
-<tr><td>A 讓平手 1.00/0.85</td><td>B 讓半球 1.00/0.85（讓球 +¼格）</td></tr>
-<tr><td>A 讓半一 0.85/1.00</td><td>B 受讓平半 0.85/1.00</td></tr>
-<tr><td>A 作客讓半球 1.00/0.85</td><td>A 主場讓一球 1.15/0.70</td></tr>
-</table>
-<p class="note">規則：① 讓球數跟蹤球角度 +¼ 格（主場優勢）；② 水位用 HR 模型逆推（雙向總返還率 93.9%±0.04，超出呢個帶嘅舊盤唔做互換，會直用原始盤並註明）；③ 上次對賽主隊<b>當時都係主場</b>（同主客）→ 唔使互換，直比原始盤。<b>冇人可以改變上一次對賽嘅事實</b>——互換只係計數用，頁面會同時顯示「上回原始盤 → 互換後對比盤」俾您核對。</p>
-</div>
-</details>
-
-<details><summary>⑥ Check 下先（8 組合回測）</summary>
-<div class="set-sec">
-<p>將三個維度砌成 8 種組合，每種都回溯歷史開出上/下盤嘅比例：</p>
-<p class="note">維度一：<b>入選方向</b>（①⑤⑧⑫⑮⑱ 揀出嘅「上」或「下」）；<br>
-維度二：<b>今場盤口 對 第⑭項 50% 盤</b>——上盤深咗／上盤淺咗（上盤淺咗＝下盤深咗，反之亦然）；<br>
-維度三：<b>今場盤口 對 第⑰項 50% 盤</b>——同上。</p>
-<p>8 組合＝方向（上/下）× ⑭（深/淺）× ⑰（深/淺）。每格顯示：歷史開出上盤%、下盤%＋統計場次基數（分母，走盤唔計）。<b>「🔍 回測掃描」</b>會幫全部即將開賽場次預先計好 8 格數據；冇掃過嘅場次即場計（約 1-2 秒一場）。精選場次如果中咗 8 組合任何一條，卡片會註明邊條＋該條嘅上/下盤勝出率同基數。</p>
-</div>
-</details>
-
-<details><summary>⑦ 我的選擇</summary>
-<div class="set-sec">
-<table class="set-tb">
-<tr><th>功能</th><th>說明</th></tr>
-<tr><td>揀上/下盤</td><td>篩查結果頁頂部有「揀上盤／揀下盤」掣。撳咗即記低：賽事、方向、<b>揀嗰刻嘅盤口水位快照</b>。每人每場只計一次（重複撳會更新嗰條）。</td></tr>
-<tr><td>⇄ 照揀</td><td>每張卡片一個掣，一撳就照住您上次嘅選擇<b>再記一次</b>（時間計而家、快照計而家嘅盤口）——方便連環跟注。原選擇唔會郁。</td></tr>
-<tr><td>結算</td><td>完場後用<b>尾盤</b>結算您嘅選擇贏定輸（半格盤拆注計）。賽果開賽後 2.5 小時仍未有會每 15 分鐘自動補抓。</td></tr>
-<tr><td>顯示</td><td>每張卡片：聯賽、對賽、揀咗邊面、<b>揀時數據</b>（撳掣嗰刻盤口水位）同<b>尾盤數據</b>（最終封盤盤口水位）對照、結果（✓贏/✗輸/—走）、贏幾多。大版面未開賽順時間排先，已開賽排後。</td></tr>
-<tr><td>命中率統計</td><td>頂部：總場數、贏、輸、走、<b>勝出率</b>（贏÷(總−走)）。</td></tr>
-<tr><td>保留</td><td><b>永久保留</b>，唔會自動刪（已開賽嘅照樣留喺列表）。</td></tr>
-</table>
-</div>
-</details>
-
-<details><summary>⑧ 過往賽果＋過往紀錄</summary>
-<div class="set-sec">
-<p><b>📋 過往賽果（精選專頁）</b>——只計「精選」已完場嘅場次（每場以<b>最終尾盤</b>做紀錄）：</p>
-<p class="note">最頂五項命中率：<b>上盤命中率</b>（入選方向「上」嘅場次入面贏嘅比例）、<b>下盤命中率</b>（方向「下」嘅比例）、<b>總命中率</b>、<b>精選命中率</b>、<b>我的選擇命中率</b>。下面係逐日走勢圖（綠≥50%、紅&lt;50%）。再下面可按<b>聯賽</b>、<b>盤口</b>、<b>勝負</b>（贏超50%／輸超50%）篩選，篩完統計同列表一齊變；有聯賽嘅贏/輸比例同日期嘅贏/輸比例。</p>
-<p><b>📜 過往紀錄</b>——精選<b>一出現即自動紀錄</b>（唔使人手）：用當時尾盤快照，同一場多次入選都只計一場（保留首次時間、快照跟最新）。之後被移出精選都永久留底；結算用紀錄時嘅尾盤快照計。頂部切換掣睇<b>精選／精選Z</b>兩套獨立紀錄。</p>
-</div>
-</details>
-
-<details><summary>⑨ 數據更新機制（自動化晒）</summary>
-<div class="set-sec">
-<table class="set-tb">
-<tr><th>機制</th><th>說明</th></tr>
-<tr><td>開機自動更新</td><td>伺服器每次啟動會檢查數據新鮮度，超過 12 小時舊就<b>自動</b>喺背景行一次完整更新（即「更新賽事」嘅四步）。所以雲端重新部署後約 4-8 分鐘數據自動返，唔使人手。</td></tr>
-<tr><td>開 APP 自動更新</td><td>每次開 APP 都會觸發一次自動更新（30 分鐘內唔會重複行）。</td></tr>
-<tr><td>賠率自動變舊檢查</td><td>清單載入時，「已有賠率」超過 10 分鐘冇更新嘅場次會自動重新抓最新盤，確保您睇到嘅係即時盤。</td></tr>
-<tr><td>賽果補抓</td><td>已開賽 2.5 小時仲未有比分，每 15 分鐘自動重抓所屬聯賽賽季檔補上，補到即自動結算精選同我的選擇。</td></tr>
-<tr><td>V2 自動排程</td><td>伺服器端（Render）每日<b>中午 12 時起每隔 2 小時</b>（12/14/16/18/20/22 時）自動更新未來 24 小時場次嘅盤口及賠率，直至尾盤。手機 APP 閂咗都會行——排程喺雲端伺服器，唔係手機；開 APP 時攞嘅已經係最新數據。中午 12 時嗰輪會順便攞埋未來 48 小時賽程入庫（之後三個快掣「更新未來24／30／10」就係靠呢份清單，唔使重新掃瞄）。</td></tr>
-<tr><td>資料來源</td><td>球探網（titan007）易勝博（公司12）嘅亞洲讓球盤；歷史庫約十萬場。水位、盤口以尾盤為準。</td></tr>
-</table>
-</div>
-</details>
-
-<details><summary>⑩ 錯誤訊息意思</summary>
-<div class="set-sec">
-<table class="set-tb">
-<tr><th>訊息</th><th>意思＋點做</th></tr>
-<tr><td>載入失敗：伺服器更新緊／重啟中…</td><td>伺服器啟動緊或部署緊（頭幾分鐘會咁）。系統已自動重試；真係唔得就等 30 秒再撳。</td></tr>
-<tr><td>目標賽事缺少尾盤，請先獲取賠率</td><td>呢場仲未上網抓過盤口。撳「獲取全部賠率」或者入場後按「獲取賠率」。</td></tr>
-<tr><td>不適用</td><td>該項需要嘅數據今場冇（例如開季初期冇排名、其中一方未踢過主場/客場）。唔係錯誤，係條件唔夠數據計。</td></tr>
-<tr><td>未有資料：查詢時間在開賽前10分鐘之前</td><td>第 5A 項專用：開賽前 10 分鐘嘅快照未存在（時間未到），去到嗰個時間先會有。</td></tr>
-<tr><td>第14、17項…不能剔</td><td>組合篩查剔錯咗：14/17 係分析項、20 係組合本身，冇篩選條件所以唔可以剔。</td></tr>
-<tr><td>HTTP 502/503</td><td>雲端免費機休眠或超負荷。等 30 秒再試；經常發生話我知。</td></tr>
-</table>
-<p class="note">版本：v4.0.0（2026-09-26，V2 第一階段：七時點顯示＋三個快速更新掣＋每 2 小時自動排程）。本說明同 APP 同步更新。</p>
-</div>
-</details>
-
-  </div>
-  <div class="gold-banner gold-banner-bottom in-ov">悶住贏</div>
-</div>
-<div class="gold-banner gold-banner-bottom">悶住贏</div>
+<div class="gold-banner bottom">悶住贏</div>
+<div class="toast" id="toast"></div>
 <script src="/static/app.js"></script>
 </body>
 </html>

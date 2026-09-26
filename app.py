@@ -39,7 +39,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '4.0.1'
+SERVER_VERSION = '4.1.0'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -451,6 +451,11 @@ def init_picks():
     conn.execute('''CREATE TABLE IF NOT EXISTS featured(
         match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
         added_at TEXT, result TEXT, settled_at TEXT)''')
+    # V2（2026-09-26）：letters＝入選時嘅合格字頭＋31深淺狀態（JSON，事後回查用）
+    for tbl in ('featured', 'featured_z'):
+        cols = [r[1] for r in conn.execute(f'PRAGMA table_info({tbl})')]
+        if 'letters' not in cols:
+            conn.execute(f'ALTER TABLE {tbl} ADD COLUMN letters TEXT')
     conn.execute('''CREATE TABLE IF NOT EXISTS check_rows(
         match_id INTEGER PRIMARY KEY, direction TEXT,
         g14 TEXT, g17 TEXT, res TEXT)''')
@@ -882,13 +887,16 @@ def _featured_direction(b, gates=True, z=False):
 
 
 def _featured_scan_job():
+    """V2 精選掃描（2026-09-26 十六字頭規則）：
+    每場跑 v2_engine.featured_letters——任一字頭 A–P 合格（1X&13X 同方向>49.99%
+    ＋30 同盤同方向>49.99%＋33 同盤同方向>49.99%）即入選；
+    精選Z＝只有同主隊字頭（I–P）合格。入選時記低合格字頭＋31深淺狀態（事後回查）。"""
     global _feat_scan
     if _feat_scan['running']:
         return
     _feat_scan.update(running=True, done=0, added=0, error=None)
     conn = db()
     try:
-        # 所有未開賽且有尾盤嘅場次
         rows = conn.execute(
             "SELECT DISTINCT m.id FROM matches m "
             "JOIN odds_asian oc ON oc.match_id=m.id "
@@ -896,28 +904,40 @@ def _featured_scan_job():
             "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','localtime') "
             "ORDER BY m.kickoff").fetchall()
         _feat_scan['total'] = len(rows)
-        screen_engine.load_pool(conn)   # 預熱數據池
+        import v2_engine
+        v2_engine.load_v2_pool(conn)   # 預熱數據池
         added = added_z = 0
         for (mid,) in rows:
             try:
-                b = _screen_brief(mid)
-                d = _featured_direction(b)
-                dz = _featured_direction(b, z=True)
+                t = screen_engine.get_target(conn, mid)
+                if not t:
+                    continue
+                fl = v2_engine.featured_letters(conn, t) or {}
+                d = fl.get('direction')
+                passed = fl.get('passed_letters') or []
+                meta = json.dumps({'letters': passed, 'states': fl.get('states')},
+                                  ensure_ascii=False)
                 if d and not conn.execute(
                         'SELECT 1 FROM featured WHERE match_id=?', (mid,)).fetchone():
                     conn.execute(
-                        'INSERT INTO featured(match_id, direction, added_at) '
-                        'VALUES(?,?,?)',
-                        (mid, d, time.strftime('%Y-%m-%d %H:%M:%S')))
+                        'INSERT INTO featured(match_id, direction, letters, added_at) '
+                        'VALUES(?,?,?,?)',
+                        (mid, d, meta, time.strftime('%Y-%m-%d %H:%M:%S')))
                     log_featured(conn, mid, d)
                     conn.commit()
                     added += 1
+                dz = None
+                if passed:
+                    zpass = [e for e in (fl.get('letters') or [])
+                             if e.get('mix') == '同主隊' and e['letter'] in passed]
+                    if zpass:
+                        dz = zpass[0]['dir']
                 if dz and not conn.execute(
                         'SELECT 1 FROM featured_z WHERE match_id=?', (mid,)).fetchone():
                     conn.execute(
-                        'INSERT INTO featured_z(match_id, direction, added_at) '
-                        'VALUES(?,?,?)',
-                        (mid, dz, time.strftime('%Y-%m-%d %H:%M:%S')))
+                        'INSERT INTO featured_z(match_id, direction, letters, added_at) '
+                        'VALUES(?,?,?,?)',
+                        (mid, dz, meta, time.strftime('%Y-%m-%d %H:%M:%S')))
                     log_featured_z(conn, mid, dz)
                     conn.commit()
                     added_z += 1
@@ -946,6 +966,12 @@ def _recompute_featured_after_update():
         conn.commit()
         conn.close()
         screen_engine._pool_cache['ts'] = 0   # 令 load_pool 重新載入新盤口
+        try:
+            import v2_engine
+            v2_engine.invalidate_pool()       # V2 池（30m/15m/10m/5m 時點）都要清
+            _v2_item_cache.clear()              # V2 單項快取一併清
+        except Exception:
+            pass
         print('[update] 重算精選…', flush=True)
         if not _feat_scan['running']:
             threading.Thread(target=_featured_scan_job, daemon=True).start()
@@ -955,14 +981,20 @@ def _recompute_featured_after_update():
 
 
 def _build_featured_rec(row, tbl, now):
-    """精選單場卡片：基本資料＋自動結算（未結算嘅以入選方向計 贏/輸/走）＋brief＋check"""
-    (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, hr_, ar_) = row
+    """精選單場卡片：基本資料＋自動結算（未結算嘅以入選方向計 贏/輸/走）＋brief＋check＋letters"""
+    (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, letters, hr_,
+     ar_) = row
     rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
            'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
            'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
            'odds': f'主{ho}/客{ao}' if ho is not None else None,
            # played = 已開賽（kickoff 過咗）；冇賽果嘅會顯示「待結算」
            'played': ko < now}
+    if letters:
+        try:
+            rec['letters'] = json.loads(letters)
+        except Exception:
+            rec['letters'] = None
     if hs is not None:
         r = pick_result(hc, gv, hs, aws)
         if res is None and r is not None:
@@ -989,7 +1021,7 @@ def get_featured_full(z=False):
     pending_rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
         'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
-        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
+        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, f.letters, '
         'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
         f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
@@ -1007,7 +1039,7 @@ def get_featured_full(z=False):
     played_rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
         'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
-        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
+        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, f.letters, '
         'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
         f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
@@ -1029,14 +1061,15 @@ def get_featured_full(z=False):
             return _build_featured_rec(row, tbl, now)
         except Exception:
             traceback.print_exc()
-            (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao,
+            (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, letters,
              hr_, ar_) = row
             return {'id': mid, 'direction': d, 'added_at': added,
                     'kickoff': ko, 'home': h, 'away': a, 'league': lg,
                     'rank_home': hr_, 'rank_away': ar_,
                     'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
                     'odds': f'主{ho}/客{ao}' if ho is not None else None,
-                    'played': ko < now, 'brief': None, 'check': None}
+                    'played': ko < now, 'brief': None, 'check': None,
+                    'letters': None}
 
     # 並行起唄——單線程逐場 5–8 秒，幾十場必超時
     pending = list(_BUILD_POOL.map(build, pending_rows))
@@ -1730,6 +1763,102 @@ def get_check():
                      ('running', 'done', 'total', 'kept', 'last', 'error')}}
 
 
+# ---------- V2 API（2026-09-26：45 項引擎／16 字頭精選／Check 2 行×9 組／組合篩查） ----------
+_v2_item_cache = {}
+_v2_item_cache_lock = threading.Lock()
+V2_ITEM_CACHE_TTL = 600        # 10 分鐘快取（同一賽事同一項重複撳唔使重算）
+
+
+def _jdefault(o):
+    """numpy 型別 → Python 原生（json.dumps 保險）"""
+    if isinstance(o, np.bool_):
+        return bool(o)
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, np.floating):
+        return float(o)
+    raise TypeError(f'not serializable: {type(o)}')
+
+
+def api_v2_summary(mid):
+    """一頁過：邊 45 項適用＋精選 16 字頭結果＋今場 12 段水位位置"""
+    import v2_engine
+    conn = db()
+    try:
+        t = screen_engine.get_target(conn, mid)
+        if not t:
+            return {'error': '找不到賽事'}
+        v2_engine.load_v2_pool(conn)
+        app_ok = v2_engine.item_applicability(conn, t)
+        letters = v2_engine.featured_letters(conn, t) or {}
+        odds = t.get('odds') or {}
+        T = screen_engine.tline(odds, 'closing') or screen_engine.tline(odds, 'initial')
+        uw = v2_engine._up_water_of(T) if T else None
+        return {'ok': True,
+                'applicability': app_ok,
+                'letters': letters,
+                'cur_zone12': v2_engine.zone12_of(uw),
+                'zones12': v2_engine.ZONES12,
+                'cur_up_water': uw}
+    finally:
+        conn.close()
+
+
+def api_v2_item(mid, no):
+    """單項計算（10 分鐘快取）"""
+    import v2_engine
+    key = (mid, str(no))
+    now = time.time()
+    with _v2_item_cache_lock:
+        hit = _v2_item_cache.get(key)
+        if hit and now - hit[0] < V2_ITEM_CACHE_TTL:
+            return hit[1]
+    conn = db()
+    try:
+        t = screen_engine.get_target(conn, mid)
+        if not t:
+            return {'error': '找不到賽事'}
+        v2_engine.load_v2_pool(conn)
+        out = v2_engine.compute_item(conn, t, str(no))
+        out.setdefault('ok', 'error' not in out)
+        with _v2_item_cache_lock:
+            _v2_item_cache[key] = (now, out)
+        return out
+    finally:
+        conn.close()
+
+
+def api_v2_check(mid):
+    """Check 下先：2 行×3×3（行1＝同主客原盤；行2＝計埋互換）；mid=0 即全庫統計"""
+    import v2_engine
+    conn = db()
+    try:
+        t = None
+        if mid:
+            t = screen_engine.get_target(conn, mid)
+            if not t:
+                return {'error': '找不到賽事'}
+        return v2_engine.check_grid(conn, t)
+    finally:
+        conn.close()
+
+
+def api_v2_combo(mid, sel):
+    """組合篩查：1–35 多選（30/31/33 唔准剔），分全庫／同一聯賽／同類別"""
+    import v2_engine
+    conn = db()
+    try:
+        t = screen_engine.get_target(conn, mid)
+        if not t:
+            return {'error': '找不到賽事'}
+        v2_engine.load_v2_pool(conn)
+        out = v2_engine.combo(conn, t, sel)
+        out.setdefault('ok', 'error' not in out)
+        return out
+    finally:
+        conn.close()
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -1861,6 +1990,37 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/v2/summary':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                self._send(200, json.dumps(api_v2_summary(mid), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v2/item':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                no = qs.get('no', [''])[0]
+                self._send(200, json.dumps(api_v2_item(mid, no), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v2/check':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                self._send(200, json.dumps(api_v2_check(mid), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         self._send(404, '{}')
 
     def do_POST(self):
@@ -1958,6 +2118,19 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v2/combo':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(
+                    api_v2_combo(int(body.get('id')), body.get('sel') or []),
+                    ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
             return
         self._send(404, '{}')
 
