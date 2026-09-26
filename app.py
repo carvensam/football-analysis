@@ -39,7 +39,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '4.2.0'
+SERVER_VERSION = '4.2.1'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -2000,7 +2000,11 @@ def api_v2_summary(mid):
                 'letters': letters,
                 'cur_zone12': v2_engine.zone12_of(uw),
                 'zones12': v2_engine.ZONES12,
-                'cur_up_water': uw}
+                'cur_up_water': uw,
+                'target': {'home': t.get('home'), 'away': t.get('away'),
+                           'giver': (T or {}).get('g'),
+                           'line': screen_engine.fmt_line(T['h'], T.get('g'))
+                           if T and T.get('h') is not None else None}}
     finally:
         conn.close()
 

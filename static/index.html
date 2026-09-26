@@ -16,7 +16,7 @@ body{
   background:var(--bg); color:var(--tx);
   font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans TC",sans-serif;
   font-size:15px; line-height:1.55;
-  padding:52px 0 56px; /* 上下金橫額高度 */
+  padding:52px 0 74px; /* 上金橫額52px；底部橫額54px+20px緩衝，避免內容被遮 */
 }
 a{color:var(--accent)}
 /* ---- 金色橫額（頂：冷靜．最強念力／底：悶住贏） ---- */
@@ -46,7 +46,7 @@ a{color:var(--accent)}
 .tab.on{background:var(--gold); color:#3a2c05; border-color:var(--gold); font-weight:700}
 .tab:disabled{opacity:.5}
 /* ---- 主區 ---- */
-#main{max-width:980px;margin:0 auto;padding:10px}
+#main{max-width:980px;margin:0 auto;padding:10px 10px 84px /* 底部84px緩衝：瀏覽器唔計 body padding-bottom 嘅捲動空間，所以要喺 #main 做 */}
 .pg{display:none}
 .pg.on{display:block}
 /* ---- 按掣 ---- */

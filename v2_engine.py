@@ -559,7 +559,8 @@ def item29(ctx):
             'ref': ctx['t'].get('home', '') + ' 對上一次比賽同樣角色、同樣讓/受讓、同樣讓球數',
             'oc': _oc_mask(df, ctx['m16']),
             'dist': _dist_lines(df, ctx['m16'],
-                                cur_zone12=ctx['cur_line_key'])}
+                                cur_zone12=ctx['cur_line_key']),
+            'cur_zone12': ctx['cur_zone12'], 'zones12': ZONES12}
 
 
 def item30_33(ctx, no):
@@ -925,6 +926,8 @@ def _mode_d50_lines(df, m, T_close):
         if r is None:
             return None
         gap = se.gap_text(r['h'], None if r['g'] == 'none' else r['g'], T_close)
+        if isinstance(gap, dict):
+            gap = gap.get('text')          # 前端直接顯示字串，唔好傳物件
         return {'line': r['line'], 'n': r['n'],
                 'up_r': r['up_r'], 'down_r': r['down_r'],
                 'push': r['push'], 'push_r': r['push_r'],
