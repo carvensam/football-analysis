@@ -39,7 +39,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '4.1.1'
+SERVER_VERSION = '4.1.2'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -663,9 +663,12 @@ def _gap_scope(scope):
     def cv(d):
         if not d:
             return None
+        gap = d.get('gap')
+        if isinstance(gap, dict):
+            gap = gap.get('text')
         return {'line': d.get('line'), 'n': d.get('n'),
                 'up_r': d.get('up_r'), 'down_r': d.get('down_r'),
-                'push_r': d.get('push_r'), 'gap': d.get('gap')}
+                'push_r': d.get('push_r'), 'gap': gap}
 
     return {'mode': cv(scope.get('mode')), 'd50': cv(scope.get('d50'))}
 
@@ -888,8 +891,8 @@ def _featured_direction(b, gates=True, z=False):
 
 def _featured_scan_job():
     """V2 精選掃描（2026-09-26 十六字頭規則）：
-    每場跑 v2_engine.featured_letters——任一字頭 A–P 合格（1X&13X 同方向>49.99%
-    ＋30 同盤同方向>49.99%＋33 同盤同方向>49.99%）即入選；
+    每場跑 v2_engine.featured_letters——任一字頭 A–P 合格（2X 有方向 且 13X 同方向
+    ＋30 同盤同方向>49.99%＋33 同盤同方向>49.99%；①②率各自獨立）即入選；
     精選Z＝只有同主隊字頭（I–P）合格。入選時記低合格字頭＋31深淺狀態（事後回查）。"""
     global _feat_scan
     if _feat_scan['running']:

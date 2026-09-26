@@ -835,16 +835,17 @@ def _cell_dir(c):
 
 def featured_letters(conn, t):
     """16 字頭 A–P。每字頭 X：
-    ① 1X（時點組@初盤 格X）有方向；② 13X（H2H水位版@尾盤 格X）同方向>49.99%；
+    ① 2X（時點組@開賽前4小時 格X）有方向；② 13X（H2H純盤口@尾盤 格X）同方向；
     ③ 上次比賽樣本中【同30最多盤口】嘅場次，同方向率>49.99%；
     ④ 同上【同33最接近50%盤】>49.99%。
-    四項全過＝字頭合格；任一字頭合格＝入選。回傳 {'direction', 'letters', 'detail'}"""
+    ①②兩項各自獨立展示贏盤率，唔夾埋。四項全過＝字頭合格；任一字頭合格＝入選。
+    回傳 {'direction', 'letters', 'states'}"""
     ctx = build_context(conn, t)
     df = ctx['df']
-    if ctx['tp']['1'][3] is None:
+    if ctx['tp']['2'][3] is None:
         return None
-    cells1 = _cells16(df, ctx['tp']['1'][3], t)
-    base13 = ctx['h2h']['20'][2]      # 項目 20＝H2H 水位版@尾盤
+    cells2 = _cells16(df, ctx['tp']['2'][3], t)
+    base13 = ctx['h2h']['13'][2]      # 項目 13＝H2H 純盤口@尾盤
     cells13 = _cells16(df, base13, t) if base13 is not None else None
     mode, d50 = _mode_d50_lines(df, ctx['m16'], ctx['T_close']) \
         if ctx['m16'] is not None else (None, None)
@@ -863,12 +864,18 @@ def featured_letters(conn, t):
 
     # line_pack 帶 h/g 原始值（pack 時存入）
     letters = []
-    for i, c1 in enumerate(cells1):
+    for i, c2 in enumerate(cells2):
         letter = LETTERS[i]
-        d = _cell_dir(c1)
-        entry = {'letter': letter, 'scope': c1['scope'], 'mix': c1['mix'],
+        d = _cell_dir(c2)
+        entry = {'letter': letter, 'scope': c2['scope'], 'mix': c2['mix'],
                  'dir': d, 'pass': False}
-        if d is None or cells13 is None:
+        if d is None:
+            letters.append(entry)
+            continue
+        # ①項目2 自己嘅方向率（獨立展示，唔同②夾埋）
+        entry['r2'] = c2.get('up_r') if d == 'up' else c2.get('down_r')
+        entry['n2'] = c2.get('n')
+        if cells13 is None:
             letters.append(entry)
             continue
         c13 = cells13[i]
@@ -876,7 +883,9 @@ def featured_letters(conn, t):
         if d13 != d:
             letters.append(entry)
             continue
+        # ②項目13 同方向率（獨立展示）
         entry['d13_r'] = c13.get('up_r') if d == 'up' else c13.get('down_r')
+        entry['n13'] = c13.get('n')
         r30 = line_rate(mode, d) if mode else None
         r33 = line_rate(d50, d) if d50 else None
         entry['r30'] = r30

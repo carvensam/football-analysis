@@ -315,12 +315,21 @@ async function loadPicksPage(){
 /* ---------- 精選 / 精選Z ---------- */
 function _ocTxt(o){ return o ? `上${pct(o.up_r)} 下${pct(o.down_r)} 走${pct(o.push_r)}｜${o.n}場` : '—'; }
 function _pairTxt(b){ return b ? `全庫 ${_ocTxt(b.all)}${b.league ? `<br><span style="opacity:.75">同聯賽 ${_ocTxt(b.league)}</span>` : ''}` : '不適用'; }
-function _gapTxt(g, curLine){
-  if (!g || g.error) return '<span style="color:var(--dim)">不適用</span>';
-  let h = `<b>${esc(g.line || '')}</b>｜${g.n} 場｜上 ${pct(g.up_r)}／下 ${pct(g.down_r)}`;
-  if (g.gap) h += `<br><span style="color:#ffd766">${esc(g.gap)}</span>`;
-  return h;
+function _scopeGap(sg){
+  if (!sg) return '<span style="color:var(--dim)">—</span>';
+  let h = '';
+  if (sg.mode) h += `最多 <b>${esc(sg.mode.line || '')}</b>｜${sg.mode.n} 場｜上 ${pct(sg.mode.up_r)}／下 ${pct(sg.mode.down_r)}` +
+    (sg.mode.gap ? `<br><span style="color:#ffd766">${esc(sg.mode.gap)}</span>` : '');
+  if (sg.d50) h += (h ? '<br>' : '') + `50% <b>${esc(sg.d50.line || '')}</b>｜${sg.d50.n} 場｜上 ${pct(sg.d50.up_r)}／下 ${pct(sg.d50.down_r)}` +
+    (sg.d50.gap ? `<br><span style="color:#ffd766">${esc(sg.d50.gap)}</span>` : '');
+  return h || '<span style="color:var(--dim)">—</span>';
 }
+function _gapTxt(g){
+  if (!g || g.error) return '<span style="color:var(--dim)">不適用</span>';
+  return `<span style="color:var(--dim)">全庫</span> ${_scopeGap(g.all)}<br>` +
+         `<span style="color:var(--dim)">同聯賽</span> ${_scopeGap(g.lg)}`;
+}
+function _stateZh(s){ return s === 'deep' ? '上盤深咗' : s === 'shallow' ? '上盤淺咗' : '不變'; }
 async function loadFeatured(z){
   const listEl = $(z ? '#ftzList' : '#ftList');
   listEl.innerHTML = '<div class="note">載入中…</div>';
@@ -334,7 +343,7 @@ async function loadFeatured(z){
     <span>贏 <b class="r-up">${s.wins}</b></span><span>輸 <b class="r-down">${s.losses}</b></span>
     <span>走 <b>${s.pushes}</b></span>
     <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>
-    <div class="note">入選規則（V2 十六字頭）：任一字頭 A–P 合格即入選——①項目1格X有方向 ②項目13X同方向 ③項目30同盤同方向&gt;49.99% ④項目33同盤同方向&gt;49.99%。${z ? '精選Z＝只有同主隊字頭（I–P）合格。' : ''}卡片「字頭」章＝合格字頭。</div>`;
+    <div class="note">入選規則（V2 十六字頭）：任一字頭 A–P 合格即入選——①項目2（同4h及尾盤）格X有方向 ②項目13（對上對賽尾盤@尾盤）格X同方向（①②兩項贏盤率各自獨立展示）③項目30同盤同方向&gt;49.99% ④項目33同盤同方向&gt;49.99%。${z ? '精選Z＝只有同主隊字頭（I–P）合格。' : ''}卡片「字頭」章＝合格字頭。</div>`;
   const scan = d.scan || {};
   $(z ? '#ftzScanInfo' : '#ftScanInfo').textContent = scan.running
     ? `掃描中 ${scan.done}/${scan.total}…`
@@ -355,7 +364,7 @@ async function loadFeatured(z){
     const chk = p.check;
     const chkTxt = !chk ? '<span style="color:var(--dim)">唔中 Check 任何一格</span>'
       : chk.error ? `<span style="color:var(--down)">Check 計算失敗：${esc(chk.error)}</span>`
-      : `<b style="color:#ffd766">🎯 中咗 Check</b>：⑭${esc(chk.g14_txt || chk.g14 || '')}＋⑰${esc(chk.g17_txt || chk.g17 || '')} → 上 ${pct(chk.up_r)}／下 ${pct(chk.down_r)}<span style="color:var(--dim)">（${chk.n} 場）</span>`;
+      : `<b style="color:#ffd766">🎯 中咗 Check</b>：⑭${_stateZh(chk.g14)}＋⑰${_stateZh(chk.g17)} → 上 ${pct(chk.up_r)}／下 ${pct(chk.down_r)}<span style="color:var(--dim)">（${chk.n} 場）</span>`;
     return `<div class="fcard" data-mid="${p.id}">
       <div class="f-top">
         <span class="f-time">${esc((p.kickoff || '').slice(5, 16))}　${esc(p.league)}</span>
@@ -378,8 +387,8 @@ async function loadFeatured(z){
         <div class="gi"><div class="t">⑮ 排名±2＋同尾盤</div><div class="v">${i15v}</div></div>
         <div class="gi"><div class="t">⑱ 排名差距±1＋同尾盤</div><div class="v">${i18v}</div></div>
       </div>
-      <div class="gaprow"><span class="lab">⑭ 差距</span>${_gapTxt(b.g14, b.cur_line)}</div>
-      <div class="gaprow"><span class="lab">⑰ 差距</span>${_gapTxt(b.g17, b.cur_line)}</div>
+      <div class="gaprow"><span class="lab">⑭ 差距</span>${_gapTxt(b.g14)}</div>
+      <div class="gaprow"><span class="lab">⑰ 差距</span>${_gapTxt(b.g17)}</div>
       <div class="gaprow"><span class="lab">✓ Check</span>${chkTxt}</div>
     </div>`;
   };
@@ -412,8 +421,8 @@ function ftShareText(p, z){
   L.push(`${p.home} vs ${p.away}${p.score ? '（' + p.score + '）' : ''}`);
   L.push(`方向：${dName}｜尾盤 ${p.line || '—'} ${p.odds || ''}`);
   if (b.i1 && b.i1.all) L.push(`① 上${pct(b.i1.all.up_r)} 下${pct(b.i1.all.down_r)}（${b.i1.all.n}場）`);
-  if (b.g14) L.push(`⑭ ${b.g14.line || ''} ${b.g14.gap || ''}`);
-  if (b.g17) L.push(`⑰ ${b.g17.line || ''} ${b.g17.gap || ''}`);
+  if (b.g14) L.push(`⑭ 全庫最多【${b.g14.all && b.g14.all.mode ? b.g14.all.mode.line : ''}】${b.g14.all && b.g14.all.mode ? b.g14.all.mode.gap || '' : ''}｜50%【${b.g14.all && b.g14.all.d50 ? b.g14.all.d50.line : ''}】${b.g14.all && b.g14.all.d50 ? b.g14.all.d50.gap || '' : ''}`);
+  if (b.g17) L.push(`⑰ 全庫最多【${b.g17.all && b.g17.all.mode ? b.g17.all.mode.line : ''}】${b.g17.all && b.g17.all.mode ? b.g17.all.mode.gap || '' : ''}｜50%【${b.g17.all && b.g17.all.d50 ? b.g17.all.d50.line : ''}】${b.g17.all && b.g17.all.d50 ? b.g17.all.d50.gap || '' : ''}`);
   const lts = (p.letters || {}).letters || [];
   if (lts.length) L.push(`合格字頭：${lts.join(' ')}`);
   if (p.result) L.push(`結果：${p.result === 'W' ? '✅命中' : p.result === 'L' ? '❌未中' : '➖走'}`);
@@ -818,16 +827,17 @@ async function initV2Section(mid) {
   const dirTxt = L.direction ? (L.direction === 'up' ? '上盤' : '下盤') : null;
   lt.innerHTML =
     `<div style="font-size:15px;margin-bottom:4px">🏆 精選 16 字頭檢查：${dirTxt ? `<b class="r-up">✅ 合格 → ${dirTxt}</b>（合格字頭 <b>${passed.join(' ')}</b>）` : '<span style="color:var(--dim)">❌ 無字頭合格（唔入選精選）</span>'}</div>` +
-    `<table class="ck-table" style="margin-bottom:8px"><thead><tr><th>字頭</th><th>口徑</th><th>方向</th><th>②13X同向率</th><th>③30同盤率</th><th>④33同盤率</th><th>合格</th></tr></thead><tbody>` +
+    `<table class="ck-table" style="margin-bottom:8px"><thead><tr><th>字頭</th><th>口徑</th><th>方向</th><th>①項目2率</th><th>②項目13率</th><th>③30同盤率</th><th>④33同盤率</th><th>合格</th></tr></thead><tbody>` +
     (L.letters || []).map(c =>
       `<tr${c.pass ? ' class="hl"' : ''}><td><b>${c.letter}</b></td><td>${esc(c.scope)}・${esc(c.mix)}</td>` +
       `<td>${c.dir ? (c.dir === 'up' ? '上' : '下') : '—'}</td>` +
-      `<td>${c.d13_r != null ? pct(c.d13_r) : '—'}</td>` +
+      `<td>${c.r2 != null ? pct(c.r2) + '｜n=' + (c.n2 || 0) : '—'}</td>` +
+      `<td>${c.d13_r != null ? pct(c.d13_r) + '｜n=' + (c.n13 || 0) : '—'}</td>` +
       `<td>${c.r30 ? pct(c.r30.r) + '｜n=' + c.r30.n : '—'}</td>` +
       `<td>${c.r33 ? pct(c.r33.r) + '｜n=' + c.r33.n : '—'}</td>` +
       `<td>${c.pass ? '✅' : ''}</td></tr>`).join('') +
     `</tbody></table>` +
-    `<div class="note">入選規則：16 個字頭 A–P（A–H＝混合×8 範圍；I–P＝同主隊×8 範圍）。每字頭要 ①項目1（同初盤及尾盤）格X有方向（上或下盤率&gt;49.99%）→ ②項目13X（H2H水位版@尾盤 同一格）同方向 → ③項目30 分佈最多盤口同方向率&gt;49.99% → ④項目33 最接近50%盤同方向率&gt;49.99%。四項全過＝字頭合格，<b>任一字頭合格即入選精選</b>；只有 I–P 合格＝精選Z。</div>`;
+    `<div class="note">入選規則：16 個字頭 A–P（A–H＝混合×8 範圍；I–P＝同主隊×8 範圍）。每字頭要 ①項目2（同開賽前4小時及尾盤）格X有方向（上或下盤率&gt;49.99%）→ ②項目13（對上一次對賽尾盤 對 今場尾盤・純盤口）格X同方向 → ③項目30 分佈最多盤口同方向率&gt;49.99% → ④項目33 最接近50%盤同方向率&gt;49.99%。①同②嘅贏盤率<b>各自獨立展示，唔夾埋</b>。四項全過＝字頭合格，<b>任一字頭合格即入選精選</b>；只有 I–P 合格＝精選Z。</div>`;
   let h = '';
   for (let n = 1; n <= 45; n++) {
     const no = String(n);
