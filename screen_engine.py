@@ -448,6 +448,55 @@ def outcome_counts(sub):
             'push_r': p / n}
 
 
+# ---- numpy 向量化版（2026-09-26：精選全量 API 逾時嘅根因係 pandas 逐組切片；
+#      75k 場池每場 screen 6.5s，改 numpy 後 <0.5s）----
+def _res_code(res):
+    """res 字串陣列 → 0=A(上) 1=B(下) 2=P(走)"""
+    ri = np.zeros(len(res), dtype=np.int8)
+    ri[res == 'B'] = 1
+    ri[res == 'P'] = 2
+    return ri
+
+
+# gcode 用字母序 away<home<none——同 pandas groupby(sort=True) 嘅 (h, g) 排序一致，
+# 咁相同 n 嘅行排列次序先同舊版逐項相同
+_GCODE_MAP = {'away': 0, 'home': 1, 'none': 2}
+
+
+def _gcode_arr(g):
+    """讓球方字串陣列 → int code（none=0 home=1 away=2 其他=3）"""
+    u, inv = np.unique(g, return_inverse=True)
+    lut = np.array([_GCODE_MAP.get(x, 3) for x in u], dtype=np.int64)
+    return lut[inv]
+
+
+def _oc_from_code(ri):
+    """_res_code 嘅 int 陣列 → outcome_counts 同款 dict"""
+    n = len(ri)
+    if n == 0:
+        return None
+    a = int(np.count_nonzero(ri == 0))
+    b = int(np.count_nonzero(ri == 1))
+    p = int(np.count_nonzero(ri == 2))
+    eff = n - p
+    return {'n': n, 'up': a, 'down': b, 'push': p,
+            'up_r': a / eff if eff else None, 'down_r': b / eff if eff else None,
+            'push_r': p / n}
+
+
+def _group_bounds(key):
+    """排序後嘅 key 陣列 → 每個獨立 key 嘅 [起,止) 邊界 index（stable，對應 groupby sort=True）"""
+    srt = np.argsort(key, kind='stable')
+    ks = key[srt]
+    bounds = np.flatnonzero(np.r_[True, ks[1:] != ks[:-1], True])
+    return srt, ks, bounds
+
+
+def _key_hg(hr_rounded, gcode):
+    """(c_h.round(2), c_g) → int key：h*1000 + gcode"""
+    return (hr_rounded * 100).astype(np.int64) * 10 + gcode
+
+
 def dist_table(sub, min_n=1):
     """盤口分佈：每個(讓球,讓球方) 場次、上/下/走、上盤水位分佈"""
     rows = []
@@ -529,10 +578,164 @@ def screen(conn, t, sel=None):
     pool_cat = int((df['cat'] == cat).sum()) if cat else 0
     pools = {'all': pool_all, 'league': pool_lg, 'cat': pool_cat}
 
-    def pair(sub):
-        return {'all': outcome_counts(sub),
-                'league': outcome_counts(sub[sub['league'] == lg]) if lg else None,
+    # ---- numpy 共用陣列（成個 screen 用一份，取代 pandas 逐組切片）----
+    _res_np = df['res'].to_numpy()
+    _lg_np = df['league'].to_numpy()
+    _cat_np = df['cat'].to_numpy()
+    _uz_np = df['up_zone'].to_numpy()
+    if _uz_np.dtype != np.int64:
+        _uz_np = _uz_np.astype(np.float64)
+    _hr_np = df['c_h'].to_numpy(dtype=np.float64)
+    _g_np = df['c_g'].fillna('none').to_numpy()
+    _lg_m = (_lg_np == lg) if lg else None
+    _cat_m = (_cat_np == cat) if cat else None
+
+    def oc_mask(m):
+        """mask → 上/下/走 dict（numpy 版 outcome_counts）"""
+        if m is None:
+            return None
+        return _oc_from_code(_res_code(_res_np[m]))
+
+    def pair(m):
+        """mask → {'all','league','pool'}（numpy 版，唔再切 pandas sub-frame）"""
+        if m is None:
+            return {'error': '不適用', 'pool': dict(pools)}
+        return {'all': oc_mask(m),
+                'league': oc_mask(m & _lg_m) if lg else None,
                 'pool': dict(pools)}
+
+    def zone_rates_m(m):
+        """各水位區 上/下/走（numpy 一次 bincount）"""
+        rows = []
+        if m is None:
+            return rows
+        idx = np.nonzero(m)[0]
+        if len(idx) == 0:
+            return rows
+        uz = _uz_np[idx]
+        ok = np.isfinite(uz)
+        idx = idx[ok]
+        if len(idx) == 0:
+            return rows
+        ri = _res_code(_res_np[idx])
+        zc = np.bincount(ri + 3 * uz[ok].astype(np.int64),
+                         minlength=30).reshape(10, 3)
+        for zi in range(10):
+            a, b_, p = (int(x) for x in zc[zi])
+            if a + b_ + p == 0:
+                continue
+            n = a + b_ + p
+            eff = n - p
+            rows.append({'zone': ZONES[zi], 'n': n, 'up': a, 'down': b_,
+                         'push': p,
+                         'up_r': a / eff if eff else None,
+                         'down_r': b_ / eff if eff else None,
+                         'push_r': p / n})
+        return rows
+
+    def dist_table_m(m, min_n=1):
+        """盤口分佈＋各水位區（numpy groupby + 每組一次 bincount）"""
+        rows = []
+        if m is None:
+            return rows
+        idx = np.nonzero(m)[0]
+        if len(idx) == 0:
+            return rows
+        hr = _hr_np[idx]
+        ok = ~np.isnan(hr)
+        idx = idx[ok]
+        if len(idx) == 0:
+            return rows
+        key = _key_hg(np.round(hr[ok], 2), _gcode_arr(_g_np[idx]))
+        ri = _res_code(_res_np[idx])
+        uz = _uz_np[idx]
+        uok = np.isfinite(uz)
+        srt, ks, bounds = _group_bounds(key)
+        for b0, b1 in zip(bounds[:-1], bounds[1:]):
+            gi = srt[b0:b1]
+            n = len(gi)
+            if n < min_n:
+                continue
+            gidx = gi[uok[gi]]
+            zc = np.bincount(ri[gidx] + 3 * uz[gidx].astype(np.int64),
+                             minlength=30).reshape(10, 3) if len(gidx) \
+                 else np.zeros((10, 3), dtype=np.int64)
+            a, b_, p = (int(x) for x in zc.sum(axis=0))
+            eff = n - p
+            zones = []
+            for zi in range(10):
+                za, zb, zp = (int(x) for x in zc[zi])
+                if za + zb + zp == 0:
+                    zones.append(None)
+                    continue
+                zn = za + zb + zp
+                zeff = zn - zp
+                zones.append({'n': zn, 'up': za, 'down': zb, 'push': zp,
+                              'up_r': za / zeff if zeff else None,
+                              'down_r': zb / zeff if zeff else None,
+                              'push_r': zp / zn})
+            k = ks[b0]
+            h = (k // 10) / 100.0
+            g = ('away', 'home', 'none')[k % 10]
+            rows.append({'line': fmt_line(h, None if g == 'none' else g),
+                         'h': h, 'g': g,
+                         'n': n, 'up': a, 'down': b_, 'push': p,
+                         'up_r': a / eff if eff else None,
+                         'down_r': b_ / eff if eff else None,
+                         'push_r': p / n,
+                         'zones': zones,
+                         'max_zone_n': max((z['n'] for z in zones if z),
+                                           default=0)})
+        rows.sort(key=lambda r: -r['n'])
+        return rows
+
+    def mode_d50_m(m_all, m_lg):
+        """第14/17項：分佈最多盤口 及 最接近50%盤口（numpy 版）"""
+        def calc(m):
+            if m is None:
+                return None
+            idx = np.nonzero(m)[0]
+            if len(idx) == 0:
+                return None
+            hr = _hr_np[idx]
+            ok = ~np.isnan(hr)
+            idx = idx[ok]
+            if len(idx) == 0:
+                return None
+            key = _key_hg(np.round(hr[ok], 2), _gcode_arr(_g_np[idx]))
+            ri = _res_code(_res_np[idx])
+            srt, ks, bounds = _group_bounds(key)
+            best_n, best_line, best_oc = -1, None, None
+            best_d50, d50_line = 1e9, None
+            for b0, b1 in zip(bounds[:-1], bounds[1:]):
+                gi = srt[b0:b1]
+                oc = _oc_from_code(ri[gi])
+                n = oc['n']
+                k = ks[b0]
+                h = (k // 10) / 100.0
+                g = ('away', 'home', 'none')[k % 10]
+                g_out = None if g == 'none' else g   # 同原版：gap_text 用 None 代表平手
+                if n > best_n:
+                    best_n, best_line, best_oc = n, (h, g_out), oc
+                if n >= 5:
+                    d = abs((oc['up_r'] or 0) - 0.5)
+                    if d < best_d50:
+                        best_d50, d50_line = d, (h, g_out, oc, n)
+            out = {}
+            if best_line:
+                out['mode'] = {'line': fmt_line(*best_line), 'n': best_n,
+                               'up_r': best_oc['up_r'], 'down_r': best_oc['down_r'],
+                               'push': best_oc['push'], 'push_r': best_oc['push_r'],
+                               'gap': gap_text(best_line[0], best_line[1], T_close)}
+            if d50_line:
+                oc50 = d50_line[2]
+                out['d50'] = {'line': fmt_line(d50_line[0], d50_line[1]),
+                              'up_r': oc50['up_r'], 'down_r': oc50['down_r'],
+                              'push': oc50['push'], 'push_r': oc50['push_r'],
+                              'n': d50_line[3],
+                              'gap': gap_text(d50_line[0], d50_line[1], T_close)}
+            return out
+        return {'all': calc(m_all), 'league': calc(m_lg)}
 
     masks = {}   # 第15項組合用：每項的篩選 mask（None=不適用）
     items = {}
@@ -548,7 +751,7 @@ def screen(conn, t, sel=None):
             'title': f'同{tname}及尾盤的盤口&水位（盤口100%一樣，水位±0.03）',
             'ref': (f"基準＝今場尾盤：{fmt_line(T_close['h'], T_close['g'])} 主{T_close['ho']}/客{T_close['ao']}　"
                     f"篩選：歷史場次嘅【{tname}】同【尾盤】都同基準完全相同（水位±0.03）"),
-            **pair(df[m])}
+            **pair(m)}
 
     # 3 / 4 / 5：對上一次對賽尾盤（互換後對比盤）vs 今次第X時點；Z 版=只計同主客方向
     pvc = t.get('prev_conv')
@@ -577,11 +780,11 @@ def screen(conn, t, sel=None):
         items[str(no)] = {
             'title': f'對上一次對賽尾盤 對 今次{tname}（互換後對比，盤口100%一樣，水位±0.03）',
             'ref': base_ref,
-            **pair(df[m])}
+            **pair(m)}
         items[f'{no}Z'] = {
             'title': f'對上一次對賽尾盤 對 今次{tname}【同主客版】（盤口100%一樣，水位±0.03）',
             'ref': base_ref + '　只計「對上一次對賽都係同主客方向」嘅歷史場次',
-            **pair(df[mZ])}
+            **pair(mZ)}
 
     # 6 / 7：勝和負比例 ±7%
     def form_filter(hsc, asc):
@@ -606,11 +809,9 @@ def screen(conn, t, sel=None):
           f"客隊總計 勝{pre['away_total_wp']*100:.0f}% 和{pre['away_total_dp']*100:.0f}% 負{pre['away_total_lp']*100:.0f}%（每項±7%）"
           ) if f7 is not None else '目標賽事其中一方未出賽，不適用'
     items['6'] = {'title': '主隊主場勝和負比例 及 客隊客場勝和負比例 類似（每項±7%）',
-                  'ref': t6, 'pool': dict(pools),
-                  **(pair(df[f6]) if f6 is not None else {'error': '不適用'})}
+                  'ref': t6, 'pool': dict(pools), **pair(f6)}
     items['7'] = {'title': '主隊主客場總和勝和負比例 及 客隊總和類似（每項±7%）',
-                  'ref': t7, 'pool': dict(pools),
-                  **(pair(df[f7]) if f7 is not None else {'error': '不適用'})}
+                  'ref': t7, 'pool': dict(pools), **pair(f7)}
 
     # 8 / 9：入球/失球/得失球差 ±1
     def goal_filter(hsc, asc):
@@ -635,21 +836,22 @@ def screen(conn, t, sel=None):
           f"客隊總計 入{pre['away_total_gf']} 失{pre['away_total_ga']} 差{pre['away_total_gd']}（各±3）"
           ) if g9 is not None else '目標賽事其中一方未出賽，不適用'
     items['8'] = {'title': '主隊主場入球/失球/得失球差 及 客隊客場（各±3球）',
-                  'ref': t8, 'pool': dict(pools),
-                  **(pair(df[g8]) if g8 is not None else {'error': '不適用'})}
+                  'ref': t8, 'pool': dict(pools), **pair(g8)}
     items['9'] = {'title': '主隊主客場總和入球/失球/得失球差 及 客隊總和（各±3球）',
-                  'ref': t9, 'pool': dict(pools),
-                  **(pair(df[g9]) if g9 is not None else {'error': '不適用'})}
+                  'ref': t9, 'pool': dict(pools), **pair(g9)}
 
     # 10 / 11 / 12 / 13：盤口分佈 + 水位分佈
     def dist_item(no, mask, title, ref):
         if mask is None:
             return {'title': title, 'ref': ref, 'error': '不適用', 'pool': dict(pools)}
-        sub = df[mask]
+        n_all = int(np.count_nonzero(mask))
+        m_lg = (mask & _lg_m) if lg else None
         return {'title': title, 'ref': ref, 'pool': dict(pools),
-                'all': {'n': len(sub), 'pool': pool_all, 'dist': dist_table(sub)},
-                'league': {'n': len(sub[sub['league'] == lg]), 'pool': pool_lg,
-                           'dist': dist_table(sub[sub['league'] == lg])}}
+                'all': {'n': n_all, 'pool': pool_all,
+                        'dist': dist_table_m(mask)},
+                'league': {'n': int(np.count_nonzero(m_lg)) if lg else 0,
+                           'pool': pool_lg,
+                           'dist': dist_table_m(m_lg)}}
     items['10'] = dist_item(10, f6,
         '同第6項篩選（主客場勝和負比例類似）→ 歷史盤口分佈 + 各盤口水位分佈', t6)
     items['11'] = dist_item(11, f7,
@@ -676,72 +878,28 @@ def screen(conn, t, sel=None):
         '主隊主客場總排名 及 客隊總排名（各±2）→ 歷史盤口分佈 + 各盤口水位分佈', r13)
 
     # 14/17 共用：搵 分佈最多盤口 及 上盤勝率最接近50%盤口（≥5場），計與今場尾盤淨差距
-    def mode_d50(sub_all, sub_lg):
-        def calc(sub):
-            if len(sub) == 0:
-                return None
-            grp = sub.groupby([sub['c_h'].round(2), sub['c_g'].fillna('none')])
-            best_n, best_line = -1, None
-            best_oc = None
-            best_d50, d50_line = 1e9, None
-            for (h, g), s in grp:
-                n = len(s)
-                oc = outcome_counts(s)
-                if n > best_n:
-                    best_n, best_line = n, (h, None if g == 'none' else g)
-                    best_oc = oc
-                if n >= 5:
-                    d = abs((oc['up_r'] or 0) - 0.5)
-                    if d < best_d50:
-                        best_d50, d50_line = d, (h, None if g == 'none' else g, oc, n)
-            out = {}
-            if best_line:
-                out['mode'] = {'line': fmt_line(*best_line), 'n': best_n,
-                               'up_r': best_oc['up_r'], 'down_r': best_oc['down_r'],
-                               'push': best_oc['push'], 'push_r': best_oc['push_r'],
-                               'gap': gap_text(best_line[0], best_line[1], T_close)}
-            if d50_line:
-                oc50 = d50_line[2]
-                out['d50'] = {'line': fmt_line(d50_line[0], d50_line[1]),
-                              'up_r': oc50['up_r'], 'down_r': oc50['down_r'],
-                              'push': oc50['push'], 'push_r': oc50['push_r'],
-                              'n': d50_line[3],
-                              'gap': gap_text(d50_line[0], d50_line[1], T_close)}
-            return out
-        return {'all': calc(sub_all), 'league': calc(sub_lg)}
-
     if m12 is not None:
-        sub12 = df[m12]
         items['14'] = {'title': '第12項樣本：分佈最多盤口 及 上盤勝率最接近50%盤口，與今場尾盤淨差距',
                        'ref': r12, 'pool': dict(pools),
-                       **mode_d50(sub12, sub12[sub12['league'] == lg])}
+                       **mode_d50_m(m12, (m12 & _lg_m) if lg else None)}
     else:
         items['14'] = {'title': '第12項延伸', 'ref': r12, 'error': '不適用', 'pool': dict(pools)}
 
     # 15：排名±2 ＋ 同今場尾盤 100% 相同盤口 → 各水位 上/下/走 率（只計 贏1／走盤／輸1）
-    def zone_rates(sub):
-        rows = []
-        for zi in range(10):
-            s = sub[sub['up_zone'] == zi]
-            oc = outcome_counts(s)
-            if oc:
-                rows.append({'zone': ZONES[zi], 'n': oc['n'], 'up': oc['up'],
-                             'down': oc['down'], 'push': oc['push'],
-                             'up_r': oc['up_r'], 'down_r': oc['down_r'],
-                             'push_r': oc['push_r']})
-        return rows
     if m12 is not None and T_close is not None:
         m15 = m12 & (df['c_h'] == T_close['h']) & \
               (df['c_g'].fillna('none') == (T_close.get('g') or 'none'))
         masks[15] = m15
-        sub_all = df[m15]
-        sub_lg = sub_all[sub_all['league'] == lg]
+        m15_lg = (m15 & _lg_m) if lg else None
         items['15'] = {'title': '主隊主場排名(±2)及客隊客場排名(±2)＋同今場尾盤相同盤口 → 各水位 上盤率／下盤率／走盤率',
                        'ref': (f"{r12}　再加條件：尾盤盤口同今場 100% 相同"
                                f"（{fmt_line(T_close['h'], T_close['g'])} 主{T_close['ho']}/客{T_close['ao']}）"),
                        'pool': dict(pools),
-                       'all': {'n': len(sub_all), 'pool': pool_all, 'zones': zone_rates(sub_all)},
-                       'league': {'n': len(sub_lg), 'pool': pool_lg, 'zones': zone_rates(sub_lg)}}
+                       'all': {'n': int(np.count_nonzero(m15)), 'pool': pool_all,
+                               'zones': zone_rates_m(m15)},
+                       'league': {'n': int(np.count_nonzero(m15_lg)) if lg else 0,
+                                  'pool': pool_lg,
+                                  'zones': zone_rates_m(m15_lg)}}
     else:
         items['15'] = {'title': '主隊主場排名(±2)及客隊客場排名(±2)＋同今場尾盤相同盤口 → 各水位 上盤率／下盤率／走盤率',
                        'ref': r12 if m12 is not None else '目標賽事缺少尾盤或排名數據',
@@ -763,24 +921,25 @@ def screen(conn, t, sel=None):
     else:
         r16 = '今次主隊未有對上一次比賽尾盤數據，不適用'
     if m16 is not None:
-        sub_all = df[m16]
-        sub_lg = sub_all[sub_all['league'] == lg]
+        m16_lg = (m16 & _lg_m) if lg else None
         items['16'] = {'title': '今次主隊對上一次比賽（角色＋讓/受讓＋讓球數 完全相同）→ 今次主場歷史盤口分佈 ＋ 各水位 上/下/走 率',
                        'ref': r16, 'pool': dict(pools),
-                       'all': {'n': len(sub_all), 'pool': pool_all,
-                               'dist': dist_table(sub_all), 'zones': zone_rates(sub_all)},
-                       'league': {'n': len(sub_lg), 'pool': pool_lg,
-                                  'dist': dist_table(sub_lg), 'zones': zone_rates(sub_lg)}}
+                       'all': {'n': int(np.count_nonzero(m16)), 'pool': pool_all,
+                               'dist': dist_table_m(m16),
+                               'zones': zone_rates_m(m16)},
+                       'league': {'n': int(np.count_nonzero(m16_lg)) if lg else 0,
+                                  'pool': pool_lg,
+                                  'dist': dist_table_m(m16_lg),
+                                  'zones': zone_rates_m(m16_lg)}}
     else:
         items['16'] = {'title': '今次主隊對上一次比賽（角色＋讓/受讓＋讓球數 完全相同）→ 今次主場歷史盤口分佈 ＋ 各水位 上/下/走 率',
                        'ref': r16, 'error': '不適用', 'pool': dict(pools)}
 
     # 17：第16項樣本 → 分佈最多盤口 及 最接近50%盤口，與今場尾盤淨差距
     if m16 is not None:
-        sub16 = df[m16]
         items['17'] = {'title': '第16項樣本：分佈最多盤口 及 上盤勝率最接近50%盤口，與今場尾盤淨差距',
                        'ref': r16, 'pool': dict(pools),
-                       **mode_d50(sub16, sub16[sub16['league'] == lg])}
+                       **mode_d50_m(m16, (m16 & _lg_m) if lg else None)}
     else:
         items['17'] = {'title': '第16項延伸', 'ref': r16, 'error': '不適用', 'pool': dict(pools)}
 
@@ -841,26 +1000,30 @@ def screen(conn, t, sel=None):
         r5a = (f"今場開賽前10分鐘：{fmt_line(Tm_ref['h'], Tm_ref['g'])} 主{Tm_ref['ho']}/客{Tm_ref['ao']}{m_note}　"
                f"今場尾盤：{fmt_line(Tc_ref['h'], Tc_ref['g'])} 主{Tc_ref['ho']}/客{Tc_ref['ao']}{c_note}　" + t5a_ref)
         items['5A'] = {'title': t5a + ' → 上/下/走',
-                       'ref': r5a, 'pool': dict(pools), **pair(df[m5a])}
-        sub5a = df[m5a]
-        sub5a_lg = sub5a[sub5a['league'] == lg]
+                       'ref': r5a, 'pool': dict(pools), **pair(m5a)}
+        m5a_lg = (m5a & _lg_m) if lg else None
         items['5B'] = {'title': '同5A篩選 → 盤口分佈 ＋ 各水位 上/下/走 率',
                        'ref': r5a, 'pool': dict(pools),
-                       'all': {'n': len(sub5a), 'pool': pool_all,
-                               'dist': dist_table(sub5a), 'zones': zone_rates(sub5a)},
-                       'league': {'n': len(sub5a_lg), 'pool': pool_lg,
-                                  'dist': dist_table(sub5a_lg), 'zones': zone_rates(sub5a_lg)}}
+                       'all': {'n': int(np.count_nonzero(m5a)), 'pool': pool_all,
+                               'dist': dist_table_m(m5a),
+                               'zones': zone_rates_m(m5a)},
+                       'league': {'n': int(np.count_nonzero(m5a_lg)) if lg else 0,
+                                  'pool': pool_lg,
+                                  'dist': dist_table_m(m5a_lg),
+                                  'zones': zone_rates_m(m5a_lg)}}
         r5az = r5a + '　只計「對上一次對賽都係同主客方向」嘅歷史場次'
         items['5AZ'] = {'title': t5a + '【同主客版】 → 上/下/走',
-                        'ref': r5az, 'pool': dict(pools), **pair(df[m5az])}
-        sub5az = df[m5az]
-        sub5az_lg = sub5az[sub5az['league'] == lg]
+                        'ref': r5az, 'pool': dict(pools), **pair(m5az)}
+        m5az_lg = (m5az & _lg_m) if lg else None
         items['5BZ'] = {'title': '同5AZ篩選 → 盤口分佈 ＋ 各水位 上/下/走 率',
                         'ref': r5az, 'pool': dict(pools),
-                        'all': {'n': len(sub5az), 'pool': pool_all,
-                                'dist': dist_table(sub5az), 'zones': zone_rates(sub5az)},
-                        'league': {'n': len(sub5az_lg), 'pool': pool_lg,
-                                   'dist': dist_table(sub5az_lg), 'zones': zone_rates(sub5az_lg)}}
+                        'all': {'n': int(np.count_nonzero(m5az)), 'pool': pool_all,
+                                'dist': dist_table_m(m5az),
+                                'zones': zone_rates_m(m5az)},
+                        'league': {'n': int(np.count_nonzero(m5az_lg)) if lg else 0,
+                                   'pool': pool_lg,
+                                   'dist': dist_table_m(m5az_lg),
+                                   'zones': zone_rates_m(m5az_lg)}}
 
 
     # 18：主隊主場排名 − 客隊客場排名 差距淨值（±1）＋ 同今場尾盤 100% 相同盤口 → 結果＋各水位率
@@ -880,16 +1043,16 @@ def screen(conn, t, sel=None):
         m18, r18 = None, '目標賽事主隊主場或客隊客場未有排名，不適用'
     masks[18] = m18
     if m18 is not None:
-        sub_all = df[m18]
-        sub_lg = sub_all[sub_all['league'] == lg]
+        m18_lg = (m18 & _lg_m) if lg else None
         items['18'] = {'title': '主隊主場排名 − 客隊客場排名 差距淨值（±1）＋同今場尾盤相同盤口 → 結果＋各水位 上/下/走 率',
                        'ref': r18, 'pool': dict(pools),
-                       'all': {'n': len(sub_all), 'pool': pool_all,
-                               'oc': outcome_counts(sub_all),
-                               'zones': zone_rates(sub_all)},
-                       'league': {'n': len(sub_lg), 'pool': pool_lg,
-                                  'oc': outcome_counts(sub_lg),
-                                  'zones': zone_rates(sub_lg)}}
+                       'all': {'n': int(np.count_nonzero(m18)), 'pool': pool_all,
+                               'oc': oc_mask(m18),
+                               'zones': zone_rates_m(m18)},
+                       'league': {'n': int(np.count_nonzero(m18_lg)) if lg else 0,
+                                  'pool': pool_lg,
+                                  'oc': oc_mask(m18_lg),
+                                  'zones': zone_rates_m(m18_lg)}}
     else:
         items['18'] = {'title': '主隊主場排名 − 客隊客場排名 差距淨值（±1）＋同今場尾盤相同盤口 → 結果＋各水位 上/下/走 率',
                        'ref': r18, 'error': '不適用', 'pool': dict(pools)}
@@ -911,16 +1074,16 @@ def screen(conn, t, sel=None):
         m19, r19 = None, '目標賽事其中一方未有總排名，不適用'
     masks[19] = m19
     if m19 is not None:
-        sub_all = df[m19]
-        sub_lg = sub_all[sub_all['league'] == lg]
+        m19_lg = (m19 & _lg_m) if lg else None
         items['19'] = {'title': '主隊總排名 − 客隊總排名 差距淨值（±1）＋同今場尾盤相同盤口 → 結果＋各水位 上/下/走 率',
                        'ref': r19, 'pool': dict(pools),
-                       'all': {'n': len(sub_all), 'pool': pool_all,
-                               'oc': outcome_counts(sub_all),
-                               'zones': zone_rates(sub_all)},
-                       'league': {'n': len(sub_lg), 'pool': pool_lg,
-                                  'oc': outcome_counts(sub_lg),
-                                  'zones': zone_rates(sub_lg)}}
+                       'all': {'n': int(np.count_nonzero(m19)), 'pool': pool_all,
+                               'oc': oc_mask(m19),
+                               'zones': zone_rates_m(m19)},
+                       'league': {'n': int(np.count_nonzero(m19_lg)) if lg else 0,
+                                  'pool': pool_lg,
+                                  'oc': oc_mask(m19_lg),
+                                  'zones': zone_rates_m(m19_lg)}}
     else:
         items['19'] = {'title': '主隊總排名 − 客隊總排名 差距淨值（±1）＋同今場尾盤相同盤口 → 結果＋各水位 上/下/走 率',
                        'ref': r19, 'error': '不適用', 'pool': dict(pools)}
@@ -944,13 +1107,12 @@ def screen(conn, t, sel=None):
             m = masks_s[sel[0]].copy()
             for s in sel[1:]:
                 m &= masks_s[s]
-            sub = df[m]
             items['20'] = {'title': '組合篩查：剔選第1-19項（含 3Z/4Z/5Z/5A/5AZ 同主客版），同時符合全部剔選條件',
                            'ref': '已剔選：' + '、'.join(f'第{s}項' for s in sel),
                            'sel': sel, 'pool': dict(pools),
-                           'all': outcome_counts(sub),
-                           'league': outcome_counts(sub[sub['league'] == lg]) if lg else None,
-                           'cat': outcome_counts(sub[sub['cat'] == cat]) if cat else None}
+                           'all': oc_mask(m),
+                           'league': oc_mask(m & _lg_m) if lg else None,
+                           'cat': oc_mask(m & _cat_m) if cat else None}
     hr = t['pre'].get('home_total_rank')
     ar = t['pre'].get('away_total_rank')
     if not hr:

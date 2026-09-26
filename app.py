@@ -28,11 +28,18 @@ if BASE_DIR not in sys.path:
 
 import numpy as np
 import screen_engine
+from concurrent.futures import ThreadPoolExecutor
+
+# 精選／我的選擇等列表逐場運算（screen＋check）係 CPU 密集——
+# 單線程每場 5–8 秒，幾十場就超時（用戶投訴「精選無反應」嘅根因）。
+# 用執行緒池並行起唄（sqlite 每連線獨立、load_pool 有鎖，並行安全）。
+_BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
+                                 thread_name_prefix='build')
 
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '4.0.0'
+SERVER_VERSION = '4.0.1'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -287,12 +294,8 @@ def _window_update_worker(win):
         conn.close()
         _win_state['running'] = False
         _win_state['phase'] = ''
-    # 盤口有變 → 精選資格可能變，重算一次
-    if not _win_state['error']:
-        try:
-            _recompute_featured_after_update()
-        except Exception:
-            pass
+    # 注意：唔喺度重掃精選——快速掣只係更新指定窗口嘅盤口，掃精選係另一個掣嘅工作；
+    # 否則撳「更新未來10分鐘」都會觸發全庫精選重掃（用戶投訴「都係全部掃」嘅根因）。
 
 
 def do_update_window(win):
@@ -726,6 +729,29 @@ def _screen_brief(mid):
         conn.close()
 
 
+def _build_pick_rec(row, now_str):
+    """我的選擇單場卡片（基本資料＋結果＋brief）"""
+    (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao,
+     ph, pg, pho, pao, hr_, ar_) = row
+    rec = {'id': mid, 'choice': choice, 'kickoff': ko, 'home': h, 'away': a,
+           'league': lg, 'rank_home': hr_, 'rank_away': ar_,
+           # 尾盤數據（賽後定案）
+           'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+           'odds': f'主{ho}/客{ao}' if ho is not None else None,
+           # 揀嘅當刻嘅數據（快照）
+           'pick_line': screen_engine.fmt_line(ph, pg) if ph is not None else None,
+           'pick_odds': f'主{pho}/客{pao}' if pho is not None else None,
+           # played = 已開賽（kickoff 過咗）；有冇賽果係另一回事
+           'played': ko < now_str}
+    if hs is not None:
+        r = pick_result(hc, gv, hs, aws)
+        rec['score'] = f'{hs}-{aws}'
+        rec['result'] = 'X' if r is None else (
+            'P' if r == 'P' else ('W' if (r == 'A') == (choice == 'up') else 'L'))
+    rec['brief'] = _screen_brief(mid)
+    return rec
+
+
 def get_picks_full():
     conn = db()
     rows = conn.execute(
@@ -750,27 +776,26 @@ def get_picks_full():
         # 全部選擇永久保留（唔設 24 小時限制）
     ).fetchall()
     conn.close()
-    out = []
     now_str = time.strftime('%Y-%m-%d %H:%M:%S')
-    for (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao,
-         ph, pg, pho, pao, hr_, ar_) in rows:
-        rec = {'id': mid, 'choice': choice, 'kickoff': ko, 'home': h, 'away': a,
-               'league': lg, 'rank_home': hr_, 'rank_away': ar_,
-               # 尾盤數據（賽後定案）
-               'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
-               'odds': f'主{ho}/客{ao}' if ho is not None else None,
-               # 揀嘅當刻嘅數據（快照）
-               'pick_line': screen_engine.fmt_line(ph, pg) if ph is not None else None,
-               'pick_odds': f'主{pho}/客{pao}' if pho is not None else None,
-               # played = 已開賽（kickoff 過咗）；有冇賽果係另一回事
-               'played': ko < now_str}
-        if hs is not None:
-            r = pick_result(hc, gv, hs, aws)
-            rec['score'] = f'{hs}-{aws}'
-            rec['result'] = 'X' if r is None else (
-                'P' if r == 'P' else ('W' if (r == 'A') == (choice == 'up') else 'L'))
-        rec['brief'] = _screen_brief(mid)
-        out.append(rec)
+
+    def build(row):
+        try:
+            return _build_pick_rec(row, now_str)
+        except Exception:
+            traceback.print_exc()
+            (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao,
+             ph, pg, pho, pao, hr_, ar_) = row
+            return {'id': mid, 'choice': choice, 'kickoff': ko, 'home': h,
+                    'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
+                    'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+                    'odds': f'主{ho}/客{ao}' if ho is not None else None,
+                    'pick_line': screen_engine.fmt_line(ph, pg)
+                    if ph is not None else None,
+                    'pick_odds': f'主{pho}/客{pao}' if pho is not None else None,
+                    'played': ko < now_str, 'brief': None}
+
+    # 並行起唄——單線程每場 5–8 秒，幾十場必超時
+    out = list(_BUILD_POOL.map(build, rows))
     # 未開賽順時間排先；已開賽永久保留跟後（按日子分類），最新嘅排最前
     pending = sorted([r for r in out if not r['played']],
                      key=lambda r: r['kickoff'])
@@ -929,6 +954,32 @@ def _recompute_featured_after_update():
         traceback.print_exc()
 
 
+def _build_featured_rec(row, tbl, now):
+    """精選單場卡片：基本資料＋自動結算（未結算嘅以入選方向計 贏/輸/走）＋brief＋check"""
+    (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, hr_, ar_) = row
+    rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
+           'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
+           'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+           'odds': f'主{ho}/客{ao}' if ho is not None else None,
+           # played = 已開賽（kickoff 過咗）；冇賽果嘅會顯示「待結算」
+           'played': ko < now}
+    if hs is not None:
+        r = pick_result(hc, gv, hs, aws)
+        if res is None and r is not None:
+            # 自動結算（以入選方向計）
+            res = 'P' if r == 'P' else ('W' if (r == 'A') == (d == 'up') else 'L')
+            c2 = db()
+            c2.execute(f'UPDATE {tbl} SET result=?, settled_at=? WHERE match_id=?',
+                       (res, now, mid))
+            c2.commit()
+            c2.close()
+        rec['score'] = f'{hs}-{aws}'
+        rec['result'] = res
+    rec['brief'] = _screen_brief(mid)
+    rec['check'] = _check_combo_for(mid, d)     # 中咗 Check 下先邊條組合
+    return rec
+
+
 def get_featured_full(z=False):
     """精選全量：未開賽順時間排先；已完場最新排先（永不刪除）。
     z=True 讀精選Z（featured_z）。順便結算新完場場次（以入選方向計 贏/輸/走）。"""
@@ -974,31 +1025,22 @@ def get_featured_full(z=False):
     conn.close()
 
     def build(row):
-        (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, hr_, ar_) = row
-        rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
-               'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
-               'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
-               'odds': f'主{ho}/客{ao}' if ho is not None else None,
-               # played = 已開賽（kickoff 過咗）；冇賽果嘅會顯示「待結算」
-               'played': ko < now}
-        if hs is not None:
-            r = pick_result(hc, gv, hs, aws)
-            if res is None and r is not None:
-                # 自動結算（以入選方向計）
-                res = 'P' if r == 'P' else ('W' if (r == 'A') == (d == 'up') else 'L')
-                c2 = db()
-                c2.execute(f'UPDATE {tbl} SET result=?, settled_at=? WHERE match_id=?',
-                           (res, now, mid))
-                c2.commit()
-                c2.close()
-            rec['score'] = f'{hs}-{aws}'
-            rec['result'] = res
-        rec['brief'] = _screen_brief(mid)
-        rec['check'] = _check_combo_for(mid, d)     # 中咗 Check 下先邊條組合
-        return rec
+        try:
+            return _build_featured_rec(row, tbl, now)
+        except Exception:
+            traceback.print_exc()
+            (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao,
+             hr_, ar_) = row
+            return {'id': mid, 'direction': d, 'added_at': added,
+                    'kickoff': ko, 'home': h, 'away': a, 'league': lg,
+                    'rank_home': hr_, 'rank_away': ar_,
+                    'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+                    'odds': f'主{ho}/客{ao}' if ho is not None else None,
+                    'played': ko < now, 'brief': None, 'check': None}
 
-    pending = [build(r) for r in pending_rows]
-    played = [build(r) for r in played_rows]
+    # 並行起唄——單線程逐場 5–8 秒，幾十場必超時
+    pending = list(_BUILD_POOL.map(build, pending_rows))
+    played = list(_BUILD_POOL.map(build, played_rows))
     wins = sum(1 for r in played if r.get('result') == 'W')
     losses = sum(1 for r in played if r.get('result') == 'L')
     pushes = sum(1 for r in played if r.get('result') == 'P')
