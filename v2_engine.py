@@ -852,7 +852,7 @@ def featured_letters(conn, t):
         if ctx['m16'] is not None else (None, None)
 
     def line_rate(line_pack, d):
-        """歷史場次尾盤==line_pack 嘅盤 → d 方向率"""
+        """歷史場次尾盤==line_pack 嘅盤 → 上/下兩邊率"""
         if line_pack is None:
             return None
         m = _line_only_eq(df, 'c', {'h': line_pack['h_g'], 'g': line_pack['g_g']})
@@ -861,7 +861,7 @@ def featured_letters(conn, t):
         if not oc or oc['n'] == 0:
             return None
         r = (oc['up_r'] if d == 'up' else oc['down_r'])
-        return {'n': oc['n'], 'r': r}
+        return {'n': oc['n'], 'r': r, 'up_r': oc['up_r'], 'down_r': oc['down_r']}
 
     # line_pack 帶 h/g 原始值（pack 時存入）
     letters = []
@@ -870,12 +870,13 @@ def featured_letters(conn, t):
         d = _cell_dir(c2)
         entry = {'letter': letter, 'scope': c2['scope'], 'mix': c2['mix'],
                  'dir': d, 'pass': False}
+        # ①項目2 上/下盤率（各自獨立展示）
+        entry['r2u'] = c2.get('up_r')
+        entry['r2d'] = c2.get('down_r')
+        entry['n2'] = c2.get('n')
         if d is None:
             letters.append(entry)
             continue
-        # ①項目2 自己嘅方向率（獨立展示，唔同②夾埋）
-        entry['r2'] = c2.get('up_r') if d == 'up' else c2.get('down_r')
-        entry['n2'] = c2.get('n')
         if cells13 is None:
             letters.append(entry)
             continue
@@ -884,8 +885,9 @@ def featured_letters(conn, t):
         if d13 != d:
             letters.append(entry)
             continue
-        # ②項目13 同方向率（獨立展示）
-        entry['d13_r'] = c13.get('up_r') if d == 'up' else c13.get('down_r')
+        # ②項目13 上/下盤率（各自獨立展示）
+        entry['d13u'] = c13.get('up_r')
+        entry['d13d'] = c13.get('down_r')
         entry['n13'] = c13.get('n')
         r30 = line_rate(mode, d) if mode else None
         r33 = line_rate(d50, d) if d50 else None

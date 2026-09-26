@@ -332,6 +332,18 @@ function _gapTxt(g){
          `<span style="color:var(--dim)">同聯賽</span> ${_scopeGap(g.lg)}`;
 }
 function _stateZh(s){ return s === 'deep' ? '上盤深咗' : s === 'shallow' ? '上盤淺咗' : '不變'; }
+/* 由尾盤文字推上/下盤邊隊（主讓→上=主隊；客讓→上=客隊；平手→上=平手主隊） */
+function _upDownOf(line, home, away){
+  if (!line) return null;
+  if (line.indexOf('主讓') === 0) return {up: home, down: away, push: false};
+  if (line.indexOf('客讓') === 0) return {up: away, down: home, push: false};
+  return {up: home, down: away, push: true};
+}
+function _udLegend(line, home, away){
+  const u = _upDownOf(line, home, away);
+  if (!u) return '';
+  return `<div class="note" style="margin:2px 0">本場：上盤＝<b>${esc(u.up)}</b>｜下盤＝<b>${esc(u.down)}</b>${u.push ? '（平手盤：上盤＝平手主隊）' : ''}</div>`;
+}
 async function loadFeatured(z){
   const listEl = $(z ? '#ftzList' : '#ftList');
   listEl.innerHTML = '<div class="note">載入中…</div>';
@@ -381,6 +393,7 @@ async function loadFeatured(z){
         </span>
       </div>
       <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
+      ${_udLegend(p.line, p.home, p.away)}
       <div class="grid6">
         <div class="gi"><div class="t">① 同初盤及尾盤</div><div class="v">${_pairTxt(b.i1)}</div></div>
         <div class="gi"><div class="t">⑤${z ? 'Z' : ''} 對上對賽尾盤${z ? '（同主客）' : ''}</div><div class="v">${_pairTxt(z ? b.i5z : b.i5)}</div></div>
@@ -794,19 +807,42 @@ function setV2UD(tg){
 function _un(){ return V2UD ? V2UD.up : '上盤'; }   // 上盤隊名
 function _dn(){ return V2UD ? V2UD.down : '下盤'; } // 下盤隊名
 
-function _v2oc(o) {
-  return o ? `<b class="r-up">上(${esc(_un())}) ${pct(o.up_r)}</b>（${o.up}場）／<b class="r-down">下(${esc(_dn())}) ${pct(o.down_r)}</b>（${o.down}場）／走 ${pct(o.push_r)}（${o.push}場）<span style="color:var(--dim)">｜樣本 ${o.n} 場</span>` : '—';
+/* 上/下盤兩個%一齊寫明；較大嗰邊綠色、較細嗰邊紅色（平手/冇資料唔上色） */
+function _udrates(u, d) {
+  if (u == null && d == null) return '—';
+  const us = u != null ? pct(u) : '—', ds = d != null ? pct(d) : '—';
+  let uc = '', dc = '';
+  if (u != null && d != null) {
+    if (u > d) { uc = 'r-up'; dc = 'r-down'; }
+    else if (d > u) { uc = 'r-down'; dc = 'r-up'; }
+  }
+  return `<b class="${uc}">上(${esc(_un())}) ${us}</b>／<b class="${dc}">下(${esc(_dn())}) ${ds}</b>`;
 }
+/* 表格欄位用：邊邊贏邊邊嘅 class */
+function _winCls(u, d, side) {
+  if (u == null || d == null || u === d) return '';
+  return ((side === 'u') === (u > d)) ? 'r-up' : 'r-down';
+}
+
+function _v2oc(o) {
+  return o ? `${_udrates(o.up_r, o.down_r)}　走 ${pct(o.push_r)}（${o.push}場）<span style="color:var(--dim)">｜分母 ${o.n} 場</span>` : '—';
+}
+const V2_ZONES12 = ['≤0.64','0.65-0.69','0.70-0.74','0.75-0.79','0.80-0.84','0.85-0.89','0.90-0.94','0.95-0.99','1.00-1.04','1.05-1.09','1.10-1.14','≥1.15'];
 function v2Water12Tbl(w, curZ, zones12) {
   if (!w) return '';
+  const ZL = zones12 || V2_ZONES12;
   let h = `<table class="ck-table"><thead><tr><th>上盤水位段<br><small style="color:var(--dim)">上盤＝${esc(_un())}</small></th><th>場數</th><th>上盤(${esc(_un())})勝率</th><th>下盤(${esc(_dn())})勝率</th><th>走盤率</th></tr></thead><tbody>`;
   (w.zones || []).forEach((z, i) => {
     if (!z || !z.n) return;
     const hit = (i === curZ) ? ' class="hl"' : '';
-    const zn = z.zone || (zones12 ? zones12[i] : String(i));
+    const zn = z.zone || ZL[i] || String(i);
     h += `<tr${hit}><td>${esc(zn)}${i === curZ ? ' ◀今場' : ''}</td><td>${z.n}</td>` +
-         `<td class="r-up">${pct(z.up_r)}</td><td class="r-down">${pct(z.down_r)}</td><td>${pct(z.push_r)}</td></tr>`;
+         `<td class="${_winCls(z.up_r, z.down_r, 'u')}">${pct(z.up_r)}</td><td class="${_winCls(z.up_r, z.down_r, 'd')}">${pct(z.down_r)}</td><td>${pct(z.push_r)}</td></tr>`;
   });
+  // 保證今場水位段一定出現：就算樣本 0 都補一行（黃底＋◀今場）
+  if (curZ != null && curZ >= 0 && curZ < 12 && !(w.zones && w.zones[curZ] && w.zones[curZ].n)) {
+    h += `<tr class="hl"><td>${esc(ZL[curZ])} ◀今場</td><td>0</td><td>—</td><td>—</td><td>—</td></tr>`;
+  }
   h += `</tbody></table><div class="note" style="margin:2px 0 8px">水位表樣本 ${w.n} 場；每段顯示實際水位範圍（例如 0.85-0.89）${curZ >= 0 ? '；<b>黃底＝今場尾盤上盤水位所在段</b>' : ''}</div>`;
   return h;
 }
@@ -819,7 +855,7 @@ function v2DistTbl(dist, curZ, zones12) {
     const sub = v2Water12Tbl({n: r.n, zones}, curZ, zones12);
     h += `<tr${hit}><td>${esc(r.line)}${r.is_cur ? ' ◀今場' : ''}</td><td>${r.n}</td>` +
          `<td>${r.up}</td><td>${r.down}</td><td>${r.push}</td>` +
-         `<td class="r-up">${pct(r.up_r)}</td><td class="r-down">${pct(r.down_r)}</td><td>${pct(r.push_r)}</td></tr>`;
+         `<td class="${_winCls(r.up_r, r.down_r, 'u')}">${pct(r.up_r)}</td><td class="${_winCls(r.up_r, r.down_r, 'd')}">${pct(r.down_r)}</td><td>${pct(r.push_r)}</td></tr>`;
     if (zones.some(Boolean)) {
       h += `<tr><td colspan="8" style="padding:0;border:none"><details style="margin:2px 8px"><summary style="padding:4px 8px;font-size:12px;color:var(--dim)">▸ 呢個盤口嘅 12 段水位細分</summary><div class="body">${sub}</div></details></td></tr>`;
     }
@@ -831,7 +867,7 @@ function v2Cells16Tbl(cells) {
   let h = `<table class="ck-table"><thead><tr><th>字頭</th><th>範圍</th><th>混合</th><th>場數</th><th>上盤(${esc(_un())})勝率</th><th>下盤(${esc(_dn())})勝率</th><th>走盤率</th></tr></thead><tbody>`;
   for (const c of cells) {
     h += `<tr><td><b>${c.letter}</b></td><td>${esc(c.scope)}</td><td>${esc(c.mix)}</td><td>${c.n}</td>` +
-         `<td class="r-up">${pct(c.up_r)}</td><td class="r-down">${pct(c.down_r)}</td><td>${pct(c.push_r)}</td></tr>`;
+         `<td class="${_winCls(c.up_r, c.down_r, 'u')}">${pct(c.up_r)}</td><td class="${_winCls(c.up_r, c.down_r, 'd')}">${pct(c.down_r)}</td><td>${pct(c.push_r)}</td></tr>`;
   }
   return h + '</tbody></table><div class="note">A–H＝混合（全部樣本）；I–P＝同主隊（樣本場次嘅主隊同今場主隊係同一隊）。每格都有上/下/走%＋場數；樣本少嘅格僅供參考。</div>';
 }
@@ -849,7 +885,7 @@ function v2TriTxt(tri) {
     [['same', '同主客場（原盤直比）'], ['swap', '主客互換（對調對比盤）'], ['all', '綜合全部']]
       .map(([k, lab]) => {
         const o = tri[k];
-        return `<tr><td>${lab}</td><td>${o ? o.n : 0}</td><td class="r-up">${o ? pct(o.up_r) : '—'}</td><td class="r-down">${o ? pct(o.down_r) : '—'}</td><td>${o ? pct(o.push_r) : '—'}</td></tr>`;
+        return `<tr><td>${lab}</td><td>${o ? o.n : 0}</td><td class="${o ? _winCls(o.up_r, o.down_r, 'u') : ''}">${o ? pct(o.up_r) : '—'}</td><td class="${o ? _winCls(o.up_r, o.down_r, 'd') : ''}">${o ? pct(o.down_r) : '—'}</td><td>${o ? pct(o.push_r) : '—'}</td></tr>`;
       }).join('') + '</tbody></table>';
 }
 function _gapStr(g){
@@ -860,7 +896,7 @@ function _gapStr(g){
 function v2GapCard(pack) {
   if (!pack) return '<div class="note">樣本不足</div>';
   return `<div class="linebox"><div class="lb-t">${esc(pack.line)}｜${pack.n} 場</div>
-    <div class="lb-v">上(${esc(_un())}) ${pct(pack.up_r)}／下(${esc(_dn())}) ${pct(pack.down_r)}／走 ${pct(pack.push_r)}</div>
+    <div class="lb-v">${_udrates(pack.up_r, pack.down_r)}／走 ${pct(pack.push_r)}</div>
     <div class="lb-v" style="color:var(--gold2)">${esc(_gapStr(pack.gap))}</div></div>`;
 }
 function v2States(it) {
@@ -919,9 +955,9 @@ function v2WireCombo(mid, bodyEl) {
     if (r.error) { msg.textContent = ''; res.innerHTML = `<div class="err">${esc(r.error)}</div>`; return; }
     msg.textContent = `已剔 ${sel.length} 項：${sel.join('、')}`;
     const scopeRow = (lab, o) => `<tr><td>${lab}</td>` + (o
-      ? `<td>${o.n}</td><td>${o.up}</td><td>${o.down}</td><td>${o.push}</td><td class="r-up">${pct(o.up_r)}</td><td class="r-down">${pct(o.down_r)}</td><td>${pct(o.push_r)}</td>`
+      ? `<td>${o.n}</td><td>${o.up}</td><td>${o.down}</td><td>${o.push}</td><td class="${_winCls(o.up_r, o.down_r, 'u')}">${pct(o.up_r)}</td><td class="${_winCls(o.up_r, o.down_r, 'd')}">${pct(o.down_r)}</td><td>${pct(o.push_r)}</td>`
       : '<td colspan="7">不適用</td>') + '</tr>';
-    res.innerHTML = `<table class="ck-table"><thead><tr><th>範圍</th><th>賽事總數(分母)</th><th>上盤</th><th>下盤</th><th>走盤</th><th>上盤率</th><th>下盤率</th><th>走盤率</th></tr></thead><tbody>` +
+    res.innerHTML = `<table class="ck-table"><thead><tr><th>範圍</th><th>賽事總數(分母)</th><th>上(${esc(_un())})場</th><th>下(${esc(_dn())})場</th><th>走</th><th>上盤(${esc(_un())})率</th><th>下盤(${esc(_dn())})率</th><th>走盤率</th></tr></thead><tbody>` +
       scopeRow('全資料庫', r.all) + scopeRow('同一聯賽', r.league) + scopeRow('同類別', r.cat) + '</tbody></table>';
   };
 }
@@ -933,7 +969,8 @@ async function v2LoadItem(mid, no, bodyEl) {
   if (it.error) { bodyEl.innerHTML = `<div class="note">參照：${esc(it.ref || '')}</div><div class="err">${esc(it.error)}</div>`; return; }
   const curZ = it.cur_zone12 != null ? it.cur_zone12 : -1;
   const zones12 = it.zones12 || null;
-  let h = it.ref ? `<div class="note">參照：${esc(it.ref)}</div>` : '';
+  let h = `<div class="note" style="margin:0 0 6px">本場：上盤＝<b>${esc(_un())}</b>｜下盤＝<b>${esc(_dn())}</b>${V2UD && V2UD.push ? '（今場平手盤：上盤＝平手主隊）' : ''}</div>`;
+  if (it.ref) h += `<div class="note">參照：${esc(it.ref)}</div>`;
   if (it.data_note) h += `<div class="err" style="background:#4a3a10;border-color:#a08c2a">${esc(it.data_note)}</div>`;
   if (it.oc) h += `<div class="note" style="margin:6px 0">結果（全條件樣本）：${_v2oc(it.oc)}</div>`;
   if (it.tri) h += v2TriTxt(it.tri);
@@ -980,11 +1017,11 @@ async function initV2Section(mid) {
     `<table class="ck-table" style="margin-bottom:8px"><thead><tr><th>字頭</th><th>口徑</th><th>方向</th><th>①項目2率</th><th>②項目13率</th><th>③30同盤率</th><th>④33同盤率</th><th>合格</th></tr></thead><tbody>` +
     (L.letters || []).map(c =>
       `<tr${c.pass ? ' class="hl"' : ''}><td><b>${c.letter}</b></td><td>${esc(c.scope)}・${esc(c.mix)}</td>` +
-      `<td>${c.dir ? (c.dir === 'up' ? '上' : '下') : '—'}</td>` +
-      `<td>${c.r2 != null ? pct(c.r2) + '｜n=' + (c.n2 || 0) : '—'}</td>` +
-      `<td>${c.d13_r != null ? pct(c.d13_r) + '｜n=' + (c.n13 || 0) : '—'}</td>` +
-      `<td>${c.r30 ? pct(c.r30.r) + '｜n=' + c.r30.n : '—'}</td>` +
-      `<td>${c.r33 ? pct(c.r33.r) + '｜n=' + c.r33.n : '—'}</td>` +
+      `<td>${c.dir ? (c.dir === 'up' ? `<b class="r-up">上(${esc(_un())})</b>` : `<b class="r-down">下(${esc(_dn())})</b>`) : '—'}</td>` +
+      `<td>${c.r2u != null || c.r2d != null ? _udrates(c.r2u, c.r2d) + '<br><small style="color:var(--dim)">n=' + (c.n2 || 0) + '</small>' : '—'}</td>` +
+      `<td>${c.d13u != null || c.d13d != null ? _udrates(c.d13u, c.d13d) + '<br><small style="color:var(--dim)">n=' + (c.n13 || 0) + '</small>' : '—'}</td>` +
+      `<td>${c.r30 ? _udrates(c.r30.up_r, c.r30.down_r) + '<br><small style="color:var(--dim)">n=' + c.r30.n + '</small>' : '—'}</td>` +
+      `<td>${c.r33 ? _udrates(c.r33.up_r, c.r33.down_r) + '<br><small style="color:var(--dim)">n=' + c.r33.n + '</small>' : '—'}</td>` +
       `<td>${c.pass ? '✅' : ''}</td></tr>`).join('') +
     `</tbody></table>` +
     `<div class="note">入選規則：16 個字頭 A–P（A–H＝混合×8 範圍；I–P＝同主隊×8 範圍）。每字頭要 ①項目2（同開賽前4小時及尾盤）格X有方向（上或下盤率&gt;49.99%）→ ②項目13（對上一次對賽尾盤 對 今場尾盤・純盤口）格X同方向 → ③項目30 分佈最多盤口同方向率&gt;49.99% → ④項目33 最接近50%盤同方向率&gt;49.99%。表內「%」＝該方向（上盤＝${_un()}／下盤＝${_dn()}）嘅贏盤率，「n」＝場數。①同②嘅贏盤率<b>各自獨立展示，唔夾埋</b>。四項全過＝字頭合格，<b>任一字頭合格即入選精選</b>；只有 I–P 合格＝精選Z。</div>`;
