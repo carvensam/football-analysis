@@ -538,6 +538,7 @@ def item_gap_v3(ctx, no, base):
             'ref': '參照盤＝上項樣本嘅分佈最多／最接近50%盤口（至少5場）；'
                    '深淺以讓球方角度計（8條規則）',
             'cur_line': fmt_line(Tc['h'], Tc['g']) if Tc else None,
+            'cur_zone12': ctx['cur_zone12'], 'zones12': ZONES12,
             'mode': _gap_pack(df, mode, Tc),
             'd50': _gap_pack(df, d50, Tc)}
 
@@ -812,13 +813,39 @@ def featured_w(conn, t):
     conds.append(cond_pack(ctx['cond'].get('g8'),
                            '35：主主場入失球 及 客客場（各±3）'))
     dirs = [c['dir'] for c in conds]
+
+    def _short(note):
+        return (note or '').split('：')[0]
+
+    def _subsets(k):
+        """任 k 個條件同方向（每個都要≥50% 有方向）嘅組合"""
+        from itertools import combinations
+        out = []
+        for comb in combinations(range(len(conds)), k):
+            ds = {conds[i]['dir'] for i in comb}
+            if len(ds) == 1:
+                out.append({'dir': ds.pop(),
+                            'which': [_short(conds[i].get('note')) for i in comb]})
+        return out
+
     if any(d is None for d in dirs):
         return {'pass': False, 'conds': conds,
-                'fail_note': '有條件未有方向（數據不足或未過50%）'}
+                'fail_note': '有條件未有方向（數據不足或未過50%）',
+                'any5': _subsets(5), 'any4': _subsets(4)}
     if len(set(dirs)) != 1:
         return {'pass': False, 'conds': conds,
-                'fail_note': f'方向唔一致：{dirs}'}
+                'fail_note': f'方向唔一致：{dirs}',
+                'any5': _subsets(5), 'any4': _subsets(4)}
     direction = dirs[0]
     # 淺深分析（30項語義：上賽完全相同樣本）
     gap = item_gap_v3(ctx, '30', ctx['m16']) if ctx['m16'] is not None else None
-    return {'pass': True, 'direction': direction, 'conds': conds, 'gap30': gap}
+    # 回查實際：同初盤&尾盤樣本（盤口100%一樣＋水位±0.03）嘅實際上下盤%，四個口徑
+    sc_lg = scopes['同一聯賽']
+    lookback = {
+        'all': _oc_mask(df, base1_sw & scopes['全庫']) if base1_sw is not None else None,
+        'pure': _oc_mask(df, base1 & scopes['全庫']),
+        'lg_all': _oc_mask(df, base1_sw & sc_lg) if base1_sw is not None else None,
+        'lg_pure': _oc_mask(df, base1 & sc_lg),
+    }
+    return {'pass': True, 'direction': direction, 'conds': conds,
+            'gap30': gap, 'lookback': lookback}

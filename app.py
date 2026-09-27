@@ -2246,7 +2246,8 @@ def log_v3_featured(conn, mid, direction):
 
 
 def _fw_meta(fw):
-    return json.dumps({'conds': fw.get('conds'), 'gap30': fw.get('gap30')},
+    return json.dumps({'conds': fw.get('conds'), 'gap30': fw.get('gap30'),
+                       'lookback': fw.get('lookback')},
                       ensure_ascii=False, default=_jdefault)
 
 
@@ -2256,7 +2257,7 @@ def _v3_featured_scan_job():
     global _v3_scan
     if _v3_scan['running']:
         return
-    _v3_scan.update(running=True, done=0, added=0, error=None)
+    _v3_scan.update(running=True, done=0, added=0, error=None, near=[])
     conn = db()
     try:
         import v3_engine
@@ -2286,8 +2287,26 @@ def _v3_featured_scan_job():
                     log_v3_featured(conn, mid, d)
                     conn.commit()
                     added += 1
+                elif (fw.get('any5') or fw.get('any4')) \
+                        and len(_v3_scan['near']) < 60:
+                    # Any5／Any4 近合格：記低俾精選W 頁展示
+                    info = conn.execute(
+                        'SELECT m.kickoff, ht.name_tc, at.name_tc, c.req_name '
+                        'FROM matches m '
+                        'JOIN teams ht ON ht.titan_id=m.home_id '
+                        'JOIN teams at ON at.titan_id=m.away_id '
+                        'JOIN seasons s ON s.id=m.season_id '
+                        'JOIN competitions c ON c.titan_id=s.titan_id '
+                        'WHERE m.id=?', (mid,)).fetchone()
+                    if info:
+                        _v3_scan['near'].append({
+                            'id': mid, 'kickoff': info[0], 'home': info[1],
+                            'away': info[2], 'league': info[3],
+                            'any5': fw.get('any5') or [],
+                            'any4': fw.get('any4') or []})
             except Exception:
-                pass
+                import traceback
+                traceback.print_exc()
             _v3_scan['done'] += 1
         _v3_scan['added'] = added
         _v3_scan['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -2350,6 +2369,7 @@ def _build_v3_rec(row, now):
             det = json.loads(detail)
             rec['conds'] = det.get('conds')
             rec['gap30'] = det.get('gap30')
+            rec['lookback'] = det.get('lookback')
         except Exception:
             pass
     if hs is not None:
@@ -2412,6 +2432,8 @@ def get_v3_featured_full():
              'pushes': pushes,
              'hit_rate': wins / (wins + losses) if (wins + losses) else None}
     return {'stats': stats, 'pending': up, 'live': live, 'played': played_all,
+            'near': sorted(_v3_scan.get('near', []),
+                          key=lambda r: r.get('kickoff') or ''),
             'scan': {k: _v3_scan[k] for k in
                      ('running', 'done', 'total', 'added', 'last', 'error')}}
 
