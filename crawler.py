@@ -252,8 +252,12 @@ def db_connect(cfg):
 
 def log(conn, level, msg):
     ts = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    conn.execute('INSERT INTO crawl_log(ts,level,msg) VALUES (?,?,?)', (ts, level, msg))
-    conn.commit()
+    try:
+        conn.execute('INSERT INTO crawl_log(ts,level,msg) VALUES (?,?,?)',
+                     (ts, level, msg))
+        conn.commit()
+    except sqlite3.Error:
+        pass          # 資料庫被鎖定時不影響主流程（狀態以 status.json 為準）
     print(f'[{ts}] {level}: {msg}', flush=True)
 
 
@@ -316,6 +320,9 @@ class Fetcher:
             r.encoding = encoding
             text = r.text
             if is_odds_page and ('頁面不存在' in text or '页面不存在' in text):
+                return 'NO_DATA'
+            if is_odds_page and not text.strip():
+                # 盤口頁空回應 = 該公司無此盤（如馬會半場盤），屬正常無數據
                 return 'NO_DATA'
             if len(text) < 50 and ('jsData' in url or 'vip.titan007' in url):
                 self._rest(self.cfg['rest_minutes'],
@@ -549,6 +556,9 @@ def save_season(conn, titan_id, season_label, is_current, parsed):
                 'away_rank_disp,handicap_init_disp,handicap_now_disp,updated_at) '
                 'VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
                 'ON CONFLICT(id) DO UPDATE SET '
+                # 開賽時間＋輪次一併更新：源頭會將未確認場次（placeholder 23:00/00:00）
+                # 其後更新為實際開賽時間；唔更新嘅話 DB 時間就永遠錯落去
+                'kickoff=excluded.kickoff, round_label=excluded.round_label, '
                 'home_score=excluded.home_score, away_score=excluded.away_score, '
                 'half_home=excluded.half_home, half_away=excluded.half_away, '
                 'status=excluded.status, updated_at=excluded.updated_at',

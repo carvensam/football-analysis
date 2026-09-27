@@ -773,6 +773,15 @@ def featured_w(conn, t):
     if base1 is None or base1_sw is None or ctx['T_close'] is None:
         return {'pass': False, 'error': '今場缺少初盤或尾盤數據'}
     scopes = _scope_masks(df, t.get('league'))
+    # 回查實際：同初盤&尾盤樣本（盤口100%一樣＋水位±0.03）嘅實際上下盤%，四個口徑。
+    # 合格與否都計——Check 下先頁都要展示。
+    sc_lg = scopes['同一聯賽']
+    lookback = {
+        'all': _oc_mask(df, base1_sw & scopes['全庫']) if base1_sw is not None else None,
+        'pure': _oc_mask(df, base1 & scopes['全庫']),
+        'lg_all': _oc_mask(df, base1_sw & sc_lg) if base1_sw is not None else None,
+        'lg_pure': _oc_mask(df, base1 & sc_lg),
+    }
 
     def cond_pack(mask, note):
         oc = _oc_mask(df, mask)
@@ -831,21 +840,13 @@ def featured_w(conn, t):
     if any(d is None for d in dirs):
         return {'pass': False, 'conds': conds,
                 'fail_note': '有條件未有方向（數據不足或未過50%）',
-                'any5': _subsets(5), 'any4': _subsets(4)}
+                'any5': _subsets(5), 'any4': _subsets(4), 'lookback': lookback}
     if len(set(dirs)) != 1:
         return {'pass': False, 'conds': conds,
                 'fail_note': f'方向唔一致：{dirs}',
-                'any5': _subsets(5), 'any4': _subsets(4)}
+                'any5': _subsets(5), 'any4': _subsets(4), 'lookback': lookback}
     direction = dirs[0]
     # 淺深分析（30項語義：上賽完全相同樣本）
     gap = item_gap_v3(ctx, '30', ctx['m16']) if ctx['m16'] is not None else None
-    # 回查實際：同初盤&尾盤樣本（盤口100%一樣＋水位±0.03）嘅實際上下盤%，四個口徑
-    sc_lg = scopes['同一聯賽']
-    lookback = {
-        'all': _oc_mask(df, base1_sw & scopes['全庫']) if base1_sw is not None else None,
-        'pure': _oc_mask(df, base1 & scopes['全庫']),
-        'lg_all': _oc_mask(df, base1_sw & sc_lg) if base1_sw is not None else None,
-        'lg_pure': _oc_mask(df, base1 & sc_lg),
-    }
     return {'pass': True, 'direction': direction, 'conds': conds,
             'gap30': gap, 'lookback': lookback}
