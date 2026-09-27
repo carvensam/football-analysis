@@ -1019,6 +1019,26 @@ def recent_update(conn, cfg, days=3, progress=None):
     return stats
 
 
+def wait_data_host(max_wait_sec=86400):
+    """數據主機中斷時，每 5 分鐘自動重試直至復活（獨立爬蟲版嘅自動重試線程）。
+    上限預設 24 小時；超時回傳 False。"""
+    if data_host_probe():
+        return True
+    waited = 0
+    while True:
+        if waited >= max_wait_sec:
+            print('[crawler] 等待後主機仍然中斷，本次更新中止，'
+                  '下次開機會再自動重試', flush=True)
+            return False
+        print('[crawler] titan007 數據主機暫時中斷，5 分鐘後自動重試'
+              '（現有數據不受影響）…', flush=True)
+        time.sleep(300)
+        waited += 300
+        if data_host_probe():
+            print('[crawler] titan007 數據主機已復活，繼續更新', flush=True)
+            return True
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--league', type=int, default=None, help='只爬指定 titan007 聯賽ID')
@@ -1041,6 +1061,9 @@ def main():
         import prematch
         n = prematch.build_all(conn)
         log(conn, 'INFO', f'開賽前對賽數據已重建：{n} 場')
+        return
+    # 爬取前先探測數據主機；中斷就每 5 分鐘自動重試，唔會一開即敗
+    if not wait_data_host():
         return
     if args.recent:
         conn = db_connect(cfg)
