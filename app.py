@@ -39,7 +39,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '4.2.2'
+SERVER_VERSION = '5.0.0'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -69,7 +69,7 @@ def db():
 def upcoming(hours=48):
     conn = db()
     # hours=0 → 不設時限上限，列出全部即將開賽賽事
-    cap = "AND m.kickoff <= datetime('now','localtime', ?) " if hours else ""
+    cap = "AND m.kickoff <= datetime('now','+8 hours', ?) " if hours else ""
     args = (f'+{hours} hours',) if hours else ()
     rows = conn.execute(
         "SELECT m.id, c.req_name, m.kickoff, ht.name_tc, at.name_tc, m.odds_done, "
@@ -87,7 +87,7 @@ def upcoming(hours=48):
         "AND hr.scope='total' AND hr.grp='' "
         "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
         "AND ar.scope='total' AND ar.grp='' "
-        "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','localtime') "
+        "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','+8 hours') "
         + cap + "ORDER BY m.kickoff", args).fetchall()
     out = []
     for mid, lg, ko, h, a, od, has, hc, gv, ho, ao, hr_, ar_ in rows:
@@ -115,8 +115,8 @@ def played():
         "JOIN teams at ON at.titan_id=m.away_id "
         "LEFT JOIN odds_asian oc ON oc.match_id=m.id AND oc.company_id=12 "
         "AND oc.label='closing' "
-        "WHERE m.kickoff < datetime('now','localtime') "
-        "AND m.kickoff >= datetime('now','localtime','-120 hours') "
+        "WHERE m.kickoff < datetime('now','+8 hours') "
+        "AND m.kickoff >= datetime('now','+8 hours','-120 hours') "
         "ORDER BY m.kickoff DESC LIMIT 1200", ()).fetchall()
     out = []
     for mid, lg, ko, h, a, hs, aws, hc, gv, ho, ao in rows:
@@ -171,7 +171,7 @@ def _update_worker():
         todo = conn.execute(
             'SELECT m.id, m.kickoff FROM matches m '
             'WHERE m.home_score IS NULL '
-            "AND m.kickoff >= datetime('now','localtime') "
+            "AND m.kickoff >= datetime('now','+8 hours') "
             'AND EXISTS(SELECT 1 FROM odds_asian o '
             'WHERE o.match_id=m.id AND o.company_id=12) '
             'ORDER BY m.kickoff').fetchall()
@@ -193,8 +193,8 @@ def _update_worker():
         todo2 = conn.execute(
             'SELECT m.id, m.kickoff FROM matches m '
             'WHERE m.home_score IS NULL '
-            "AND m.kickoff >= datetime('now','localtime') "
-            "AND m.kickoff <= datetime('now','localtime','+72 hours') "
+            "AND m.kickoff >= datetime('now','+8 hours') "
+            "AND m.kickoff <= datetime('now','+8 hours','+72 hours') "
             'AND NOT EXISTS(SELECT 1 FROM odds_asian o '
             'WHERE o.match_id=m.id AND o.company_id=12) '
             'ORDER BY m.kickoff').fetchall()
@@ -252,9 +252,9 @@ def update_status():
 _win_state = {'running': False, 'window': '', 'phase': '', 'done': 0, 'total': 0,
               'ok': 0, 'fail': 0, 'last': None, 'error': None}
 WIN_SQL = {
-    '24h': ("AND m.kickoff <= datetime('now','localtime','+24 hours')", '未來24小時'),
-    '30m': ("AND m.kickoff <= datetime('now','localtime','+30 minutes')", '未來30分鐘'),
-    '10m': ("AND m.kickoff <= datetime('now','localtime','+10 minutes')", '未來10分鐘'),
+    '24h': ("AND m.kickoff <= datetime('now','+8 hours','+24 hours')", '未來24小時'),
+    '30m': ("AND m.kickoff <= datetime('now','+8 hours','+30 minutes')", '未來30分鐘'),
+    '10m': ("AND m.kickoff <= datetime('now','+8 hours','+10 minutes')", '未來10分鐘'),
 }
 
 
@@ -270,7 +270,7 @@ def _window_update_worker(win):
         todo = conn.execute(
             'SELECT m.id, m.kickoff FROM matches m '
             'WHERE m.home_score IS NULL '
-            "AND m.kickoff >= datetime('now','localtime') " + cond + ' '
+            "AND m.kickoff >= datetime('now','+8 hours') " + cond + ' '
             'ORDER BY m.kickoff').fetchall()
         _win_state.update(total=len(todo), done=0, ok=0, fail=0)
         fetcher = crawler.Fetcher(conn, cfg)
@@ -329,7 +329,7 @@ def _v2_sched_job():
     while True:
         time.sleep(300)   # 每 5 分鐘睇一次
         try:
-            now = dt.datetime.now()
+            now = dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).replace(tzinfo=None)
             if now.hour < 12:
                 continue
             # 今日 12 時起每 2 小時一個刻度：12,14,16,18,20,22,(24=翌日0)
@@ -491,6 +491,22 @@ def init_picks():
         "match_id, direction, added_at, handicap, giver, home_odds, away_odds) "
         "SELECT f.match_id, f.direction, f.added_at, oc.handicap, oc.giver, "
         "oc.home_odds, oc.away_odds FROM featured_z f "
+        "LEFT JOIN odds_asian oc ON oc.match_id=f.match_id "
+        "AND oc.label='closing' AND oc.company_id=12")
+    # V3（2026-09-28）：精選W＝1A、1I、19同主客、19+互換、31、35 全部同方向≥50%；
+    # 過往紀錄完全獨立（同 V1／V2 分開）
+    conn.execute('''CREATE TABLE IF NOT EXISTS v3_featured(
+        match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
+        detail TEXT, added_at TEXT, result TEXT, settled_at TEXT)''')
+    conn.execute('''CREATE TABLE IF NOT EXISTS v3_featured_log(
+        match_id INTEGER PRIMARY KEY, direction TEXT NOT NULL,
+        added_at TEXT, handicap REAL, giver TEXT,
+        home_odds REAL, away_odds REAL)''')
+    conn.execute(
+        "INSERT OR IGNORE INTO v3_featured_log("
+        "match_id, direction, added_at, handicap, giver, home_odds, away_odds) "
+        "SELECT f.match_id, f.direction, f.added_at, oc.handicap, oc.giver, "
+        "oc.home_odds, oc.away_odds FROM v3_featured f "
         "LEFT JOIN odds_asian oc ON oc.match_id=f.match_id "
         "AND oc.label='closing' AND oc.company_id=12")
     conn.commit()
@@ -911,7 +927,7 @@ def _featured_scan_job():
             "SELECT DISTINCT m.id FROM matches m "
             "JOIN odds_asian oc ON oc.match_id=m.id "
             "AND oc.label='closing' AND oc.company_id=12 AND oc.handicap IS NOT NULL "
-            "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','localtime') "
+            "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','+8 hours') "
             "ORDER BY m.kickoff").fetchall()
         _feat_scan['total'] = len(rows)
         import v2_engine
@@ -977,6 +993,8 @@ def _recompute_featured_after_update():
                      '(SELECT id FROM matches WHERE home_score IS NULL)')
         conn.execute('DELETE FROM v1_featured_z WHERE match_id IN '
                      '(SELECT id FROM matches WHERE home_score IS NULL)')
+        conn.execute('DELETE FROM v3_featured WHERE match_id IN '
+                     '(SELECT id FROM matches WHERE home_score IS NULL)')
         conn.commit()
         conn.close()
         screen_engine._pool_cache['ts'] = 0   # 令 load_pool 重新載入新盤口
@@ -986,11 +1004,20 @@ def _recompute_featured_after_update():
             _v2_item_cache.clear()              # V2 單項快取一併清
         except Exception:
             pass
+        try:
+            import v3_engine
+            v3_engine.invalidate_pool()       # V3 池（對調欄）都要清
+            with _v3_item_cache_lock:
+                _v3_item_cache.clear()          # V3 單項／summary 快取一併清
+        except Exception:
+            pass
         print('[update] 重算精選…', flush=True)
         if not _feat_scan['running']:
             threading.Thread(target=_featured_scan_job, daemon=True).start()
         if not _v1_scan['running']:
             threading.Thread(target=_v1_scan_job, daemon=True).start()
+        if not _v3_scan['running']:
+            threading.Thread(target=_v3_featured_scan_job, daemon=True).start()
     except Exception:
         import traceback
         traceback.print_exc()
@@ -1121,7 +1148,7 @@ def _v1_scan_job():
             "SELECT DISTINCT m.id FROM matches m "
             "JOIN odds_asian oc ON oc.match_id=m.id "
             "AND oc.label='closing' AND oc.company_id=12 AND oc.handicap IS NOT NULL "
-            "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','localtime') "
+            "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','+8 hours') "
             "ORDER BY m.kickoff").fetchall()
         _v1_scan['total'] = len(rows)
         import v2_engine
@@ -1296,7 +1323,7 @@ def get_results(limit=1000, league=None, hc=None, gv=None, scope='featured'):
     conn = db()
     featured = (scope in ('featured', 'featuredz'))
     tbl = 'featured_z' if scope == 'featuredz' else 'featured'
-    where = ("WHERE m.kickoff < datetime('now','localtime')" if featured
+    where = ("WHERE m.kickoff < datetime('now','+8 hours')" if featured
              else 'WHERE m.home_score IS NOT NULL')
     args = []
     if league:
@@ -1446,7 +1473,7 @@ def get_results(limit=1000, league=None, hc=None, gv=None, scope='featured'):
         lg_from = ('FROM featured f JOIN matches m ON m.id=f.match_id '
                    'JOIN seasons s ON s.id=m.season_id '
                    'JOIN competitions c ON c.titan_id=s.titan_id ')
-        lg_where = "WHERE m.kickoff < datetime('now','localtime')"
+        lg_where = "WHERE m.kickoff < datetime('now','+8 hours')"
     else:
         lg_from = ('FROM matches m JOIN seasons s ON s.id=m.season_id '
                    'JOIN competitions c ON c.titan_id=s.titan_id ')
@@ -2064,6 +2091,373 @@ def api_v2_combo(mid, sel):
         conn.close()
 
 
+# ============ V3（2026-09-28 規格定稿）：45 項場次分析／精選W／Check 下先 ============
+# 注意：V3 項目號同 V1 規則號完全隔離（V1 規則只喺「舊版本」分頁用，唔可以混）。
+
+_v3_scan = {'running': False, 'done': 0, 'total': 0, 'added': 0,
+            'last': None, 'error': None}
+_v3_item_cache = {}
+_v3_item_cache_lock = threading.Lock()
+V3_ITEM_CACHE_TTL = 600
+
+
+def api_v3_list(hours=48):
+    """V3 主頁清單：即將開賽（唔設上限由前端 hours 控制）＋已開賽（120h）。
+    每場附 state（scheduled/live/finished，香港時間判定）。"""
+    import v3_engine
+    up = upcoming(hours)
+    pl = played()
+    now = v3_engine.hk_now_str()
+    for m in up:
+        m['state'] = 'scheduled'
+    for m in pl:
+        m['state'] = 'finished' if m.get('score') else (
+            'live' if (m.get('kickoff') or '') <= now else 'scheduled')
+    return {'upcoming': up, 'played': pl, 'now': now}
+
+
+def api_v3_target(mid):
+    """V3 場次分析頁頭：7 時點盤口水位＋狀態＋排名（輕量版，唔跑成個 screen）。"""
+    import v3_engine
+    conn = db()
+    try:
+        t = screen_engine.get_target(conn, mid)
+        if not t:
+            return {'error': '找不到賽事'}
+
+        def box(label):
+            T = screen_engine.tline(t.get('odds') or {}, label)
+            if not T or T.get('h') is None:
+                return None
+            return {'line': screen_engine.fmt_line(T['h'], T.get('g')),
+                    'ho': T.get('ho'), 'ao': T.get('ao'), 'g': T.get('g')}
+
+        hr = (t.get('pre') or {}).get('home_total_rank')
+        ar = (t.get('pre') or {}).get('away_total_rank')
+        if not hr:
+            r = conn.execute("SELECT rank FROM standings WHERE season_id=? AND team_id=? "
+                             "AND scope='total' AND grp=''",
+                             (t['season_id'], t['home_id'])).fetchone()
+            hr = r[0] if r else None
+        if not ar:
+            r = conn.execute("SELECT rank FROM standings WHERE season_id=? AND team_id=? "
+                             "AND scope='total' AND grp=''",
+                             (t['season_id'], t['away_id'])).fetchone()
+            ar = r[0] if r else None
+        sc = conn.execute('SELECT home_score, away_score FROM matches WHERE id=?',
+                          (mid,)).fetchone()
+        score = None
+        state = 'scheduled'
+        if sc and sc[0] is not None:
+            score = f'{sc[0]}-{sc[1]}'
+            state = 'finished'
+        elif t['kickoff'] <= v3_engine.hk_now_str():
+            state = 'live'
+        return {'ok': True,
+                'target': {'id': t['id'], 'home': t['home'], 'away': t['away'],
+                           'rank_home': hr, 'rank_away': ar,
+                           'league': t.get('league'), 'category': t.get('category'),
+                           'kickoff': t['kickoff'], 'state': state, 'score': score,
+                           'close': box('closing'), 'init': box('initial'),
+                           'h4': box('pre_4h'), 'h30': box('pre_30m'),
+                           'h15': box('pre_15m'), 'h10': box('pre_10m'),
+                           'h5': box('pre_5m')}}
+    finally:
+        conn.close()
+
+
+def api_v3_item(mid, no):
+    """V3 單項計算（10 分鐘快取）"""
+    import v3_engine
+    key = (mid, str(no))
+    now = time.time()
+    with _v3_item_cache_lock:
+        hit = _v3_item_cache.get(key)
+        if hit and now - hit[0] < V3_ITEM_CACHE_TTL:
+            return hit[1]
+    conn = db()
+    try:
+        t = screen_engine.get_target(conn, mid)
+        if not t:
+            return {'error': '找不到賽事'}
+        out = v3_engine.compute_item_v3(conn, t, str(no))
+        out.setdefault('ok', 'error' not in out)
+        with _v3_item_cache_lock:
+            _v3_item_cache[key] = (now, out)
+        return out
+    finally:
+        conn.close()
+
+
+def api_v3_summary(mid):
+    """V3 一頁過：45 項適用情況＋精選W 五條件結果（詳情頁頂＋Check 下先用）"""
+    import v3_engine
+    key = ('v3sum', mid)
+    now = time.time()
+    with _v3_item_cache_lock:
+        hit = _v3_item_cache.get(key)
+        if hit and now - hit[0] < V3_ITEM_CACHE_TTL:
+            return hit[1]
+    conn = db()
+    try:
+        t = screen_engine.get_target(conn, mid)
+        if not t:
+            return {'error': '找不到賽事'}
+        out = {'ok': True,
+               'applicability': v3_engine.item_applicability_v3(conn, t),
+               'featured_w': v3_engine.featured_w(conn, t)}
+        with _v3_item_cache_lock:
+            _v3_item_cache[key] = (now, out)
+        return out
+    finally:
+        conn.close()
+
+
+def api_v3_combo(mid, sel):
+    """V3 組合篩查：第 1–38 項多選（AND），分全庫／同一聯賽／聯賽類"""
+    import v3_engine
+    conn = db()
+    try:
+        t = screen_engine.get_target(conn, mid)
+        if not t:
+            return {'error': '找不到賽事'}
+        out = v3_engine.combo_v3(conn, t, sel)
+        out.setdefault('ok', 'error' not in out)
+        return out
+    finally:
+        conn.close()
+
+
+def log_v3_featured(conn, mid, direction):
+    """V3 過往紀錄（2026-09-28）：精選W 一出現即自動影低當刻尾盤快照。
+    計一場：同一 match_id 保留首次 added_at，尾盤快照同方向更新為最新。"""
+    row = conn.execute(
+        "SELECT handicap, giver, home_odds, away_odds FROM odds_asian "
+        "WHERE match_id=? AND company_id=12 "
+        "ORDER BY (label='closing') DESC, label DESC LIMIT 1", (mid,)).fetchone()
+    hc, gv, ho, ao = row if row else (None, None, None, None)
+    conn.execute(
+        'INSERT INTO v3_featured_log(match_id, direction, added_at, handicap, '
+        'giver, home_odds, away_odds) VALUES(?,?,?,?,?,?,?) '
+        'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction, '
+        'handicap=excluded.handicap, giver=excluded.giver, '
+        'home_odds=excluded.home_odds, away_odds=excluded.away_odds',
+        (mid, direction, time.strftime('%Y-%m-%d %H:%M:%S'), hc, gv, ho, ao))
+
+
+def _fw_meta(fw):
+    return json.dumps({'conds': fw.get('conds'), 'gap30': fw.get('gap30')},
+                      ensure_ascii=False, default=_jdefault)
+
+
+def _v3_featured_scan_job():
+    """精選W 掃描：1A、1I、19同主客、19+互換、31、35 全部同方向≥50% 先入選。
+    入選寫 v3_featured（conds/gap30 JSON）＋v3_featured_log（過往紀錄，計一場）。"""
+    global _v3_scan
+    if _v3_scan['running']:
+        return
+    _v3_scan.update(running=True, done=0, added=0, error=None)
+    conn = db()
+    try:
+        import v3_engine
+        rows = conn.execute(
+            "SELECT DISTINCT m.id FROM matches m "
+            "JOIN odds_asian oc ON oc.match_id=m.id "
+            "AND oc.label='closing' AND oc.company_id=12 AND oc.handicap IS NOT NULL "
+            "WHERE m.home_score IS NULL AND m.kickoff >= ? ORDER BY m.kickoff",
+            (v3_engine.hk_now_str(),)).fetchall()
+        _v3_scan['total'] = len(rows)
+        v3_engine.load_v3_pool(conn)   # 預熱 V3 數據池
+        added = 0
+        for (mid,) in rows:
+            try:
+                t = screen_engine.get_target(conn, mid)
+                if not t:
+                    continue
+                fw = v3_engine.featured_w(conn, t)
+                if fw.get('pass'):
+                    d = fw['direction']
+                    conn.execute(
+                        'INSERT INTO v3_featured(match_id, direction, detail, added_at) '
+                        'VALUES(?,?,?,?) '
+                        'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction, '
+                        'detail=excluded.detail',
+                        (mid, d, _fw_meta(fw), time.strftime('%Y-%m-%d %H:%M:%S')))
+                    log_v3_featured(conn, mid, d)
+                    conn.commit()
+                    added += 1
+            except Exception:
+                pass
+            _v3_scan['done'] += 1
+        _v3_scan['added'] = added
+        _v3_scan['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception as e:
+        _v3_scan['error'] = str(e)
+    finally:
+        conn.close()
+        _v3_scan['running'] = False
+
+
+def do_v3_featured_refresh(mid):
+    """精選W 單場重新整理：重抓該場最新盤口賠率，重算精選W 資格。
+    仍合準則 → 保留／更新方向；唔再合 → 未結算移出；已完場歷史保留。"""
+    import v3_engine
+    st = do_fetch(mid, True)
+    if not st.get('ok'):
+        return {'ok': False, 'error': st.get('error', '抓取賠率失敗'), 'fetch': st}
+    conn = db()
+    try:
+        screen_engine._pool_cache['ts'] = 0
+        v3_engine.invalidate_pool()
+        with _v3_item_cache_lock:
+            _v3_item_cache.clear()
+        t = screen_engine.get_target(conn, mid)
+        fw = v3_engine.featured_w(conn, t) if t else {'pass': False}
+        row = conn.execute('SELECT result FROM v3_featured WHERE match_id=?',
+                           (mid,)).fetchone()
+        removed = False
+        if fw.get('pass'):
+            d = fw['direction']
+            conn.execute(
+                'INSERT INTO v3_featured(match_id, direction, detail, added_at) '
+                'VALUES(?,?,?,?) '
+                'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction, '
+                'detail=excluded.detail',
+                (mid, d, _fw_meta(fw), time.strftime('%Y-%m-%d %H:%M:%S')))
+            log_v3_featured(conn, mid, d)
+        elif row and row[0] is None:
+            conn.execute('DELETE FROM v3_featured WHERE match_id=?', (mid,))
+            removed = True
+        conn.commit()
+    finally:
+        conn.close()
+    return {'ok': True, 'pass': bool(fw.get('pass')),
+            'direction': fw.get('direction'), 'removed': removed}
+
+
+def _build_v3_rec(row, now):
+    """精選W 單場卡片：基本資料＋狀態＋自動結算（以入選方向計 贏/輸/走）＋conds/gap30"""
+    (mid, d, res, detail, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, hr_,
+     ar_) = row
+    rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
+           'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
+           'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+           'odds': f'主{ho}/客{ao}' if ho is not None else None,
+           'state': 'finished' if hs is not None else (
+               'live' if ko <= now else 'scheduled')}
+    if detail:
+        try:
+            det = json.loads(detail)
+            rec['conds'] = det.get('conds')
+            rec['gap30'] = det.get('gap30')
+        except Exception:
+            pass
+    if hs is not None:
+        r = pick_result(hc, gv, hs, aws)
+        if res is None and r is not None:
+            res = 'P' if r == 'P' else ('W' if (r == 'A') == (d == 'up') else 'L')
+            c2 = db()
+            c2.execute('UPDATE v3_featured SET result=?, settled_at=? WHERE match_id=?',
+                       (res, now, mid))
+            c2.commit()
+            c2.close()
+        rec['score'] = f'{hs}-{aws}'
+        rec['result'] = res
+    return rec
+
+
+def get_v3_featured_full():
+    """精選W 全量：未開賽（順開賽時間）→ 進行中 → 已完場（最新排先，永不刪除）。
+    頁頂統計：場數／命中場數／命中率。"""
+    import v3_engine
+    conn = db()
+    now = v3_engine.hk_now_str()
+    rows = conn.execute(
+        'SELECT f.match_id, f.direction, f.result, f.detail, f.added_at, '
+        'm.kickoff, m.home_score, m.away_score, ht.name_tc, at.name_tc, '
+        'c.req_name, oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
+        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
+        'FROM v3_featured f JOIN matches m ON m.id=f.match_id '
+        'JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        'JOIN teams ht ON ht.titan_id=m.home_id '
+        'JOIN teams at ON at.titan_id=m.away_id '
+        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+        "AND oc.label='closing' AND oc.company_id=12 "
+        'LEFT JOIN match_prestandings ps ON ps.match_id=m.id '
+        "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
+        "AND hr.scope='total' AND hr.grp='' "
+        "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
+        "AND ar.scope='total' AND ar.grp='' "
+        'ORDER BY m.kickoff').fetchall()
+    conn.close()
+    recs = []
+    for r in rows:
+        try:
+            recs.append(_build_v3_rec(r, now))
+        except Exception:
+            traceback.print_exc()
+    up = sorted([r for r in recs if r['state'] == 'scheduled'],
+                key=lambda r: r['kickoff'])
+    live = sorted([r for r in recs if r['state'] == 'live'],
+                  key=lambda r: r['kickoff'])
+    fin = sorted([r for r in recs if r['state'] == 'finished'],
+                 key=lambda r: r['kickoff'], reverse=True)
+    played_all = live + fin
+    wins = sum(1 for r in played_all if r.get('result') == 'W')
+    losses = sum(1 for r in played_all if r.get('result') == 'L')
+    pushes = sum(1 for r in played_all if r.get('result') == 'P')
+    stats = {'total': len(recs), 'pending': len(up), 'live': len(live),
+             'played': len(played_all), 'wins': wins, 'losses': losses,
+             'pushes': pushes,
+             'hit_rate': wins / (wins + losses) if (wins + losses) else None}
+    return {'stats': stats, 'pending': up, 'live': live, 'played': played_all,
+            'scan': {k: _v3_scan[k] for k in
+                     ('running', 'done', 'total', 'added', 'last', 'error')}}
+
+
+def get_v3_featlog():
+    """V3 過往紀錄：精選W 自動紀錄嘅尾盤快照（永久保留，計一場）。
+    結算以 log 影低嘅尾盤快照計，唔係而家嘅 closing。"""
+    import v3_engine
+    conn = db()
+    now = v3_engine.hk_now_str()
+    rows = conn.execute(
+        'SELECT l.match_id, l.direction, l.added_at, l.handicap, l.giver, '
+        'l.home_odds, l.away_odds, m.kickoff, m.home_score, m.away_score, '
+        'ht.name_tc, at.name_tc, c.req_name '
+        'FROM v3_featured_log l JOIN matches m ON m.id=l.match_id '
+        'JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        'JOIN teams ht ON ht.titan_id=m.home_id '
+        'JOIN teams at ON at.titan_id=m.away_id '
+        'ORDER BY m.kickoff DESC').fetchall()
+    conn.close()
+    pending, played = [], []
+    for (mid, d, added, hc, gv, ho, ao, ko, hs, aws, h, a, lg) in rows:
+        rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
+               'home': h, 'away': a, 'league': lg,
+               'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+               'odds': f'主{ho}/客{ao}' if ho is not None else None,
+               'played': ko < now}
+        if hs is not None:
+            rec['score'] = f'{hs}-{aws}'
+            r = pick_result(hc, gv, hs, aws)
+            rec['result'] = ('P' if r == 'P' else
+                             'W' if ((r == 'A') == (d == 'up')) else 'L') \
+                if r is not None else None
+        (pending if ko >= now else played).append(rec)
+    pending.reverse()   # 未開賽順開賽時間排
+    wins = sum(1 for r in played if r.get('result') == 'W')
+    losses = sum(1 for r in played if r.get('result') == 'L')
+    pushes = sum(1 for r in played if r.get('result') == 'P')
+    stats = {'total': len(pending) + len(played), 'pending': len(pending),
+             'played': len(played), 'wins': wins, 'losses': losses,
+             'pushes': pushes,
+             'hit_rate': wins / (wins + losses) if (wins + losses) else None}
+    return {'stats': stats, 'pending': pending, 'played': played}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -2239,6 +2633,66 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/v3/list':
+            try:
+                q = parse_qs(u.query)
+                hours = int(q.get('hours', ['48'])[0])
+                self._send(200, json.dumps(api_v3_list(hours), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/target':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                self._send(200, json.dumps(api_v3_target(mid), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/summary':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                self._send(200, json.dumps(api_v3_summary(mid), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/item':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                no = qs.get('no', [''])[0]
+                self._send(200, json.dumps(api_v3_item(mid, no), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/featured/full':
+            try:
+                self._send(200, json.dumps(get_v3_featured_full(), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/featured/scan-status':
+            self._send(200, json.dumps(_v3_scan, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/featlog':
+            try:
+                self._send(200, json.dumps(get_v3_featlog(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         self._send(404, '{}')
 
     def do_POST(self):
@@ -2377,6 +2831,48 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
                                            ensure_ascii=False))
             return
+        if u.path == '/api/v3/combo':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(
+                    api_v3_combo(int(body.get('id')), body.get('sel') or []),
+                    ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
+        if u.path == '/api/v3/featured/scan':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                if body.get('reset'):
+                    conn = db()
+                    conn.execute('DELETE FROM v3_featured WHERE match_id IN '
+                                 '(SELECT id FROM matches WHERE home_score IS NULL)')
+                    conn.commit()
+                    conn.close()
+                if not _v3_scan['running']:
+                    threading.Thread(target=_v3_featured_scan_job, daemon=True).start()
+                self._send(200, json.dumps({'started': True, 'running': True,
+                                            'reset': bool(body.get('reset'))},
+                                           ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/featured/refresh':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(
+                    do_v3_featured_refresh(int(body.get('id'))), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
         self._send(404, '{}')
 
 
@@ -2441,8 +2937,8 @@ def _result_catchup_once():
         'SELECT m.id, s.titan_id FROM matches m '
         'JOIN seasons s ON s.id=m.season_id '
         'WHERE m.home_score IS NULL '
-        "AND m.kickoff <= datetime('now','localtime','-2 hours 30 minutes') "
-        "AND m.kickoff >= datetime('now','localtime','-10 days') "
+        "AND m.kickoff <= datetime('now','+8 hours','-2 hours 30 minutes') "
+        "AND m.kickoff >= datetime('now','+8 hours','-10 days') "
         'ORDER BY m.kickoff').fetchall()
     if not rows:
         conn.close()
@@ -2569,7 +3065,7 @@ if __name__ == '__main__':
             if latest:
                 try:
                     t = dt.datetime.strptime(latest, '%Y-%m-%d %H:%M:%S')
-                    stale = (dt.datetime.now() - t).total_seconds() > 12 * 3600
+                    stale = (dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).replace(tzinfo=None) - t).total_seconds() > 12 * 3600
                 except Exception:
                     stale = True
             if stale:

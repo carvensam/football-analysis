@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>FootballAnalysis V2</title>
+<title>FootballAnalysis V3</title>
 <style>
 :root{
   --bg:#0d1117; --bg2:#161d27; --card:#1a2230; --line:#2b3648;
@@ -57,6 +57,7 @@ a{color:var(--accent)}
 .btn:hover{border-color:var(--accent)}
 .btn.accent{background:var(--accent); border-color:var(--accent); color:#fff}
 .btn.warn{background:#7a4a12; border-color:#a06a1f; color:#ffd9a0}
+.btn.gold{background:var(--gold); border-color:var(--gold); color:#3a2c05; font-weight:700}
 .btn:disabled{opacity:.45;cursor:default}
 .toolbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0}
 .toolbar select{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:14px}
@@ -116,6 +117,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:#6b5a14}
 .tag.down{background:#4a1d1d;color:#ff9d9d}
 .tag.lt{background:#3a2c6b;color:#c9b8ff}
 .tag.dim{background:var(--bg2);color:var(--dim)}
+.tag.live{background:#4a3a10;color:#ffd766}
 /* ---- 精選／選擇卡 ---- */
 .fcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin:8px 0}
 .fcard .f-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -167,11 +169,10 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:#6b5a14}
   <span id="status">啟動中…</span>
   <nav id="tabs">
     <button class="tab on" data-pg="home">🏠 主頁</button>
-    <button class="tab" data-pg="feat">★ 精選 <span id="ftCnt"></span></button>
-    <button class="tab" data-pg="featz">★ 精選Z <span id="ftzCnt"></span></button>
+    <button class="tab" data-pg="featw">★ 精選W <span id="fwCnt"></span></button>
     <button class="tab" data-pg="check">✓ Check 下先</button>
+    <button class="tab" data-pg="review">📋 事後回查</button>
     <button class="tab" data-pg="picks">我的選擇 <span id="pkCnt"></span></button>
-    <button class="tab" data-pg="results">📋 過往賽果</button>
     <button class="tab" data-pg="featlog">📜 過往紀錄</button>
     <button class="tab" data-pg="v1">📼 舊版本</button>
     <button class="tab" data-pg="settings">⚙️ 設定</button>
@@ -199,29 +200,29 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:#6b5a14}
     <div id="homeList"><div class="note">載入中…</div></div>
   </section>
 
-  <!-- 精選 -->
-  <section class="pg" id="pg-feat">
+  <!-- 精選W -->
+  <section class="pg" id="pg-featw">
     <div class="toolbar">
-      <button class="btn accent" id="btnFtScan">🔍 重新掃描精選</button>
-      <span class="hint" id="ftScanInfo"></span>
+      <button class="btn accent" id="btnFwScan">🔍 重新掃描精選W</button>
+      <span class="hint" id="fwScanInfo"></span>
     </div>
-    <div id="ftStats"></div>
-    <div id="ftList"><div class="note">載入中…</div></div>
-  </section>
-
-  <!-- 精選Z -->
-  <section class="pg" id="pg-featz">
-    <div class="toolbar">
-      <button class="btn accent" id="btnFtzScan">🔍 重新掃描精選Z</button>
-      <span class="hint" id="ftzScanInfo"></span>
-    </div>
-    <div id="ftzStats"></div>
-    <div id="ftzList"><div class="note">載入中…</div></div>
+    <div id="fwStats"></div>
+    <div id="fwList"><div class="note">載入中…</div></div>
   </section>
 
   <!-- Check 下先 -->
   <section class="pg" id="pg-check">
-    <div id="ckBody"><div class="note">載入中…</div></div>
+    <div class="toolbar">
+      <label class="hint">場次 <select id="ckMatch"><option value="">載入中…</option></select></label>
+      <span class="hint" id="ckInfo"></span>
+    </div>
+    <div id="ckBody"><div class="note">揀一場即將開賽嘅賽事，即刻檢查五條件方向＋深淺分析。</div></div>
+  </section>
+
+  <!-- 事後回查 -->
+  <section class="pg" id="pg-review">
+    <div id="rvStats"></div>
+    <div id="rvList"><div class="note">載入中…</div></div>
   </section>
 
   <!-- 我的選擇 -->
@@ -230,33 +231,10 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:#6b5a14}
     <div id="pkList"><div class="note">載入中…</div></div>
   </section>
 
-  <!-- 過往賽果 -->
-  <section class="pg" id="pg-results">
-    <div class="toolbar">
-      <label class="hint">範圍
-        <select id="rsScope">
-          <option value="featured" selected>精選</option>
-          <option value="featuredz">精選Z</option>
-        </select></label>
-      <label class="hint">聯賽 <select id="rsLg"><option value="">全部</option></select></label>
-      <label class="hint">盤口 <select id="rsLn"><option value="">全部</option></select></label>
-      <label class="hint">勝負
-        <select id="rsWin">
-          <option value="" selected>全部</option>
-          <option value="win">贏超50%</option>
-          <option value="lose">輸超50%</option>
-        </select></label>
-      <span class="hint" id="rsInfo"></span>
-    </div>
-    <div id="rsBody"><div class="note">載入中…</div></div>
-  </section>
-
   <!-- 過往紀錄 -->
   <section class="pg" id="pg-featlog">
     <div class="toolbar">
-      <label class="hint">紀錄
-        <select id="flZ"><option value="" selected>精選</option><option value="1">精選Z</option></select></label>
-      <span class="hint">精選一出現即自動紀錄（尾盤快照，永久保留，計一場）</span>
+      <span class="hint">精選W 一出現即自動紀錄（尾盤快照，永久保留，計一場）</span>
     </div>
     <div id="flStats"></div>
     <div id="flList"><div class="note">載入中…</div></div>
@@ -279,12 +257,13 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:#6b5a14}
     <div class="set-doc" id="setBody"></div>
   </section>
 
-  <!-- 詳情（場次） -->
+  <!-- 詳情（場次分析 45 項） -->
   <section class="pg" id="pg-detail">
     <div class="toolbar">
       <button class="btn" id="btnBack">← 返主頁</button>
       <button class="btn warn" id="btnDetFetch">獲取賠率</button>
-      <button class="btn accent" id="btnDetRefresh">⟳ 重新整理盤口及水位</button>
+      <button class="btn accent" id="btnDetRefresh">⟳ 更新盤口及賠率</button>
+      <button class="btn gold" id="btnDetShare">⇗ 分享</button>
       <span class="hint" id="detMsg"></span>
     </div>
     <div id="detBody"><div class="note">載入中…</div></div>

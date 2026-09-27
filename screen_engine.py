@@ -948,7 +948,7 @@ def screen(conn, t, sel=None):
     T_30m = tline(odds, 'pre_30m')
     T_15m = tline(odds, 'pre_15m')
     T_5m = tline(odds, 'pre_5m')
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).replace(tzinfo=None)
     try:
         ko = datetime.datetime.strptime(str(t['kickoff'])[:19], '%Y-%m-%d %H:%M:%S')
     except Exception:
