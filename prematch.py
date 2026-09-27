@@ -133,7 +133,18 @@ def build_season(conn, season_id, category):
         for m in gms:
             stats.setdefault(m[2], _new_stats())
             stats.setdefault(m[3], _new_stats())
-        for mid, _ko, hid, aid, hs, as_, _rl in gms:
+        applied = 0     # 已套用嘅場數（嚴格 kickoff 小於當前場）
+        for mid, ko, hid, aid, hs, as_, _rl in gms:
+            # 同 calc_target_pre 完全一致：pre = 開賽時間【嚴格小於】今場嘅所有比賽。
+            # 舊版逐場 snapshot 會將同時開賽（同 kickoff）嘅比賽計埋入去，
+            # 同 app 即場計嘅口徑唔同，令池 mask 同目標 pre 自相矛盾（2026-09-28 修正）。
+            while applied < len(gms) and gms[applied][1] < ko:
+                _, _k2, h2, a2, hs2, as2, _ = gms[applied]
+                _apply(stats, h2, 'total', hs2, as2)
+                _apply(stats, h2, 'home', hs2, as2)
+                _apply(stats, a2, 'total', as2, hs2)
+                _apply(stats, a2, 'away', as2, hs2)
+                applied += 1
             snap = _snapshot(stats)
             vals = []
             for team in (hid, aid):
@@ -146,10 +157,6 @@ def build_season(conn, season_id, category):
                         if h_avg[0] is not None and a_avg[0] is not None else None)
             vals += h_avg + a_avg + [combined]
             conn.execute(UPSERT, [mid] + vals)
-            _apply(stats, hid, 'total', hs, as_)
-            _apply(stats, hid, 'home', hs, as_)
-            _apply(stats, aid, 'total', as_, hs)
-            _apply(stats, aid, 'away', as_, hs)
             n += 1
     return n
 

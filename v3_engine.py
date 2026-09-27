@@ -715,9 +715,9 @@ def _combo_mask(ctx, no):
         mode, _d = _mode_d50(df, base)
         if mode is None:
             return None
-        return v2._line_only_eq(df, 'c', {'h': mode['h_g'],
-                                          'g': None if mode['g_g'] == 'none'
-                                          else mode['g_g']})
+        return v2._line_only_eq(df, 'c', {'h': mode['h'],
+                                          'g': None if mode['g'] == 'none'
+                                          else mode['g']})
     return None
 
 
