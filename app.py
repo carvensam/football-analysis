@@ -2362,6 +2362,11 @@ def _build_v3_rec(row, now):
            'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
            'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
            'odds': f'主{ho}/客{ao}' if ho is not None else None,
+           # 上盤水位（讓球方水位；平手盤＝主隊水位）→ 前端 highlight 今場水位段
+           'up_odds': (ho if gv in ('home', None, 'none') else ao)
+                      if ho is not None else None,
+           'giver': gv,
+           'home_odds': ho, 'away_odds': ao,
            'state': 'finished' if hs is not None else (
                'live' if ko <= now else 'scheduled')}
     if detail:

@@ -122,12 +122,9 @@ def build_season(conn, season_id, category):
         "round_label FROM matches WHERE season_id=? AND home_score IS NOT NULL "
         "ORDER BY kickoff, id", (season_id,)).fetchall()
 
-    if category == '杯賽':
-        groups = {}
-        for m in matches:
-            groups.setdefault(m[6] or '', []).append(m)
-    else:
-        groups = {'': matches}
+    # 杯賽都當一個圈計：同圈往往得 1-2 場（淘汰賽），開賽前狀態會永遠計唔出，
+    # 令 21-38 項對盃賽永久「不適用」。用成個球季（所有圈）計近況先合理。
+    groups = {'': matches}
 
     n = 0
     for gms in groups.values():

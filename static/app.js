@@ -642,11 +642,18 @@ function _fwCondCell(c){
   const zr = c.zone_r ? `<br><span style="color:#ffd766">同水位區【${esc(c.zone_r.zone || '')}】${_udrates(c.zone_r.up_r, c.zone_r.down_r)}｜${c.zone_r.n}場</span>` : '';
   return `${dirTag}<br>${_ocTxt(c.oc)}${zr}`;
 }
-function _fwGapTxt(g){
+/* 水位值 → 12段水位 index（同 v3_engine.ZONES12 一致：≤0.64 / 0.65-0.69 … ≥1.15） */
+function _zone12Idx(w){
+  if (w == null || isNaN(w)) return -1;
+  if (w <= 0.64) return 0;
+  if (w >= 1.15) return 11;
+  return Math.round((w - 0.65) / 0.05) + 1;
+}
+function _fwGapTxt(g, curZ){
   if (!g || g.error) return '<span style="color:var(--dim)">不適用</span>';
   return `<span style="color:var(--dim)">今場尾盤</span> ${esc(g.cur_line || '—')}<br>` +
-    `<span style="color:var(--dim)">分佈最多</span> ` + v3GapCard(g.mode) +
-    `<span style="color:var(--dim)">最接近50%</span> ` + v3GapCard(g.d50);
+    `<span style="color:var(--dim)">分佈最多</span> ` + v3GapCard(g.mode, curZ) +
+    `<span style="color:var(--dim)">最接近50%</span> ` + v3GapCard(g.d50, curZ);
 }
 /* 回查實際：同初盤&尾盤樣本（盤口100%一樣＋水位±0.03）四個口徑嘅實際上下盤%及場次 */
 function _fwLookbackHTML(lb){
@@ -686,7 +693,7 @@ function _fwCard(p){
     <div class="gaprow"><span class="lab">本場</span>上盤＝<b>${esc(ud.up)}</b>｜下盤＝<b>${esc(ud.down)}</b>${ud.push ? '（平手盤：上盤＝平手主隊）' : ''}</div>
     <div class="grid6">${conds.map((c, i) => `<div class="gi"><div class="t">條件${i + 1}</div><div class="v">${_fwCondCell(c)}<div class="sub">${esc(c.note || '')}</div></div></div>`).join('')}</div>
     ${p.lookback ? _fwLookbackHTML(p.lookback) : ''}
-    <div class="gaprow"><span class="lab">30 淺深</span>${_fwGapTxt(p.gap30)}</div>
+    <div class="gaprow"><span class="lab">30 淺深</span>${_fwGapTxt(p.gap30, _zone12Idx(p.up_odds))}</div>
     <details style="margin-top:6px"><summary><span class="sum-t">⚽ 場次分析 45 項（全資料）</span></summary><div class="body v3-fullitems"><div class="note">載入中…</div></div></details>
   </div>`;
 }
@@ -873,7 +880,7 @@ async function runCheck(mid){
     ${anyHtml}
     <div class="grid6">${(fw.conds || []).map((c, i) => `<div class="gi"><div class="t">條件${i + 1}</div><div class="v">${_fwCondCell(c)}<div class="sub">${esc(c.note || '')}</div></div></div>`).join('')}</div>
     ${fw.lookback ? _fwLookbackHTML(fw.lookback) : ''}
-    <div class="gaprow"><span class="lab">30 淺深</span>${_fwGapTxt(fw.gap30)}</div>
+    <div class="gaprow"><span class="lab">30 淺深</span>${_fwGapTxt(fw.gap30, _zone12Idx(t.line && t.line.line ? (t.line.line.indexOf('客讓') === 0 ? t.line.ao : t.line.ho) : null))}</div>
     <div class="note">Check 下先＝對任一場即將開賽賽事，即場重算精選W 六條件（1A／1I／19同主客／19+互換／31／35）：每條件要全庫該方向≥50% 先有方向；六條方向一致即話你知邊邊係目前數據偏向。之後用 29 樣本（上賽完全相同）做淺深分析：今場尾盤 對 分佈最多盤口 及 上盤勝率最接近50%盤口，深咗／淺咗／一樣，連全部水位區嘅勝率場次。</div>
   </div>`;
   body.innerHTML = h;

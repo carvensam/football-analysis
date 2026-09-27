@@ -371,16 +371,11 @@ def get_target(conn, match_id):
 def calc_target_pre(conn, t):
     """與 prematch.py 同口徑計算目標賽事開賽前 43 項（含勝和負）"""
     import prematch
-    if t['category'] == '杯賽':
-        rows = conn.execute(
-            'SELECT id, kickoff, home_id, away_id, home_score, away_score FROM matches '
-            'WHERE season_id=? AND home_score IS NOT NULL AND round_label IS ? '
-            'ORDER BY kickoff, id', (t['season_id'], t['round_label'])).fetchall()
-    else:
-        rows = conn.execute(
-            'SELECT id, kickoff, home_id, away_id, home_score, away_score FROM matches '
-            'WHERE season_id=? AND home_score IS NOT NULL ORDER BY kickoff, id',
-            (t['season_id'],)).fetchall()
+    # 杯賽都計成個球季（所有圈）：同圈往往得 1-2 場，淨計同圈會永遠冇開賽前狀態
+    rows = conn.execute(
+        'SELECT id, kickoff, home_id, away_id, home_score, away_score FROM matches '
+        'WHERE season_id=? AND home_score IS NOT NULL ORDER BY kickoff, id',
+        (t['season_id'],)).fetchall()
     stats = {}
     for _id, _ko, hid, aid, _hs, _aws in rows:
         stats.setdefault(hid, prematch._new_stats())
