@@ -635,6 +635,15 @@ async function initV3Section(mid) {
 }
 
 /* ================= 精選W ================= */
+/* Any5／Any4 每條件嘅 % 細節（同六項全中格式一致：上下盤%＋場次＋同水位區%） */
+function _anyDetail(x, conds){
+  return (x.which || []).map(nm => {
+    const c = (conds || []).find(c => (c.note || '').split('：')[0] === nm);
+    if (!c || !c.oc) return `<span style="color:var(--dim)">${esc(nm)}：無數據</span>`;
+    const zr = c.zone_r ? ` <span style="color:#ffd766">同水位區【${esc(c.zone_r.zone || '')}】${_udrates(c.zone_r.up_r, c.zone_r.down_r)}｜${c.zone_r.n}場</span>` : '';
+    return `<span>${esc(nm)}：${_ocTxt(c.oc)}${zr}</span>`;
+  }).join('<br>');
+}
 function _fwCondCell(c){
   if (!c) return '<span style="color:var(--dim)">—</span>';
   if (!c.oc) return `<span style="color:var(--dim)">${esc(c.note || '無數據')}</span>`;
@@ -732,9 +741,9 @@ async function loadFeaturedW(){
     const nearCard = n => {
       const dirName = x => x === 'up' ? '上盤' : '下盤';
       const a5 = (n.any5 || []).map(x =>
-        `<div>⚡ Any 5 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）</div>`).join('');
+        `<div>⚡ Any 5 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, n.conds)}</div></div>`).join('');
       const a4 = (n.any4 || []).map(x =>
-        `<div>🔸 Any 4 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）</div>`).join('');
+        `<div>🔸 Any 4 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, n.conds)}</div></div>`).join('');
       return `<div class="mrow" data-mid="${n.id}">
         <span class="ko">${esc((n.kickoff || '').slice(5, 16))}</span>
         <span class="lg">${esc(n.league || '')}</span>
@@ -868,9 +877,9 @@ async function runCheck(mid){
   let anyHtml = '';
   if (!fw.pass) {
     const a5 = (fw.any5 || []).map(x =>
-      `<div>⚡ Any 5 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）</div>`).join('');
+      `<div>⚡ Any 5 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, fw.conds)}</div></div>`).join('');
     const a4 = (fw.any4 || []).map(x =>
-      `<div>🔸 Any 4 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）</div>`).join('');
+      `<div>🔸 Any 4 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, fw.conds)}</div></div>`).join('');
     anyHtml = (a5 || a4)
       ? `<div class="gaprow"><span class="lab">近合格</span>${a5}${a4}</div>` : '';
   }

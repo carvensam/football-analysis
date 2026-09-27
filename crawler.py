@@ -262,8 +262,33 @@ def log(conn, level, msg):
 
 
 # ---------------------------------------------------------------- 爬取器
+# 公共中繼後備通道：直接連線失敗時，由中繼伺服器代抓目標頁。
+# （2026-09-28：titan007 數據主機 61.143.225.x 曾全機房中斷，全球連唔到，
+#   故此直接連線同中繼會同時失敗；但若是單一網絡/地區封鎖，中繼可以救返。
+#   兩條通道都係免費公共服務，無需 API key。）
+RELAYS = [
+    'https://api.allorigins.win/raw?url={q}',
+    'https://api.codetabs.com/v1/proxy?quest={q}',
+]
+DIRECT_TIMEOUT = 10          # 直接連線逾時（秒）
+RELAY_TIMEOUT = 8            # 中繼逾時（秒）
+FAIL_COOLDOWN_SEC = 300      # 主機連續失敗後冷卻期（秒）——冷卻期內直接行中繼
+CONN_BACKOFF_MAX = 30        # 連線錯誤退避上限（秒）——取代以往「休息 8 分鐘」
+
+
+def data_host_probe(timeout=6):
+    """快速探測 titan007 數據主機是否復活（供自動重試用）。"""
+    import urllib.parse
+    probe_url = 'https://vip.titan007.com/changeDetail/handicap.aspx?id=1&companyid=12'
+    try:
+        r = requests.get(probe_url, headers=HEADERS, timeout=timeout)
+        return r.status_code in (200, 404)   # 有回應（就算 404）都當主機活返
+    except requests.RequestException:
+        return False
+
+
 class Fetcher:
-    """帶限流與被封偵測的抓取器"""
+    """帶限流、被封偵測、中繼後備同電路斷路嘅抓取器"""
 
     def __init__(self, conn, cfg, state_prefix=''):
         self.conn = conn
@@ -273,6 +298,9 @@ class Fetcher:
         self.pk = f'{state_prefix}req_count'      # 計數鍵前綴（不同爬蟲分開計）
         self.req_count = int(self._state(self.pk, '0'))
         self.last_req_time = 0.0
+        self.fail_streak = {}        # host -> 連續失敗次數
+        self.host_down_until = {}    # host -> 冷卻期截止 timestamp
+        self.last_error = None       # 最近一次失敗原因（供上層回報用戶）
 
     def _state(self, k, default=None):
         r = self.conn.execute('SELECT v FROM crawl_state WHERE k=?', (k,)).fetchone()
@@ -288,9 +316,54 @@ class Fetcher:
         time.sleep(minutes * 60)
         log(self.conn, 'INFO', '休息完畢，繼續爬取')
 
+    # ---- 電路斷路（2026-09-28 加）：主機連續死 → 冷卻期內直接行中繼 ----
+    def _note_fail(self, host, err):
+        self.last_error = str(err)
+        self.fail_streak[host] = self.fail_streak.get(host, 0) + 1
+        if self.fail_streak[host] >= 2:
+            self.host_down_until[host] = time.time() + FAIL_COOLDOWN_SEC
+
+    def _note_ok(self, host):
+        self.fail_streak[host] = 0
+        self.host_down_until.pop(host, None)
+        self.last_error = None
+
+    def _via_relay(self, url, encoding):
+        """經公共中繼代抓；全部失敗回傳 None。"""
+        import urllib.parse
+        q = urllib.parse.quote(url, safe='')
+        for relay in RELAYS:
+            try:
+                r = self.s.get(relay.format(q=q), timeout=RELAY_TIMEOUT)
+                if r.status_code != 200:
+                    continue
+                r.encoding = encoding
+                t = r.text
+                # 中繼錯誤回應（如 522 錯誤頁）好短，當失敗
+                if len(t) < 50 and ('jsData' in url or 'titan007' in url):
+                    continue
+                return t
+            except requests.RequestException:
+                continue
+        return None
+
+    def _check_page(self, text, url, is_odds_page):
+        """統一頁面檢查；回傳 (結果, 是否異常短)。"""
+        if is_odds_page and ('頁面不存在' in text or '页面不存在' in text):
+            return 'NO_DATA', False
+        if is_odds_page and not text.strip():
+            # 盤口頁空回應 = 該公司無此盤（如馬會半場盤），屬正常無數據
+            return 'NO_DATA', False
+        if len(text) < 50 and ('jsData' in url or 'vip.titan007' in url):
+            return None, True
+        return text, False
+
     def get(self, url, encoding='utf-8', referer=None, is_odds_page=False):
+        from urllib.parse import urlparse
         delay = self.cfg['request_delay_sec']
         max_req = self.cfg['max_requests_before_rest']
+        host = urlparse(url).netloc
+        conn_fails = [0]
         for attempt in range(self.cfg.get('blocked_retry_times', 3) + 1):
             # 請求間隔
             wait = delay - (time.time() - self.last_req_time)
@@ -302,33 +375,65 @@ class Fetcher:
                 self.req_count = 0
                 self._set_state(self.pk, 0)
             headers = {'Referer': referer} if referer else {}
+
+            # 冷卻期內：跳過直接連線，直接行中繼（快閃失敗，唔再癱瘓）
+            if time.time() < self.host_down_until.get(host, 0):
+                t = self._via_relay(url, encoding)
+                if t is not None:
+                    out, _short = self._check_page(t, url, is_odds_page)
+                    if out is not None:
+                        self._note_ok(host)
+                        return out
+                self.last_error = (f'{host} 數據伺服器暫時中斷，中繼後備都連唔到 '
+                                   f'（自動重試緊，現有數據不受影響）')
+                return None
+
             try:
-                r = self.s.get(url, headers=headers, timeout=30)
+                r = self.s.get(url, headers=headers, timeout=DIRECT_TIMEOUT)
                 self.last_req_time = time.time()
                 self.req_count += 1
                 self._set_state('req_count', self.req_count)
             except requests.RequestException as e:
-                log(self.conn, 'WARN', f'連線錯誤 {e}，休息 {self.cfg["rest_minutes"]} 分鐘')
-                self._rest(self.cfg['rest_minutes'], '連線異常')
+                self._note_fail(host, e)
+                log(self.conn, 'WARN', f'連線錯誤 {e}；改行中繼後備')
+                t = self._via_relay(url, encoding)
+                if t is not None:
+                    out, _ = self._check_page(t, url, is_odds_page)
+                    if out is not None:
+                        self._note_ok(host)
+                        return out
+                # 直接+中繼都死：連線錯誤最多兩輪（約 60 秒內快閃），
+                # 之後靠電路斷路冷卻期擋住，唔再逐次重試
+                conn_fails[0] += 1
+                if conn_fails[0] >= 2:
+                    self.last_error = (f'{host} 數據伺服器暫時中斷，中繼後備都連唔到 '
+                                       f'（已排定每 5 分鐘自動重試，現有數據不受影響）')
+                    return None
+                time.sleep(5)
                 continue
             if r.status_code != 200:
                 log(self.conn, 'WARN', f'HTTP {r.status_code}：{url}')
                 if r.status_code in (403, 429, 442):
                     self._rest(self.cfg['rest_minutes'], f'疑似被封（HTTP {r.status_code}）')
                     continue
+                self._note_fail(host, f'HTTP {r.status_code}')
                 return None
+            self._note_ok(host)
             r.encoding = encoding
             text = r.text
-            if is_odds_page and ('頁面不存在' in text or '页面不存在' in text):
-                return 'NO_DATA'
-            if is_odds_page and not text.strip():
-                # 盤口頁空回應 = 該公司無此盤（如馬會半場盤），屬正常無數據
-                return 'NO_DATA'
-            if len(text) < 50 and ('jsData' in url or 'vip.titan007' in url):
-                self._rest(self.cfg['rest_minutes'],
-                           f'回應異常過短（疑似被封）：{url}')
+            out, short = self._check_page(text, url, is_odds_page)
+            if short:
+                # 回應異常過短（疑似被封）：試一次中繼先放棄
+                self._note_fail(host, '回應異常過短（疑似被封）')
+                t = self._via_relay(url, encoding)
+                if t is not None:
+                    out2, short2 = self._check_page(t, url, is_odds_page)
+                    if not short2:
+                        self._note_ok(host)
+                        return out2
+                log(self.conn, 'WARN', f'回應異常過短（疑似被封）：{url}')
                 continue
-            return text
+            return out
         return None
 
 

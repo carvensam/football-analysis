@@ -143,7 +143,11 @@ def do_fetch(mid, force=False):
         ok = crawler.crawl_odds_for_match(conn, fetcher, mid, row[0], 12)
         conn.close()
         _last_fetch[mid] = time.time()
-        return {'ok': bool(ok)}
+        if ok:
+            return {'ok': True}
+        err = (getattr(fetcher, 'last_error', None)
+               or 'titan007 無回應（數據伺服器可能暫時中斷，已排定自動重試）')
+        return {'ok': False, 'error': err}
 
 
 # ============ 一鍵更新賽事（賽果＋新場次＋已存在場次嘅盤口及賠率全部刷新） ============
@@ -161,17 +165,30 @@ def _update_worker():
     cfg['rest_minutes'] = 0
     conn = sqlite3.connect(DB_PATH, timeout=180)
     ok = False
+    # 開工前快測數據主機；死緊就即刻收工，唔好逐場捱逾時（watchdog 會自動重試）
+    if not crawler.data_host_probe():
+        _update_state['error'] = ('titan007 數據伺服器暫時中斷——已排定每 5 分鐘自動重試，'
+                                  '復活後會自動更新，現有數據不受影響')
+        _update_state['running'] = False
+        _update_state['phase'] = ''
+        _update_state['last_done'] = time.time()
+        print('[update] 數據主機中斷，本次更新跳過（自動重試緊）', flush=True)
+        conn.close()
+        return
     try:
         # ① 賽果＋新場次＋最近三日補盤口（各聯賽現行賽季檔）
         st = crawler.recent_update(
             conn, cfg, days=3,
             progress=lambda m: _update_state.update(phase=m))
         _update_state['last_result'] = st
-        # ② 已存在場次嘅盤口＋賠率全部強制刷新（未開賽且已有盤口嘅，最近開賽排先）
+        # ② 已存在場次嘅盤口＋賠率全部強制刷新：
+        #    未開賽（最近開賽排先）＋ 進行中（開賽後 4 小時內、未有賽果）——
+        #    進行中場次尾盤會隨賽事變化，必須一齊刷新（用戶 2026-09-28 指示）
         todo = conn.execute(
             'SELECT m.id, m.kickoff FROM matches m '
             'WHERE m.home_score IS NULL '
-            "AND m.kickoff >= datetime('now','+8 hours') "
+            "AND (m.kickoff >= datetime('now','+8 hours') "
+            "OR m.kickoff >= datetime('now','+8 hours','-4 hours')) "
             'AND EXISTS(SELECT 1 FROM odds_asian o '
             'WHERE o.match_id=m.id AND o.company_id=12) '
             'ORDER BY m.kickoff').fetchall()
@@ -2299,11 +2316,17 @@ def _v3_featured_scan_job():
                         'JOIN competitions c ON c.titan_id=s.titan_id '
                         'WHERE m.id=?', (mid,)).fetchone()
                     if info:
+                        # 每條件嘅方向/% 一併帶上，前端 Any5/Any4 先顯示到
+                        # 同六項全中一樣嘅 % 細節（用戶 2026-09-28 指示）
+                        slim_conds = [{'dir': c.get('dir'), 'note': c.get('note'),
+                                       'oc': c.get('oc'), 'zone_r': c.get('zone_r')}
+                                      for c in (fw.get('conds') or [])]
                         _v3_scan['near'].append({
                             'id': mid, 'kickoff': info[0], 'home': info[1],
                             'away': info[2], 'league': info[3],
                             'any5': fw.get('any5') or [],
-                            'any4': fw.get('any4') or []})
+                            'any4': fw.get('any4') or [],
+                            'conds': slim_conds})
             except Exception:
                 import traceback
                 traceback.print_exc()
@@ -3103,5 +3126,27 @@ if __name__ == '__main__':
         except Exception:
             import traceback
             traceback.print_exc()
+    # 數據商斷線自動重試（2026-09-28）：每 5 分鐘探測 titan007 數據主機；
+    # 發現復活即自動觸發全量更新——用戶無需理會，連線問題自己搞掂
+    def _data_host_watchdog():
+        import crawler as _cr
+        down_since = None
+        while True:
+            time.sleep(300)
+            try:
+                alive = _cr.data_host_probe()
+                if alive and down_since is not None:
+                    print(f'[watchdog] titan007 數據主機已復活（曾中斷 '
+                          f'{int(time.time() - down_since) // 60} 分鐘），'
+                          f'自動開始全量更新…', flush=True)
+                    down_since = None
+                    do_update(auto=True)
+                elif not alive and down_since is None:
+                    down_since = time.time()
+                    print('[watchdog] titan007 數據主機暫時中斷，'
+                          '每 5 分鐘自動重試直至復活', flush=True)
+            except Exception:
+                pass
+    threading.Thread(target=_data_host_watchdog, daemon=True).start()
     threading.Timer(5, _boot_auto_update).start()
     httpd.serve_forever()
