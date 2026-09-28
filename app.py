@@ -2716,6 +2716,106 @@ def get_fwcheck_full(g):
         return json.load(f)
 
 
+def api_fwcheck_target(mid, g):
+    """Check 一下 7/8/12 單場檢驗：格方向＋情境歸類＋嗰個情境嘅歷史開出率。"""
+    import fw_grid_engine
+    conn = db()
+    try:
+        t = screen_engine.get_target(conn, mid)
+        if not t:
+            return {'error': '找不到賽事'}
+        rep = fw_grid_engine.grid_report(conn, t, g)
+        out = {'ok': True, 'grid': g, 'report': rep}
+        key = (rep.get('scenario') or {}).get('key')
+        if key:
+            tbl = get_fwcheck_full(g)
+            for s in (tbl.get('scenarios') or []):
+                if f"{s['dir']}|{s['mode_gap']}|{s['d50_gap']}" == key:
+                    out['scenario_stats'] = s
+                    break
+        return out
+    finally:
+        conn.close()
+
+
+# ============ 命中率回查（各規則喺全庫／同聯賽嘅實際命中率） ============
+_fwgrid_hr_cache = {'ts': 0, 'data': None}
+FWGRID_HR_CACHE_TTL = 600
+
+
+def _fwgrid_hr_load():
+    now = time.time()
+    if _fwgrid_hr_cache['data'] is not None and \
+            now - _fwgrid_hr_cache['ts'] < FWGRID_HR_CACHE_TTL:
+        return _fwgrid_hr_cache['data']
+    p = os.path.join(BASE_DIR, '_fwgrid_hr.json')
+    data = {}
+    if os.path.exists(p):
+        with open(p, encoding='utf-8') as f:
+            data = json.load(f)
+    _fwgrid_hr_cache.update(ts=now, data=data)
+    return data
+
+
+def get_fwx_hr():
+    """精選W（六條件）歷史入選場嘅實際命中率：全庫＋分聯賽／杯賽。
+    走盤計入場數、命中計 0（同 _fwgrid_hr.json 口徑一致）。"""
+    conn = db()
+    try:
+        rows = conn.execute(
+            'SELECT l.direction, m.home_score, m.away_score, '
+            'l.handicap, l.giver, c.req_name '
+            'FROM v3_featured_log l JOIN matches m ON m.id=l.match_id '
+            'JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'WHERE m.home_score IS NOT NULL').fetchall()
+    finally:
+        conn.close()
+    out = {'all': {'up': [0, 0], 'down': [0, 0]}, 'leagues': {}}
+    for d, hs, aws, hc, gv, lg in rows:
+        r = pick_result(hc, gv, hs, aws)
+        if r is None:
+            continue
+        hit = 1 if ((r == 'A') == (d == 'up')) else 0
+        for scope in (out['all'], out['leagues'].setdefault(
+                lg or '', {'up': [0, 0], 'down': [0, 0]})):
+            scope[d][0] += 1
+            scope[d][1] += hit
+    return out
+
+
+def api_hitrate(kind, mid):
+    """kind = fw7／fw8／fw12（格組合歷史命中率）或 fwx（精選W 六條件）；
+    mid 用嚟搵場次所屬聯賽，回傳全庫＋同聯賽／杯賽口徑。
+    每個方向 [場數, 命中]；命中率＝命中÷場數（走盤計場數唔計命中）。"""
+    kind = (kind or '').lower()
+    conn = db()
+    try:
+        row = conn.execute(
+            'SELECT c.req_name FROM matches m '
+            'JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id WHERE m.id=?',
+            (mid,)).fetchone()
+        lg = row[0] if row else None
+    finally:
+        conn.close()
+    if kind in ('fw7', 'fw8', 'fw12'):
+        d = (_fwgrid_hr_load() or {}).get(kind[2:], {})
+    elif kind == 'fwx':
+        d = get_fwx_hr()
+    else:
+        return {'error': '未知類型：' + kind}
+
+    def pick(scope):
+        scope = scope or {}
+        return {'up': list(scope.get('up', [0, 0])),
+                'down': list(scope.get('down', [0, 0]))}
+
+    return {'ok': True, 'kind': kind, 'league': lg,
+            'all': pick(d.get('all')),
+            'league_stats': pick((d.get('leagues') or {}).get(lg))}
+
+
 # ============ 聯賽預測（逐聯賽 >78% 規則，_lg_preds.json 離線挖掘） ============
 _lgpred_cache = {'ts': 0, 'data': None}
 LG_PRED_CACHE_TTL = 600
@@ -3131,9 +3231,36 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/fwcheck/target':
+            try:
+                q = parse_qs(u.query)
+                g = q.get('g', ['7'])[0]
+                mid = int(q.get('id', ['0'])[0])
+                if g not in ('7', '8', '12'):
+                    self._send(400, json.dumps({'error': 'g 只可以係 7/8/12'}))
+                    return
+                self._send(200, json.dumps(api_fwcheck_target(mid, g),
+                                           ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         if u.path == '/api/lgpred':
             try:
                 self._send(200, json.dumps(api_lgpred(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/hitrate':
+            try:
+                q = parse_qs(u.query)
+                kind = (q.get('kind') or [''])[0]
+                mid = int((q.get('id') or ['0'])[0] or 0)
+                self._send(200, json.dumps(api_hitrate(kind, mid),
+                                           ensure_ascii=False, default=_jdefault))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
