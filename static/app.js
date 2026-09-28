@@ -281,8 +281,8 @@ function _stateTag(st){
   return '';
 }
 function _mrow(m, playedSec){
-  const line = m.line ? `<div class="ln"><b>${esc(m.line.line)}</b><br>主${m.line.ho != null ? m.line.ho.toFixed(2) : '—'}/客${m.line.ao != null ? m.line.ao.toFixed(2) : '—'}</div>` : '<div class="ln">無盤</div>';
-  const od = playedSec ? '' : (m.has_odds
+  const line = m.line ? `<div class="ln"><b>${esc(m.line.line)}</b>${m.line.src === 'crown' ? '<span class="tag dim" style="font-size:10px">Crown</span>' : ''}<br>主${m.line.ho != null ? m.line.ho.toFixed(2) : '—'}/客${m.line.ao != null ? m.line.ao.toFixed(2) : '—'}</div>` : '<div class="ln">無盤</div>';
+  const od = playedSec ? '' : ((m.has_odds || (m.line && m.line.src === 'crown'))
     ? `<span class="od has">已有賠率</span>`
     : '<span class="od">未獲取賠率</span>');
   const sc = m.score ? `<span class="sc">${esc(m.score)}</span>` : '';
@@ -398,7 +398,7 @@ async function openDetail(mid){
   const t = res.target;
   setV3UD(t);
   const lb = (title, o) => `<div class="linebox"><div class="lb-t">${title}</div>` +
-    (o ? `<div class="lb-v">${esc(o.line)}<br><small>主${o.ho != null ? o.ho.toFixed(2) : '—'}/客${o.ao != null ? o.ao.toFixed(2) : '—'}</small></div>` : '<div class="lb-v" style="color:var(--dim)">無數據</div>') + '</div>';
+    (o ? `<div class="lb-v">${esc(o.line)}${o.src === 'crown' ? '<span class="tag dim" style="font-size:10px">Crown</span>' : ''}<br><small>主${o.ho != null ? o.ho.toFixed(2) : '—'}/客${o.ao != null ? o.ao.toFixed(2) : '—'}</small></div>` : '<div class="lb-v" style="color:var(--dim)">無數據</div>') + '</div>';
   const stateTxt = t.state === 'finished' ? '已完場' : t.state === 'live' ? '進行中' : '未開賽';
   let h = `<div class="tcard">
     <h2>${esc(rn(t.home, t.rank_home))} <span style="color:var(--dim)">vs</span> ${esc(rn(t.away, t.rank_away))}</h2>

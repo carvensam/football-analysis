@@ -5,12 +5,10 @@
   "seasons_complete": 5,
   "include_current_season": true,
   "request_delay_sec": 0.7,
-  "rest_tiers": [[5000, 30], [1000, 2], [100, 1]],
   "timeout_cooldown_sec": 30,
-  "rest_minutes": 8,
-  "blocked_retry_times": 3,
-  "discover_sub_leagues": true,
   "proxy_req_budget": 650,
   "proxy_ban_cooldown_sec": 360,
+  "blocked_retry_times": 3,
+  "discover_sub_leagues": true,
   "log_file": "logs/crawler.log"
 }

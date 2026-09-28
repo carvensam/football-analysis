@@ -932,6 +932,10 @@ def crawl_odds_for_match(conn, fetcher, match_id, kickoff_str, company_id):
         return True
     timeline = parse_odds_html(html, kickoff)
     snaps = derive_snapshots(timeline, kickoff)
+    if not snaps:
+        # 頁面存在但仲未開盤（得個殼冇賠率列）：唔標 odds_done，
+        # 下次更新會再試（舊版當成功，搞到永遠跳過呢啲場）
+        return False
     for label, _ in SNAPSHOTS:
         if label not in snaps:
             continue

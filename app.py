@@ -86,6 +86,7 @@ def upcoming(hours=48):
         "SELECT m.id, c.req_name, m.kickoff, ht.name_tc, at.name_tc, m.odds_done, "
         "EXISTS(SELECT 1 FROM odds_asian oa WHERE oa.match_id=m.id AND oa.company_id=12), "
         "oc.handicap, oc.giver, oc.home_odds, oc.away_odds, "
+        "oc3.handicap, oc3.giver, oc3.home_odds, oc3.away_odds, "
         "COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) "
         "FROM matches m JOIN seasons s ON s.id=m.season_id "
         "JOIN competitions c ON c.titan_id=s.titan_id "
@@ -93,6 +94,9 @@ def upcoming(hours=48):
         "JOIN teams at ON at.titan_id=m.away_id "
         "LEFT JOIN odds_asian oc ON oc.match_id=m.id AND oc.company_id=12 "
         "AND oc.label='closing' "
+        # Crown(3) 後備：易胜博未開盤嘅場次照顯示盤口（標明來源）
+        "LEFT JOIN odds_asian oc3 ON oc3.match_id=m.id AND oc3.company_id=3 "
+        "AND oc3.label='closing' "
         "LEFT JOIN match_prestandings ps ON ps.match_id=m.id "
         "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
         "AND hr.scope='total' AND hr.grp='' "
@@ -101,11 +105,14 @@ def upcoming(hours=48):
         "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','+8 hours') "
         + cap + "ORDER BY m.kickoff", args).fetchall()
     out = []
-    for mid, lg, ko, h, a, od, has, hc, gv, ho, ao, hr_, ar_ in rows:
+    for mid, lg, ko, h, a, od, has, hc, gv, ho, ao, c3h, c3g, c3ho, c3ao, hr_, ar_ in rows:
         line = None
         if hc is not None:
             line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao,
                     'giver': gv or 'none'}
+        elif c3h is not None:
+            line = {'line': screen_engine.fmt_line(c3h, c3g), 'ho': c3ho, 'ao': c3ao,
+                    'giver': c3g or 'none', 'src': 'crown'}
         out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
                     'has_odds': bool(has), 'line': line,
                     'rank_home': hr_, 'rank_away': ar_,
@@ -226,19 +233,27 @@ def _update_worker():
             "AND m.kickoff <= datetime('now','+8 hours','+72 hours') "
             'AND NOT EXISTS(SELECT 1 FROM odds_asian o '
             'WHERE o.match_id=m.id AND o.company_id=12) '
+            # 有咗 Crown 後備嘅都唔再重複爬
+            'AND NOT EXISTS(SELECT 1 FROM odds_asian o3 '
+            'WHERE o3.match_id=m.id AND o3.company_id=3) '
             'ORDER BY m.kickoff').fetchall()
-        n_fill_ok = n_fill_fail = 0
+        n_fill_ok = n_fill_fail = n_fill_crown = 0
         for i, (mid, ko) in enumerate(todo2):
             _update_state['phase'] = (
                 f'補爬缺少盤口嘅場次 {i + 1}/{len(todo2)}')
             try:
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
                     n_fill_ok += 1
+                elif crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 3):
+                    # 易胜博未開盤 → Crown(3) 後備（顯示用，V3 分析照舊 12）
+                    n_fill_crown += 1
                 else:
                     n_fill_fail += 1
             except Exception:
                 n_fill_fail += 1
-        st['odds_fill'] = f'{n_fill_ok} 場成功 / {n_fill_fail} 場失敗'
+        st['odds_fill'] = (f'{n_fill_ok} 場成功 / {n_fill_fail} 場失敗'
+                           + (f' / {n_fill_crown} 場 Crown 後備'
+                              if n_fill_crown else ''))
         _update_state['error'] = None
         print(f"[update] 完成：{st}", flush=True)
         ok = True
@@ -2141,6 +2156,25 @@ def api_v3_target(mid):
             return {'line': screen_engine.fmt_line(T['h'], T.get('g')),
                     'ho': T.get('ho'), 'ao': T.get('ao'), 'g': T.get('g')}
 
+        def crown_box(label):
+            # 易胜博(12) 未開盤 → Crown(3) 後備，標明來源（顯示用；V3 分析照舊用 12）
+            r = conn.execute(
+                'SELECT handicap, giver, home_odds, away_odds FROM odds_asian '
+                'WHERE match_id=? AND company_id=3 AND label=?',
+                (mid, label)).fetchone()
+            if not r or r[0] is None:
+                return None
+            return {'line': screen_engine.fmt_line(r[0], r[1]),
+                    'ho': r[2], 'ao': r[3], 'g': r[1], 'src': 'crown'}
+
+        boxes = {}
+        for _lb, _key in (('closing', 'close'), ('initial', 'init'),
+                          ('pre_4h', 'h4'), ('pre_30m', 'h30'),
+                          ('pre_15m', 'h15'), ('pre_10m', 'h10'),
+                          ('pre_5m', 'h5')):
+            _b = box(_lb)
+            boxes[_key] = _b if _b is not None else crown_box(_lb)
+
         hr = (t.get('pre') or {}).get('home_total_rank')
         ar = (t.get('pre') or {}).get('away_total_rank')
         if not hr:
@@ -2167,10 +2201,10 @@ def api_v3_target(mid):
                            'rank_home': hr, 'rank_away': ar,
                            'league': t.get('league'), 'category': t.get('category'),
                            'kickoff': t['kickoff'], 'state': state, 'score': score,
-                           'close': box('closing'), 'init': box('initial'),
-                           'h4': box('pre_4h'), 'h30': box('pre_30m'),
-                           'h15': box('pre_15m'), 'h10': box('pre_10m'),
-                           'h5': box('pre_5m')}}
+                           'close': boxes['close'], 'init': boxes['init'],
+                           'h4': boxes['h4'], 'h30': boxes['h30'],
+                           'h15': boxes['h15'], 'h10': boxes['h10'],
+                           'h5': boxes['h5']}}
     finally:
         conn.close()
 
@@ -3823,7 +3857,9 @@ def _result_catchup_once():
         'SELECT m.id, s.titan_id FROM matches m '
         'JOIN seasons s ON s.id=m.season_id '
         'WHERE m.home_score IS NULL '
-        "AND m.kickoff <= datetime('now','+8 hours','-2 hours 30 minutes') "
+        # SQLite datetime modifier 唔支援複合單位（'2 hours 30 minutes'→NULL，
+        # 會令條件永假、巡邏永遠 0 候選）——用 '-150 minutes'
+        "AND m.kickoff <= datetime('now','+8 hours','-150 minutes') "
         "AND (m.kickoff >= datetime('now','+8 hours','-10 days') "
         '     OR m.id IN (SELECT match_id FROM v3_featured WHERE result IS NULL '
         '                 UNION SELECT match_id FROM v3_featured_log '
@@ -3974,9 +4010,27 @@ if __name__ == '__main__':
                     stale = (dt.datetime.now(dt.timezone(dt.timedelta(hours=8))).replace(tzinfo=None) - t).total_seconds() > 12 * 3600
                 except Exception:
                     stale = True
+            # 賽果新鮮 ≠ 即將開賽場次有盤口：未來24小時場次缺尾盤都當 stale，
+            # 否則 backfill 一 bump updated_at，開機就會跳過更新，即場場次永遠冇賠率
+            if not stale:
+                conn = db()
+                miss = conn.execute(
+                    "SELECT COUNT(*) FROM matches m WHERE m.home_score IS NULL "
+                    "AND m.kickoff >= datetime('now','+8 hours','-1 hours') "
+                    "AND m.kickoff <= datetime('now','+8 hours','+24 hours') "
+                    "AND NOT EXISTS(SELECT 1 FROM odds_asian o "
+                    "WHERE o.match_id=m.id AND o.company_id=12 "
+                    "AND o.label='closing')").fetchone()[0]
+                conn.close()
+                if miss:
+                    stale = True
+                    print('[boot] 未來24小時有 %d 場缺尾盤，照樣觸發更新' % miss,
+                          flush=True)
             if stale:
                 print('[boot] 數據快照過舊（%s），自動開始更新…' % latest, flush=True)
-                do_update(auto=True)
+                # 人手模式跳過 30 分鐘節流：boot 先至行一次，唔會狂loop；
+                # auto=True 會因上次失敗更新嘅 last_done 誤判跳過
+                do_update(auto=False)
             else:
                 print('[boot] 數據新鮮（%s），跳過自動更新' % latest, flush=True)
         except Exception:
