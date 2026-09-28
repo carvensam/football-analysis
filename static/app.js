@@ -90,7 +90,7 @@ async function refreshConnChip(){
     _connState = 'ok';
     const upd = h.last_data_update ? h.last_data_update.slice(5, 16) : '—';
     if (h.data_host_ok === false)
-      _setConnChip('warn', `🟠 數據主機中斷・最後更新 ${upd}（每5分鐘自動重試）`);
+      _setConnChip('warn', `🟠 數據主機中斷・最後更新 ${upd}（30 秒後自動重試）`);
     else
       _setConnChip('ok', `🟢 連線正常・數據更新於 ${upd}`);
   } catch (e) {

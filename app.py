@@ -52,7 +52,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.0.4'
+SERVER_VERSION = '5.0.5'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -64,10 +64,8 @@ def get_crawler():
         # config.json 跟 crawler.py 同一目錄（本機=工作區根；雲端=/app）
         with open(os.path.join(crawler.BASE_DIR, 'config.json'), encoding='utf-8') as f:
             cfg = json.load(f)
-        # APP 即場抓取：禁用爬蟲的長時間休息（永不觸發 700 次/15分鐘 限流），
-        # 保留每次請求間隔以免被封
-        cfg['max_requests_before_rest'] = 999999999
-        cfg['rest_minutes'] = 0
+        # APP 即場抓取：限流跟 config.json 分層休息方案（2026-09-29），
+        # 只將被封重試次數調低，令失敗快閃
         cfg['blocked_retry_times'] = 1
         conn = sqlite3.connect(DB_PATH)
         _local.fetcher = crawler.Fetcher(conn, cfg)
@@ -156,8 +154,10 @@ def do_fetch(mid, force=False):
             return {'ok': False, 'error': '找不到賽事'}
         ok = crawler.crawl_odds_for_match(conn, fetcher, mid, row[0], 12)
         conn.close()
-        _last_fetch[mid] = time.time()
+        # 失敗唔緩存（2026-09-29）：冷卻期內被拒絕嘅請求唔記錄時間，
+        # 下次撳掣即刻重試，唔會俾 120 秒快取擋住
         if ok:
+            _last_fetch[mid] = time.time()
             return {'ok': True}
         err = (getattr(fetcher, 'last_error', None)
                or 'titan007 無回應（數據伺服器可能暫時中斷，已排定自動重試）')
@@ -175,13 +175,12 @@ def _update_worker():
     import crawler
     with open(os.path.join(crawler.BASE_DIR, 'config.json'), encoding='utf-8') as f:
         cfg = json.load(f)
-    cfg['max_requests_before_rest'] = 999999999
-    cfg['rest_minutes'] = 0
+    # 限流跟 config.json 分層休息方案（2026-09-29），唔再禁用休息
     conn = sqlite3.connect(DB_PATH, timeout=180)
     ok = False
     # 開工前快測數據主機；死緊就即刻收工，唔好逐場捱逾時（watchdog 會自動重試）
     if not crawler.data_host_probe():
-        _update_state['error'] = ('titan007 數據伺服器暫時中斷——已排定每 5 分鐘自動重試，'
+        _update_state['error'] = ('titan007 數據伺服器暫時中斷——已排定每 30 秒自動重試，'
                                   '復活後會自動更新，現有數據不受影響')
         _update_state['running'] = False
         _update_state['phase'] = ''
@@ -292,8 +291,7 @@ def _window_update_worker(win):
     import crawler
     with open(os.path.join(crawler.BASE_DIR, 'config.json'), encoding='utf-8') as f:
         cfg = json.load(f)
-    cfg['max_requests_before_rest'] = 999999999
-    cfg['rest_minutes'] = 0
+    # 限流跟 config.json 分層休息方案（2026-09-29），唔再禁用休息
     cond, wname = WIN_SQL[win]
     conn = sqlite3.connect(DB_PATH, timeout=180)
     try:
@@ -3983,13 +3981,14 @@ if __name__ == '__main__':
         except Exception:
             import traceback
             traceback.print_exc()
-    # 數據商斷線自動重試（2026-09-28）：每 5 分鐘探測 titan007 數據主機；
+    # 數據商斷線自動重試：每 30 秒探測 titan007 數據主機（2026-09-29 修訂：
+    # 取消強制 5 分鐘等待）；
     # 發現復活即自動觸發全量更新——用戶無需理會，連線問題自己搞掂
     def _data_host_watchdog():
         import crawler as _cr
         down_since = None
         while True:
-            time.sleep(300)
+            time.sleep(30)
             try:
                 alive = _cr.data_host_probe()
                 if alive and down_since is not None:
@@ -4004,7 +4003,7 @@ if __name__ == '__main__':
                 elif not alive and down_since is None:
                     down_since = time.time()
                     print('[watchdog] titan007 數據主機暫時中斷，'
-                          '每 5 分鐘自動重試直至復活', flush=True)
+                          '每 30 秒自動重試直至復活', flush=True)
             except Exception:
                 pass
     threading.Thread(target=_data_host_watchdog, daemon=True).start()

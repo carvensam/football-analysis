@@ -272,16 +272,47 @@ RELAYS = [
 ]
 DIRECT_TIMEOUT = 10          # 直接連線逾時（秒）
 RELAY_TIMEOUT = 8            # 中繼逾時（秒）
-FAIL_COOLDOWN_SEC = 300      # 主機連續失敗後冷卻期（秒）
+FAIL_COOLDOWN_SEC = 30       # 主機連續失敗後冷卻期（秒）——2026-09-29 用戶指示取消強制長等
 CONN_BACKOFF_MAX = 30        # 連線錯誤退避上限（秒）——取代以往「休息 8 分鐘」
 # 分層休息（2026-09-29 用戶指示）：每 100 次請求休息 1 秒、
 # 每 1000 次休息 2 秒、每 5000 次休息 30 秒（由高至低檢查，命中即止）
 REST_TIERS = ((5000, 30), (1000, 2), (100, 1))
-TIMEOUT_COOLDOWN_SEC = 300   # connect timeout 後休息 5 分鐘（期間拒絕任何 request）
+TIMEOUT_COOLDOWN_SEC = 30    # connect timeout 後冷卻（用戶指示：取消強制 5 分鐘等待）
+
+# 行代理池嘅主機：zq/vip 被封鎖係 IP 層（正路 timeout），請求標頭偽裝冇用，
+# 必須經代理換出口 IP。proxy_pool.json 由 engine/update_proxies.py 生成（專案根目錄）。
+# titan007 每個 IP 約 700 個 request 就封、封約 6 分鐘——所以每個代理
+# 用 650 個就主動輪去下一個（留安全位），見到疑似被封即停 360 秒。
+PROXY_HOSTS = {'zq.titan007.com', 'vip.titan007.com'}
+PROXY_REQ_BUDGET = 650       # 每個代理配額（低過 700 封鎖線）
+PROXY_BAN_COOLDOWN_SEC = 360 # 被封後休息 6 分鐘
+
+
+def _proxy_pool_path():
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(here, 'proxy_pool.json'),
+                 os.path.join(os.path.dirname(here), 'proxy_pool.json')):
+        if os.path.exists(cand):
+            return cand
+    return os.path.join(os.path.dirname(here), 'proxy_pool.json')
+
+
+def _chrome_get(url, headers=None, timeout=DIRECT_TIMEOUT, proxies=None):
+    """以 Chrome TLS 指紋抓取（curl_cffi impersonate=chrome）。
+
+    部份網絡商 DPI 只放行瀏覽器 TLS 指紋，curl/requests/OpenSSL 會被重置
+    （TCP 通但 TLS 無限 renegotiation）；用 Chrome 指紋就直過。用於 PROXY_HOSTS。
+    異常統一轉拋 requests.ConnectionError，原有斷路/中繼/代理池邏輯照舊接住。"""
+    try:
+        from curl_cffi import requests as creq
+        return creq.get(url, headers=headers or {}, timeout=timeout,
+                        impersonate='chrome', proxies=proxies)
+    except Exception as e:                                  # noqa: BLE001
+        raise requests.ConnectionError('chrome-fetch 失敗：%s' % e)
 
 
 def _is_conn_timeout(e):
-    """連線層錯誤（connect timeout／DNS 解唔到／被拒連線）——觸發 5 分鐘休息＋轉 IP。
+    """連線層錯誤（connect timeout／DNS 解唔到／被拒連線）——觸發短冷卻＋轉 IP。
     讀取逾時（ReadTimeout）唔計，行原有中繼後備路徑。"""
     if isinstance(e, (requests.exceptions.ConnectionError,
                       requests.exceptions.ConnectTimeout)):
@@ -293,11 +324,13 @@ def _is_conn_timeout(e):
 
 
 def data_host_probe(timeout=6):
-    """快速探測 titan007 數據主機是否復活（供自動重試用）。"""
+    """快速探測 titan007 數據主機是否復活（供自動重試用）。
+    用 Chrome TLS 指紋（curl_cffi）——有網絡商 DPI 攔截非瀏覽器 TLS，
+    plain requests 會誤報「中斷」。"""
     import urllib.parse
     probe_url = 'https://vip.titan007.com/changeDetail/handicap.aspx?id=1&companyid=12'
     try:
-        r = requests.get(probe_url, headers=HEADERS, timeout=timeout)
+        r = _chrome_get(probe_url, timeout=timeout)
         return r.status_code in (200, 404)   # 有回應（就算 404）都當主機活返
     except requests.RequestException:
         return False
@@ -319,6 +352,14 @@ class Fetcher:
         self.relay_first = {}        # host -> 逾時後先用中繼（新 IP）連線
         self._relay_i = 0            # 中繼輪換游標（轉 IP 用）
         self.last_error = None       # 最近一次失敗原因（供上層回報用戶）
+        self.last_outage = False     # 最近一次 get 失敗係「主機斷線」級別（vs 無數據/HTTP 錯）
+        self._proxy_pool = None      # 代理池（動態載入 proxy_pool.json）
+        self._proxy_pool_mtime = 0.0
+        self._proxy_state = {}       # proxy -> {'used': int, 'rest_until': ts}
+        self._proxy_cursor = 0       # 輪轉游標（順序行，唔亂跳）
+        self._proxy_budget = int(cfg.get('proxy_req_budget', PROXY_REQ_BUDGET))
+        self._proxy_cooldown = int(cfg.get('proxy_ban_cooldown_sec',
+                                          PROXY_BAN_COOLDOWN_SEC))
 
     def _state(self, k, default=None):
         r = self.conn.execute('SELECT v FROM crawl_state WHERE k=?', (k,)).fetchone()
@@ -378,11 +419,91 @@ class Fetcher:
             return None, True
         return text, False
 
+    def _load_proxies(self):
+        """由 proxy_pool.json 載入代理池（檔案更新即自動重載）。"""
+        path = _proxy_pool_path()
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            self._proxy_pool = []
+            return
+        if mtime == self._proxy_pool_mtime and self._proxy_pool is not None:
+            return
+        try:
+            with open(path, encoding='utf-8') as fp:
+                data = json.load(fp)
+            pool = [p.strip() for p in data.get('proxies', []) if p.strip()]
+        except (OSError, ValueError):
+            pool = []
+        self._proxy_pool = pool
+        self._proxy_pool_mtime = mtime
+
+    def _pick_proxy(self):
+        """順序輪轉：跳過休息緊或者用盡配額嘅代理；冇可用回 None。"""
+        pool = self._proxy_pool
+        now = time.time()
+        n = len(pool)
+        for i in range(n):
+            p = pool[(self._proxy_cursor + i) % n]
+            st = self._proxy_state.get(p)
+            if st and (now < st['rest_until'] or st['used'] >= self._proxy_budget):
+                continue
+            self._proxy_cursor = (self._proxy_cursor + i) % n
+            return p
+        return None
+
+    def _via_proxy(self, url, encoding, is_odds_page):
+        """行代理池：每個代理用夠配額/疑似被封就停 6 分鐘自動轉下一個。
+        每次最多試 5 個（ bounded latency ）；全部失敗回 None。"""
+        self._load_proxies()
+        if not self._proxy_pool:
+            return None
+        for _ in range(min(len(self._proxy_pool), 5)):
+            proxy = self._pick_proxy()
+            if proxy is None:
+                return None     # 冇可用代理（全部休息緊/用盡配額）
+            st = self._proxy_state.setdefault(proxy, {'used': 0, 'rest_until': 0.0})
+            now = time.time()
+            try:
+                # Chrome 指紋經代理：DPI 對代理出口一樣會攔非瀏覽器 TLS
+                r = _chrome_get(url, headers=dict(self.s.headers),
+                                timeout=RELAY_TIMEOUT,
+                                proxies={'http': proxy, 'https': proxy})
+            except requests.RequestException:
+                # 連唔到（可能 proxy 死，或者都俾 titan007 封咗）→ 停 6 分鐘
+                st['rest_until'] = now + self._proxy_cooldown
+                st['used'] = 0
+                continue
+            if r.status_code in (403, 429, 442):
+                st['rest_until'] = now + self._proxy_cooldown   # 被封：停 6 分鐘
+                st['used'] = 0
+                continue
+            if r.status_code != 200:
+                continue
+            r.encoding = encoding
+            out, short = self._check_page(r.text, url, is_odds_page)
+            if out is None or short:
+                # 回應異常過短（疑似被封）→ 停 6 分鐘
+                st['rest_until'] = now + self._proxy_cooldown
+                st['used'] = 0
+                continue
+            st['used'] += 1
+            if st['used'] >= self._proxy_budget:
+                # 到配額：主動休息 6 分鐘轉下一個（唔觸發 titan007 封鎖）
+                st['rest_until'] = now + self._proxy_cooldown
+                st['used'] = 0
+            self.last_req_time = time.time()
+            self.req_count += 1
+            self._set_state('req_count', self.req_count)
+            return out
+        return None
+
     def get(self, url, encoding='utf-8', referer=None, is_odds_page=False):
         from urllib.parse import urlparse
         delay = self.cfg['request_delay_sec']
         host = urlparse(url).netloc
         conn_fails = [0]
+        self.last_outage = False
         for attempt in range(self.cfg.get('blocked_retry_times', 3) + 1):
             # 請求間隔
             wait = delay - (time.time() - self.last_req_time)
@@ -408,11 +529,18 @@ class Fetcher:
                             break
             headers = {'Referer': referer} if referer else {}
 
-            # 連線逾時冷卻期（5 分鐘）：其間拒絕任何 request——
+            # 連線逾時冷卻期（30 秒；用戶指示取消強制 5 分鐘等待）：拒絕直接 request——
             # 即時回 None（自動忽略），唔試中繼、唔緩存（2026-09-29 用戶指示）
+            # 例外：zq/vip 呢類被封主機有代理池 → 行代理繞過（代理唔受冷卻期限制），
+            # 冷卻期照樣留住，等佢每 30 秒試下正路解封未
             if time.time() < self.host_down_until.get(host, 0):
-                self.last_error = (f'{host} 冷卻期中（連線逾時後休息 5 分鐘兼已轉 IP）'
+                if host in PROXY_HOSTS:
+                    t = self._via_proxy(url, encoding, is_odds_page)
+                    if t is not None:
+                        return t
+                self.last_error = (f'{host} 冷卻期中（連線逾時後休息 30 秒兼已轉 IP）'
                                    f'——請求自動略過，唔會緩存')
+                self.last_outage = True
                 return None
 
             # 逾時復出後首次出擊：先經中繼（已轉新 IP），唔得先返直接連線
@@ -426,14 +554,20 @@ class Fetcher:
                         return out
 
             try:
-                r = self.s.get(url, headers=headers, timeout=DIRECT_TIMEOUT)
+                if host in PROXY_HOSTS:
+                    # DPI 只放行瀏覽器 TLS 指紋：zq/vip 一律用 Chrome 指紋直連，
+                    # 失敗會轉拋 ConnectionError，落喺下面原有斷路邏輯
+                    r = _chrome_get(url, headers=dict(self.s.headers, **headers),
+                                    timeout=DIRECT_TIMEOUT)
+                else:
+                    r = self.s.get(url, headers=headers, timeout=DIRECT_TIMEOUT)
                 self.last_req_time = time.time()
                 self.req_count += 1
                 self._set_state('req_count', self.req_count)
             except requests.RequestException as e:
                 self._note_fail(host, e)
                 log(self.conn, 'WARN', f'連線錯誤 {e}')
-                # connect timeout（2026-09-29 用戶指示）：休息 5 分鐘＋轉 IP
+                # connect timeout：短冷卻（30 秒）＋轉 IP（2026-09-29 修訂：取消 5 分鐘強制等待）
                 # （輪換中繼出口）；冷卻期內所有 request 一律即時拒絕（唔緩存）
                 if _is_conn_timeout(e):
                     self.host_down_until[host] = time.time() + \
@@ -441,8 +575,14 @@ class Fetcher:
                                          TIMEOUT_COOLDOWN_SEC))
                     self._relay_i = (self._relay_i + 1) % len(RELAYS)
                     self.relay_first[host] = True
-                    self.last_error = (f'{host} 連線逾時——已休息 5 分鐘並切換 IP '
+                    # 被封主機（zq/vip）有代理池 → 即刻行代理，唔使等冷卻期完
+                    if host in PROXY_HOSTS:
+                        t = self._via_proxy(url, encoding, is_odds_page)
+                        if t is not None:
+                            return t
+                    self.last_error = (f'{host} 連線逾時——已休息 30 秒並切換 IP '
                                        f'（期間請求自動略過，唔會緩存）')
+                    self.last_outage = True
                     return None
                 log(self.conn, 'WARN', '改行中繼後備')
                 t = self._via_relay(url, encoding)
@@ -457,7 +597,8 @@ class Fetcher:
                 conn_fails[0] += 1
                 if conn_fails[0] >= 2:
                     self.last_error = (f'{host} 數據伺服器暫時中斷，中繼後備都連唔到 '
-                                       f'（已排定每 5 分鐘自動重試，現有數據不受影響）')
+                                       f'（已排定每 30 秒自動重試，現有數據不受影響）')
+                    self.last_outage = True
                     return None
                 time.sleep(5)
                 continue
@@ -1070,7 +1211,7 @@ def recent_update(conn, cfg, days=3, progress=None):
 
 
 def wait_data_host(max_wait_sec=86400):
-    """數據主機中斷時，每 5 分鐘自動重試直至復活（獨立爬蟲版嘅自動重試線程）。
+    """數據主機中斷時，每 30 秒自動重試直至復活（獨立爬蟲版嘅自動重試線程）。
     上限預設 24 小時；超時回傳 False。"""
     if data_host_probe():
         return True
@@ -1080,10 +1221,10 @@ def wait_data_host(max_wait_sec=86400):
             print('[crawler] 等待後主機仍然中斷，本次更新中止，'
                   '下次開機會再自動重試', flush=True)
             return False
-        print('[crawler] titan007 數據主機暫時中斷，5 分鐘後自動重試'
+        print('[crawler] titan007 數據主機暫時中斷，30 秒後自動重試'
               '（現有數據不受影響）…', flush=True)
-        time.sleep(300)
-        waited += 300
+        time.sleep(30)
+        waited += 30
         if data_host_probe():
             print('[crawler] titan007 數據主機已復活，繼續更新', flush=True)
             return True
@@ -1112,7 +1253,7 @@ def main():
         n = prematch.build_all(conn)
         log(conn, 'INFO', f'開賽前對賽數據已重建：{n} 場')
         return
-    # 爬取前先探測數據主機；中斷就每 5 分鐘自動重試，唔會一開即敗
+    # 爬取前先探測數據主機；中斷就每 30 秒自動重試，唔會一開即敗
     if not wait_data_host():
         return
     if args.recent:
