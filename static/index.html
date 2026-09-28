@@ -171,6 +171,12 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <button class="tab on" data-pg="home">🏠 主頁</button>
     <button class="tab" data-pg="featw">★ 精選W <span id="fwCnt"></span></button>
     <button class="tab" data-pg="check">✓ Check 下先</button>
+    <button class="tab" data-pg="fw7">🎯 精選7 <span id="fw7Cnt"></span></button>
+    <button class="tab" data-pg="fwck7">✓ Check7</button>
+    <button class="tab" data-pg="fw8">🎯 精選8 <span id="fw8Cnt"></span></button>
+    <button class="tab" data-pg="fwck8">✓ Check8</button>
+    <button class="tab" data-pg="fw12">🎯 精選12 <span id="fw12Cnt"></span></button>
+    <button class="tab" data-pg="fwck12">✓ Check12</button>
     <button class="tab" data-pg="review">📋 事後回查</button>
     <button class="tab" data-pg="picks">我的選擇 <span id="pkCnt"></span></button>
     <button class="tab" data-pg="featlog">📜 過往紀錄</button>
@@ -217,6 +223,46 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
       <span class="hint" id="ckInfo"></span>
     </div>
     <div id="ckBody"><div class="note">揀一場即將開賽嘅賽事，即刻檢查五條件方向＋深淺分析。</div></div>
+  </section>
+
+  <!-- 精選7／8／12（共用結構，JS 以 grid 參數渲染） -->
+  <section class="pg" id="pg-fw7">
+    <div class="toolbar">
+      <button class="btn accent" id="btnFw7Scan">🔍 重新掃描精選7</button>
+      <span class="hint" id="fw7ScanInfo"></span>
+    </div>
+    <div id="fw7Stats"></div>
+    <div id="fw7List"><div class="note">載入中…</div></div>
+  </section>
+  <section class="pg" id="pg-fw8">
+    <div class="toolbar">
+      <button class="btn accent" id="btnFw8Scan">🔍 重新掃描精選8</button>
+      <span class="hint" id="fw8ScanInfo"></span>
+    </div>
+    <div id="fw8Stats"></div>
+    <div id="fw8List"><div class="note">載入中…</div></div>
+  </section>
+  <section class="pg" id="pg-fw12">
+    <div class="toolbar">
+      <button class="btn accent" id="btnFw12Scan">🔍 重新掃描精選12</button>
+      <span class="hint" id="fw12ScanInfo"></span>
+    </div>
+    <div id="fw12Stats"></div>
+    <div id="fw12List"><div class="note">載入中…</div></div>
+  </section>
+
+  <!-- Check 一下 7／8／12（離線預計算 8 情境表） -->
+  <section class="pg" id="pg-fwck7">
+    <div class="toolbar"><span class="hint" id="fwck7Info"></span></div>
+    <div id="fwck7Body"><div class="note">載入中…</div></div>
+  </section>
+  <section class="pg" id="pg-fwck8">
+    <div class="toolbar"><span class="hint" id="fwck8Info"></span></div>
+    <div id="fwck8Body"><div class="note">載入中…</div></div>
+  </section>
+  <section class="pg" id="pg-fwck12">
+    <div class="toolbar"><span class="hint" id="fwck12Info"></span></div>
+    <div id="fwck12Body"><div class="note">載入中…</div></div>
   </section>
 
   <!-- 事後回查 -->

@@ -93,7 +93,8 @@ def upcoming(hours=48):
     for mid, lg, ko, h, a, od, has, hc, gv, ho, ao, hr_, ar_ in rows:
         line = None
         if hc is not None:
-            line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao}
+            line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao,
+                    'giver': gv or 'none'}
         out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
                     'has_odds': bool(has), 'line': line,
                     'rank_home': hr_, 'rank_away': ar_,
@@ -2508,6 +2509,362 @@ def get_v3_featlog():
     return {'stats': stats, 'pending': pending, 'played': played}
 
 
+# ============ 精選7／精選8／精選12＋Check 一下（2026-09-28 減格實驗定稿） ============
+# 7 格＝1I、3A、3I、7、19、21、25（驗證期下盤70.0%，851場合格）
+# 8 格＝1I、1O、3A、3I、7、19、21、25（驗證期下盤70.0%，531場合格）
+# 12 格＝全部 12 格（驗證期樣本太少，命中率參考為主）
+_fw_grid_scan = {g: {'running': False, 'done': 0, 'total': 0, 'added': 0,
+                     'last': None, 'error': None} for g in ('7', '8', '12')}
+GRID_NAMES = {'7': '精選7', '8': '精選8', '12': '精選12'}
+GRID_DEFS = {'7': '1I、3A、3I、7、19、21、25',
+             '8': '1I、1O、3A、3I、7、19、21、25',
+             '12': '1A、1G、1I、1O、3A、3G、3I、3O、7、19、21、25（全部12格）'}
+
+
+def _fw_grid_meta(rep):
+    """detail JSON 瘦身版：12 格方向＋嚴格回查＋fail 原因。"""
+    slim_cells = [{'cell': c['cell'], 'name': c['name'], 'dir': c['dir'],
+                   'n': c['n'], 'up_r': c.get('up_r'), 'down_r': c.get('down_r')}
+                  for c in rep.get('cells', [])]
+    return json.dumps({'cells': slim_cells, 'strict': rep.get('strict'),
+                       'fail': rep.get('fail'), 'grid': rep.get('grid'),
+                       'grid_cells': rep.get('grid_cells')},
+                      ensure_ascii=False)
+
+
+def _fw_grid_scan_job(g):
+    """精選7/8/12 掃描：未開賽逐場跑格引擎，合格寫 fw_grid_featured。"""
+    st = _fw_grid_scan[g]
+    if st['running']:
+        return
+    st.update(running=True, done=0, added=0, error=None)
+    conn = db()
+    try:
+        import fw_grid_engine
+        import v3_engine
+        conn.execute('''CREATE TABLE IF NOT EXISTS fw_grid_featured(
+            grid TEXT NOT NULL, match_id INTEGER NOT NULL, direction TEXT NOT NULL,
+            detail TEXT, added_at TEXT, result TEXT, settled_at TEXT,
+            PRIMARY KEY(grid, match_id))''')
+        conn.commit()
+        rows = conn.execute(
+            "SELECT DISTINCT m.id FROM matches m "
+            "JOIN odds_asian oc ON oc.match_id=m.id "
+            "AND oc.label='closing' AND oc.company_id=12 AND oc.handicap IS NOT NULL "
+            "WHERE m.home_score IS NULL AND m.kickoff >= ? ORDER BY m.kickoff",
+            (v3_engine.hk_now_str(),)).fetchall()
+        st['total'] = len(rows)
+        v3_engine.load_v3_pool(conn)   # 預熱 V3 數據池
+        added = 0
+        for (mid,) in rows:
+            try:
+                t = screen_engine.get_target(conn, mid)
+                if not t:
+                    continue
+                rep = fw_grid_engine.grid_report(conn, t, g)
+                if rep.get('pass'):
+                    d = rep['direction']
+                    conn.execute(
+                        'INSERT INTO fw_grid_featured(grid, match_id, direction, '
+                        'detail, added_at) VALUES(?,?,?,?,?) '
+                        'ON CONFLICT(grid, match_id) DO UPDATE SET '
+                        'direction=excluded.direction, detail=excluded.detail',
+                        (g, mid, d, _fw_grid_meta(rep),
+                         time.strftime('%Y-%m-%d %H:%M:%S')))
+                    conn.commit()
+                    added += 1
+            except Exception:
+                traceback.print_exc()
+            st['done'] += 1
+        st['added'] = added
+        st['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception as e:
+        st['error'] = str(e)
+    finally:
+        conn.close()
+        st['running'] = False
+
+
+def _build_fw_grid_rec(row, now, g):
+    """精選7/8/12 單場卡片（結構同 _build_v3_rec）。"""
+    (mid, d, res, detail, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao) = row
+    rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
+           'home': h, 'away': a, 'league': lg, 'grid': g,
+           'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+           'odds': f'主{ho}/客{ao}' if ho is not None else None,
+           'up_odds': (ho if gv in ('home', None, 'none') else ao)
+                      if ho is not None else None,
+           'giver': gv, 'home_odds': ho, 'away_odds': ao,
+           'state': 'finished' if hs is not None else (
+               'live' if ko <= now else 'scheduled')}
+    if detail:
+        try:
+            det = json.loads(detail)
+            rec['cells'] = det.get('cells')
+            rec['strict'] = det.get('strict')
+        except Exception:
+            pass
+    if hs is not None:
+        r = pick_result(hc, gv, hs, aws)
+        if res is None and r is not None:
+            res = 'P' if r == 'P' else ('W' if (r == 'A') == (d == 'up') else 'L')
+            c2 = db()
+            c2.execute('UPDATE fw_grid_featured SET result=?, settled_at=? '
+                       'WHERE grid=? AND match_id=?', (res, now, g, mid))
+            c2.commit()
+            c2.close()
+        rec['score'] = f'{hs}-{aws}'
+        rec['result'] = res
+    return rec
+
+
+def get_fw_grid_full(g):
+    """精選7/8/12 全量：未開賽→進行中→已完場（最新排先，永不刪除）。"""
+    import v3_engine
+    conn = db()
+    conn.execute('''CREATE TABLE IF NOT EXISTS fw_grid_featured(
+        grid TEXT NOT NULL, match_id INTEGER NOT NULL, direction TEXT NOT NULL,
+        detail TEXT, added_at TEXT, result TEXT, settled_at TEXT,
+        PRIMARY KEY(grid, match_id))''')
+    conn.commit()
+    now = v3_engine.hk_now_str()
+    rows = conn.execute(
+        'SELECT f.match_id, f.direction, f.result, f.detail, f.added_at, '
+        'm.kickoff, m.home_score, m.away_score, ht.name_tc, at.name_tc, '
+        'c.req_name, oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
+        'FROM fw_grid_featured f JOIN matches m ON m.id=f.match_id '
+        'JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        'JOIN teams ht ON ht.titan_id=m.home_id '
+        'JOIN teams at ON at.titan_id=m.away_id '
+        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+        "AND oc.label='closing' AND oc.company_id=12 "
+        'WHERE f.grid=? ORDER BY m.kickoff', (g,)).fetchall()
+    conn.close()
+    recs = []
+    for r in rows:
+        try:
+            recs.append(_build_fw_grid_rec(r, now, g))
+        except Exception:
+            traceback.print_exc()
+    up = sorted([r for r in recs if r['state'] == 'scheduled'],
+                key=lambda r: r['kickoff'])
+    live = sorted([r for r in recs if r['state'] == 'live'],
+                  key=lambda r: r['kickoff'])
+    fin = sorted([r for r in recs if r['state'] == 'finished'],
+                 key=lambda r: r['kickoff'], reverse=True)
+    played_all = live + fin
+    wins = sum(1 for r in played_all if r.get('result') == 'W')
+    losses = sum(1 for r in played_all if r.get('result') == 'L')
+    pushes = sum(1 for r in played_all if r.get('result') == 'P')
+    stats = {'total': len(recs), 'pending': len(up), 'live': len(live),
+             'played': len(played_all), 'wins': wins, 'losses': losses,
+             'pushes': pushes,
+             'hit_rate': wins / (wins + losses) if (wins + losses) else None}
+    st = _fw_grid_scan[g]
+    return {'stats': stats, 'pending': up, 'live': live, 'played': played_all,
+            'grid': g, 'grid_name': GRID_NAMES[g], 'grid_def': GRID_DEFS[g],
+            'scan': {k: st[k] for k in
+                     ('running', 'done', 'total', 'added', 'last', 'error')}}
+
+
+def do_fw_grid_refresh(mid, g):
+    """精選7/8/12 單場重新整理：重抓賠率→重算資格；唔再合→未結算移出。"""
+    import fw_grid_engine
+    st = do_fetch(mid, True)
+    if not st.get('ok'):
+        return {'ok': False, 'error': st.get('error', '抓取賠率失敗'), 'fetch': st}
+    conn = db()
+    try:
+        screen_engine._pool_cache['ts'] = 0
+        import v3_engine
+        v3_engine.invalidate_pool()
+        with _v3_item_cache_lock:
+            _v3_item_cache.clear()
+        t = screen_engine.get_target(conn, mid)
+        rep = fw_grid_engine.grid_report(conn, t, g) if t else {'pass': False}
+        row = conn.execute('SELECT result FROM fw_grid_featured '
+                           'WHERE grid=? AND match_id=?', (g, mid)).fetchone()
+        removed = False
+        if rep.get('pass'):
+            d = rep['direction']
+            conn.execute(
+                'INSERT INTO fw_grid_featured(grid, match_id, direction, '
+                'detail, added_at) VALUES(?,?,?,?,?) '
+                'ON CONFLICT(grid, match_id) DO UPDATE SET '
+                'direction=excluded.direction, detail=excluded.detail',
+                (g, mid, d, _fw_grid_meta(rep),
+                 time.strftime('%Y-%m-%d %H:%M:%S')))
+        elif row and row[0] is None:
+            conn.execute('DELETE FROM fw_grid_featured WHERE grid=? AND match_id=?',
+                         (g, mid))
+            removed = True
+        conn.commit()
+    finally:
+        conn.close()
+    return {'ok': True, 'pass': bool(rep.get('pass')),
+            'direction': rep.get('direction'), 'removed': removed}
+
+
+def get_fwcheck_full(g):
+    """Check 一下 7/8/12：離線預計算嘅 8 情境回測表（_fwcheck{g}.json）。"""
+    p = os.path.join(BASE_DIR, f'_fwcheck{g}.json')
+    if not os.path.exists(p):
+        return {'error': f'未有 Check 一下{g} 數據（要喺電腦跑一次 _fw_check_grid.py '
+                         f'再同步上雲端）'}
+    with open(p, encoding='utf-8') as f:
+        return json.load(f)
+
+
+# ============ 聯賽預測（逐聯賽 >78% 規則，_lg_preds.json 離線挖掘） ============
+_lgpred_cache = {'ts': 0, 'data': None}
+LG_PRED_CACHE_TTL = 600
+
+
+def _lgpred_load():
+    now = time.time()
+    if _lgpred_cache['data'] is not None and \
+            now - _lgpred_cache['ts'] < LG_PRED_CACHE_TTL:
+        return _lgpred_cache['data']
+    p = os.path.join(BASE_DIR, '_lg_preds.json')
+    data = {'leagues': {}}
+    if os.path.exists(p):
+        with open(p, encoding='utf-8') as f:
+            data = json.load(f)
+    _lgpred_cache.update(ts=now, data=data)
+    return data
+
+
+def _rule_applies(rule, t):
+    """規則條件係咪適用於今場（用今場自身屬性對照）。"""
+    kind = rule['kind']
+    p = rule['params']
+    odds = t.get('odds') or {}
+    Tc = screen_engine.tline(odds, 'closing')
+    Ti = screen_engine.tline(odds, 'initial')
+    pre = t.get('pre') or {}
+    hp = t.get('home_prev') or {}
+
+    def signed(T):
+        if not T or T.get('h') is None:
+            return None
+        return T['h'] * {'home': 1, 'away': -1, 'none': 0}.get(
+            T.get('g') or 'none', 0)
+
+    def up_water(T):
+        if not T:
+            return None
+        g = T.get('g') or 'none'
+        ho, ao = T.get('ho'), T.get('ao')
+        if g == 'home':
+            return ho
+        if g == 'away':
+            return ao
+        if ho is not None and ao is not None:
+            return min(ho, ao)
+        return None
+
+    if kind in ('close_l', 'close_lw', 'move', 'move_lw', 'wmove'):
+        if Tc is None or Tc.get('h') is None:
+            return False
+        if abs(Tc['h'] - p['h']) > 1e-9 or (Tc.get('g') or 'none') != p['g']:
+            return False
+        uw = up_water(Tc)
+        if kind in ('close_lw', 'move_lw'):
+            if uw is None or not (p['lo'] <= uw < p['hi']):
+                return False
+        if kind in ('move', 'move_lw'):
+            si, sc = signed(Ti), signed(Tc)
+            if si is None:
+                return False
+            dd = sc - si
+            mv = '讓深' if dd > 0.001 else ('讓淺' if dd < -0.001 else '不變')
+            if mv != p['delta']:
+                return False
+        if kind == 'wmove':
+            iw = up_water(Ti)
+            if uw is None or iw is None:
+                return False
+            wd = uw - iw
+            if not (p['lo'] <= wd < p['hi']):
+                return False
+        return True
+    if kind == 'form':
+        hwp, awp = pre.get('home_home_wp'), pre.get('away_away_wp')
+        if hwp is None or awp is None:
+            return False
+        return p['hlo'] <= hwp < p['hhi'] and p['alo'] <= awp < p['ahi']
+    if kind == 'rank':
+        hr, ar = pre.get('home_total_rank'), pre.get('away_total_rank')
+        if not hr or not ar:
+            return False
+        rd = ar - hr
+        return p['lo'] <= rd < p['hi']
+    if kind == 'goal':
+        hgd, agd = pre.get('home_home_gd'), pre.get('away_away_gd')
+        if hgd is None or agd is None:
+            return False
+        return p['hlo'] <= hgd < p['hhi'] and p['alo'] <= agd < p['ahi']
+    if kind == 'form_rank':
+        hwp = pre.get('home_home_wp')
+        hr, ar = pre.get('home_total_rank'), pre.get('away_total_rank')
+        if hwp is None or not hr or not ar:
+            return False
+        rd = ar - hr
+        return p['flo'] <= hwp < p['fhi'] and p['lo'] <= rd < p['hi']
+    if kind == 'prev_line':
+        if hp.get('h') is None:
+            return False
+        return abs(hp['h'] - p['h']) < 1e-9 and \
+            (hp.get('g') or 'none') == p['g']
+    return False
+
+
+def api_lgpred():
+    """未開賽每場：所屬聯賽／杯賽嘅 >78% 規則邊條適用＋綜合方向。"""
+    import v3_engine
+    data = _lgpred_load()
+    leagues = data.get('leagues') or {}
+    if not leagues:
+        return {'predictions': {}, 'updated': data.get('computed_at')}
+    conn = db()
+    try:
+        rows = conn.execute(
+            "SELECT DISTINCT m.id, c.req_name FROM matches m "
+            "JOIN seasons s ON s.id=m.season_id "
+            "JOIN competitions c ON c.titan_id=s.titan_id "
+            "JOIN odds_asian oc ON oc.match_id=m.id "
+            "AND oc.label='closing' AND oc.company_id=12 "
+            "AND oc.handicap IS NOT NULL "
+            "WHERE m.home_score IS NULL AND m.kickoff >= ? "
+            'ORDER BY m.kickoff LIMIT 300',
+            (v3_engine.hk_now_str(),)).fetchall()
+        out = {}
+        for mid, lg in rows:
+            info = leagues.get(lg)
+            if not info:
+                continue
+            t = screen_engine.get_target(conn, mid)
+            if not t:
+                continue
+            hits = [r for r in info['rules'] if _rule_applies(r, t)]
+            if not hits:
+                continue
+            up_n = sum(r['n'] for r in hits if r['direction'] == 'up')
+            dn_n = sum(r['n'] for r in hits if r['direction'] == 'down')
+            out[str(mid)] = {
+                'league': lg,
+                'direction': 'up' if up_n >= dn_n else 'down',
+                'rules': [{'desc': r['desc'], 'direction': r['direction'],
+                           'n': r['n'],
+                           'rate': r['up_r'] if r['direction'] == 'up'
+                           else r['down_r'],
+                           'test_n': r['test']['n']} for r in hits[:3]]}
+        return {'predictions': out, 'updated': data.get('computed_at')}
+    finally:
+        conn.close()
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -2743,6 +3100,45 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/fwgrid/full':
+            try:
+                q = parse_qs(u.query)
+                g = q.get('g', ['7'])[0]
+                if g not in ('7', '8', '12'):
+                    self._send(400, json.dumps({'error': 'g 只可以係 7/8/12'}))
+                    return
+                self._send(200, json.dumps(get_fw_grid_full(g), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/fwgrid/scan-status':
+            q = parse_qs(u.query)
+            g = q.get('g', ['7'])[0]
+            self._send(200, json.dumps(_fw_grid_scan.get(g, {}), ensure_ascii=False))
+            return
+        if u.path == '/api/fwcheck/full':
+            try:
+                q = parse_qs(u.query)
+                g = q.get('g', ['7'])[0]
+                if g not in ('7', '8', '12'):
+                    self._send(400, json.dumps({'error': 'g 只可以係 7/8/12'}))
+                    return
+                self._send(200, json.dumps(get_fwcheck_full(g), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/lgpred':
+            try:
+                self._send(200, json.dumps(api_lgpred(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         self._send(404, '{}')
 
     def do_POST(self):
@@ -2867,6 +3263,35 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/fwgrid/scan':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            g = str(body.get('g') or '7')
+            if g not in ('7', '8', '12'):
+                self._send(400, json.dumps({'ok': False, 'error': 'g 只可以係 7/8/12'}))
+                return
+            try:
+                if not _fw_grid_scan[g]['running']:
+                    threading.Thread(target=_fw_grid_scan_job, args=(g,),
+                                     daemon=True).start()
+                self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
+        if u.path == '/api/fwgrid/refresh':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            g = str(body.get('g') or '7')
+            try:
+                self._send(200, json.dumps(
+                    do_fw_grid_refresh(int(body.get('id')), g), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
             return
         if u.path == '/api/v2/combo':
             n = int(self.headers.get('Content-Length', 0))
