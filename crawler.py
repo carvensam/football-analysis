@@ -272,8 +272,24 @@ RELAYS = [
 ]
 DIRECT_TIMEOUT = 10          # 直接連線逾時（秒）
 RELAY_TIMEOUT = 8            # 中繼逾時（秒）
-FAIL_COOLDOWN_SEC = 300      # 主機連續失敗後冷卻期（秒）——冷卻期內直接行中繼
+FAIL_COOLDOWN_SEC = 300      # 主機連續失敗後冷卻期（秒）
 CONN_BACKOFF_MAX = 30        # 連線錯誤退避上限（秒）——取代以往「休息 8 分鐘」
+# 分層休息（2026-09-29 用戶指示）：每 100 次請求休息 1 秒、
+# 每 1000 次休息 2 秒、每 5000 次休息 30 秒（由高至低檢查，命中即止）
+REST_TIERS = ((5000, 30), (1000, 2), (100, 1))
+TIMEOUT_COOLDOWN_SEC = 300   # connect timeout 後休息 5 分鐘（期間拒絕任何 request）
+
+
+def _is_conn_timeout(e):
+    """連線層錯誤（connect timeout／DNS 解唔到／被拒連線）——觸發 5 分鐘休息＋轉 IP。
+    讀取逾時（ReadTimeout）唔計，行原有中繼後備路徑。"""
+    if isinstance(e, (requests.exceptions.ConnectionError,
+                      requests.exceptions.ConnectTimeout)):
+        return True
+    msg = str(e)
+    return ('Failed to resolve' in msg
+            or ('Connect' in msg and 'timed out' in msg)
+            or 'Connection refused' in msg)
 
 
 def data_host_probe(timeout=6):
@@ -300,6 +316,8 @@ class Fetcher:
         self.last_req_time = 0.0
         self.fail_streak = {}        # host -> 連續失敗次數
         self.host_down_until = {}    # host -> 冷卻期截止 timestamp
+        self.relay_first = {}        # host -> 逾時後先用中繼（新 IP）連線
+        self._relay_i = 0            # 中繼輪換游標（轉 IP 用）
         self.last_error = None       # 最近一次失敗原因（供上層回報用戶）
 
     def _state(self, k, default=None):
@@ -329,10 +347,12 @@ class Fetcher:
         self.last_error = None
 
     def _via_relay(self, url, encoding):
-        """經公共中繼代抓；全部失敗回傳 None。"""
+        """經公共中繼代抓（由輪換游標開始＝每次「轉 IP」用唔同出口）；
+        全部失敗回傳 None。"""
         import urllib.parse
         q = urllib.parse.quote(url, safe='')
-        for relay in RELAYS:
+        relays = RELAYS[self._relay_i:] + RELAYS[:self._relay_i]
+        for relay in relays:
             try:
                 r = self.s.get(relay.format(q=q), timeout=RELAY_TIMEOUT)
                 if r.status_code != 200:
@@ -361,7 +381,6 @@ class Fetcher:
     def get(self, url, encoding='utf-8', referer=None, is_odds_page=False):
         from urllib.parse import urlparse
         delay = self.cfg['request_delay_sec']
-        max_req = self.cfg['max_requests_before_rest']
         host = urlparse(url).netloc
         conn_fails = [0]
         for attempt in range(self.cfg.get('blocked_retry_times', 3) + 1):
@@ -369,24 +388,33 @@ class Fetcher:
             wait = delay - (time.time() - self.last_req_time)
             if wait > 0:
                 time.sleep(wait)
-            # 每 N 次請求強制休息（跨重啟累計）
-            if self.req_count >= max_req:
-                self._rest(self.cfg['rest_minutes'], f'已達 {max_req} 次請求（反爬蟲限流）')
-                self.req_count = 0
-                self._set_state(self.pk, 0)
+            # 分層休息（2026-09-29 用戶指示）：每 100 次休息 1 秒、
+            # 每 1000 次休息 2 秒、每 5000 次休息 30 秒（高階優先，命中即止）
+            n = self.req_count
+            if n:
+                for every, secs in self.cfg.get('rest_tiers', REST_TIERS):
+                    if n % every == 0:
+                        if secs:
+                            time.sleep(secs)
+                        break
             headers = {'Referer': referer} if referer else {}
 
-            # 冷卻期內：跳過直接連線，直接行中繼（快閃失敗，唔再癱瘓）
+            # 連線逾時冷卻期（5 分鐘）：其間拒絕任何 request——
+            # 即時回 None（自動忽略），唔試中繼、唔緩存（2026-09-29 用戶指示）
             if time.time() < self.host_down_until.get(host, 0):
+                self.last_error = (f'{host} 冷卻期中（連線逾時後休息 5 分鐘兼已轉 IP）'
+                                   f'——請求自動略過，唔會緩存')
+                return None
+
+            # 逾時復出後首次出擊：先經中繼（已轉新 IP），唔得先返直接連線
+            if self.relay_first.get(host):
                 t = self._via_relay(url, encoding)
                 if t is not None:
                     out, _short = self._check_page(t, url, is_odds_page)
                     if out is not None:
                         self._note_ok(host)
+                        self.relay_first[host] = False
                         return out
-                self.last_error = (f'{host} 數據伺服器暫時中斷，中繼後備都連唔到 '
-                                   f'（自動重試緊，現有數據不受影響）')
-                return None
 
             try:
                 r = self.s.get(url, headers=headers, timeout=DIRECT_TIMEOUT)
@@ -395,12 +423,25 @@ class Fetcher:
                 self._set_state('req_count', self.req_count)
             except requests.RequestException as e:
                 self._note_fail(host, e)
-                log(self.conn, 'WARN', f'連線錯誤 {e}；改行中繼後備')
+                log(self.conn, 'WARN', f'連線錯誤 {e}')
+                # connect timeout（2026-09-29 用戶指示）：休息 5 分鐘＋轉 IP
+                # （輪換中繼出口）；冷卻期內所有 request 一律即時拒絕（唔緩存）
+                if _is_conn_timeout(e):
+                    self.host_down_until[host] = time.time() + \
+                        int(self.cfg.get('timeout_cooldown_sec',
+                                         TIMEOUT_COOLDOWN_SEC))
+                    self._relay_i = (self._relay_i + 1) % len(RELAYS)
+                    self.relay_first[host] = True
+                    self.last_error = (f'{host} 連線逾時——已休息 5 分鐘並切換 IP '
+                                       f'（期間請求自動略過，唔會緩存）')
+                    return None
+                log(self.conn, 'WARN', '改行中繼後備')
                 t = self._via_relay(url, encoding)
                 if t is not None:
                     out, _ = self._check_page(t, url, is_odds_page)
                     if out is not None:
                         self._note_ok(host)
+                        self.relay_first[host] = False
                         return out
                 # 直接+中繼都死：連線錯誤最多兩輪（約 60 秒內快閃），
                 # 之後靠電路斷路冷卻期擋住，唔再逐次重試
