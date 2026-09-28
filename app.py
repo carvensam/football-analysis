@@ -52,7 +52,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.0.5'
+SERVER_VERSION = '5.0.6'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -2235,7 +2235,8 @@ def api_v3_summary(mid):
                 return {'error': '找不到賽事'}
             out = {'ok': True,
                    'applicability': v3_engine.item_applicability_v3(conn, t),
-                   'featured_w': v3_engine.featured_w(conn, t)}
+                   'featured_w': v3_engine.featured_w(conn, t),
+                   'twin': v3_engine.twin_lookback(conn, t)}
             with _v3_item_cache_lock:
                 _v3_item_cache[key] = (now, out)
         finally:

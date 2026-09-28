@@ -870,3 +870,39 @@ def featured_w(conn, t):
     gap = item_gap_v3(ctx, '30', ctx['m16']) if ctx['m16'] is not None else None
     return {'pass': True, 'direction': direction, 'conds': conds,
             'gap30': gap, 'lookback': lookback}
+
+
+def twin_lookback(conn, t):
+    """孖生回查（用戶 2026-09-29 定義）：同今場「孖生」嘅歷史場次，
+    四個口徑（全庫/全庫淨主客/同聯賽/同聯賽淨主客）嘅實際上下盤比例。
+
+    孖生＝全部同時成立：
+      ① 三節點盤口＋水位：初盤、開賽前4小時、尾盤——盤口（讓球數＋讓球方）
+         100% 相同，三點水位各 ±0.03（互換版用各聯賽 H 模型換算後比較，
+         換算後水位漂移屬正常）；
+      ② 上賽（對上一次歷史盤口）相同：同主客或互換都得
+         （all 計互換／pure 淨主客）；
+      ③ 主隊主場入球 及 客隊客場入球差相同（±3）。
+    """
+    ctx = build_context(conn, t)
+    df = ctx['df']
+    tp1 = ctx['tp']['1']          # 初盤（base 已連尾盤一併比較）
+    tp2 = ctx['tp']['2']          # 開賽前4小時（同上）
+    b3, b3_sw = _and(tp1[3], tp2[3]), _and(tp1[4], tp2[4])
+    m16 = ctx['m16']
+    pv_same = df['pv_same'].to_numpy() if m16 is not None else None
+    has_pv = df['pv_h'].notna().to_numpy() if m16 is not None else None
+    g8 = ctx['cond'].get('g8')
+    m_pure = (m16 & pv_same) if m16 is not None else None
+    m_all = (m16 & has_pv) if m16 is not None else None
+    twin_pure = _and(_and(b3, m_pure), g8)
+    twin_all = _and(_and(b3_sw, m_all), g8)
+    scopes = _scope_masks(df, t.get('league'))
+
+    def _pack(mask):
+        return {'oc': _oc_mask(df, mask),
+                'water': v2._water12(df, mask)}
+    return {'all': _pack(twin_all & scopes['全庫']) if twin_all is not None else None,
+            'pure': _pack(twin_pure & scopes['全庫']) if twin_pure is not None else None,
+            'lg_all': _pack(twin_all & scopes['同一聯賽']) if twin_all is not None else None,
+            'lg_pure': _pack(twin_pure & scopes['同一聯賽']) if twin_pure is not None else None}

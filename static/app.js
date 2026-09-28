@@ -849,8 +849,15 @@ async function initV3Section(mid) {
   if (s.error) { sumEl.innerHTML = '<span class="err">' + esc(s.error) + '</span>'; return; }
   const fw = s.featured_w || {};
   const dirTxt = fw.pass ? (fw.direction === 'up' ? '上盤' : '下盤') : null;
+  // 今場上盤水位區（highlight 用）：讓球方水位；平手盤用主隊水位
+  const _c = curMatch && curMatch.close;
+  const curZ = _c ? _zone12Idx(_c.g === 'away' ? _c.ao : _c.ho) : -1;
   sumEl.innerHTML = _udLegend() +
-    `<div style="font-size:15px;margin-bottom:4px">🏆 精選W 檢查（1A、1I、19同主客、19+互換、31、35 全部同方向≥50%）：${dirTxt ? `<b class="r-up">✅ 合格 → ${dirTxt}(${esc(_un())})</b>` : `<span style="color:var(--dim)">❌ 未合格${fw.fail_note ? '（' + esc(fw.fail_note) + '）' : ''}</span>`}</div>`;
+    `<div style="font-size:15px;margin-bottom:4px">🏆 精選W 檢查（1A、1I、19同主客、19+互換、31、35 全部同方向≥50%）：${dirTxt ? `<b class="r-up">✅ 合格 → ${dirTxt}(${esc(_un())})</b>` : `<span style="color:var(--dim)">❌ 未合格${fw.fail_note ? '（' + esc(fw.fail_note) + '）' : ''}</span>`}</div>` +
+    (fw.lookback ? _fwLookbackHTML(fw.lookback, curZ) : '') +
+    (s.twin ? _lb4HTML(s.twin, curZ, '🧬 孖生回查',
+      '三節點盤口水位（初盤/開賽前4小時/尾盤，盤口100%＋水位±0.03）＋上賽盤口相同（可互換）＋主客入球差相同嘅歷史場次・四個口徑') : '') +
+    (fw.any_lb ? _anyLbHTML(fw.any_lb, curZ) : '');
   buildV3ItemsAccordion(mid, box, s.applicability);
 }
 

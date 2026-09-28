@@ -162,8 +162,17 @@ def build_season(conn, season_id, category):
 
 
 def build_all(conn, only_season_id=None):
-    conn.execute('DROP TABLE IF EXISTS match_prestandings')
-    conn.executescript(CREATE_TABLE)
+    if only_season_id:
+        # 局部重建：淨係清走再做指定球季——舊版每次 DROP 成張表，
+        # backfill 逐季呼叫會抹晒其他球季嘅開賽前數據（2026-09-29 發現，
+        # 成張表曾經得返最後一季 69 行）
+        conn.executescript(CREATE_TABLE)
+        conn.execute(
+            'DELETE FROM match_prestandings WHERE match_id IN ('
+            'SELECT id FROM matches WHERE season_id=?)', (only_season_id,))
+    else:
+        conn.execute('DROP TABLE IF EXISTS match_prestandings')
+        conn.executescript(CREATE_TABLE)
     seasons = conn.execute(
         'SELECT s.id, c.category FROM seasons s '
         'JOIN competitions c ON c.titan_id=s.titan_id').fetchall()
