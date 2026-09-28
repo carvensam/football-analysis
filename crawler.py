@@ -240,7 +240,9 @@ LEFT JOIN odds_asian oc  ON oc.match_id  = m.id AND oc.label  = 'closing'  AND o
 
 
 def db_connect(cfg):
-    conn = sqlite3.connect(os.path.join(BASE_DIR, cfg['db_path']))
+    # timeout=30：全速爬時多進程共用 DB，busy 即刻彈 locked 會殺死爬蟲；
+    # busy-wait 等最多 30 秒先讓步（screen_app 都係咁做）
+    conn = sqlite3.connect(os.path.join(BASE_DIR, cfg['db_path']), timeout=30)
     conn.execute('PRAGMA journal_mode=WAL')
     conn.executescript(SCHEMA)
     cols = [r[1] for r in conn.execute('PRAGMA table_info(odds_asian)')]
@@ -563,7 +565,7 @@ class Fetcher:
                     r = self.s.get(url, headers=headers, timeout=DIRECT_TIMEOUT)
                 self.last_req_time = time.time()
                 self.req_count += 1
-                self._set_state('req_count', self.req_count)
+                self._set_state(self.pk, self.req_count)
             except requests.RequestException as e:
                 self._note_fail(host, e)
                 log(self.conn, 'WARN', f'連線錯誤 {e}')

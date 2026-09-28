@@ -245,8 +245,10 @@ def _update_worker():
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
                     n_fill_ok += 1
                 elif crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 3):
-                    # 易胜博未開盤 → Crown(3) 後備（顯示用，V3 分析照舊 12）
+                    # 易胜博未開盤 → Crown(3) 暫代（顯示用，V3 分析照舊 12）；
+                    # 記入 line12_track：之後每日用 12BET 再試直至成功
                     n_fill_crown += 1
+                    _line12_record(conn, mid)
                 else:
                     n_fill_fail += 1
             except Exception:
@@ -2972,6 +2974,71 @@ def api_hitrate(kind, mid):
             'league_stats': pick((d.get('leagues') or {}).get(lg))}
 
 
+# ============ 12BET 優先政策（用戶 2026-09-29 指示） ============
+# 預測工具一切以易胜博(12)盤口及水位為準；12 未開盤 → Crown(3) 暫代顯示，
+# 同時記入 line12_track：完場後／每日用 12BET 再試直至成功；
+# 超過 7 日仍唔得 → 每日通知一次，直至解決。
+_LINE12_NOTIFY = {'date': '', 'count': 0}
+
+
+def _line12_record(conn, mid):
+    _line12_track(conn)
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    conn.execute(
+        'INSERT INTO line12_track(match_id,attempts,first_ts,last_ts,crown) '
+        'VALUES(?,?,?,?,1) ON CONFLICT(match_id) DO UPDATE SET '
+        'crown=1, attempts=attempts+1, last_ts=excluded.last_ts',
+        (mid, 1, now, now))
+    conn.commit()
+
+
+def _line12_track(conn):
+    conn.execute('CREATE TABLE IF NOT EXISTS line12_track('
+                 'match_id INTEGER PRIMARY KEY, attempts INTEGER DEFAULT 0, '
+                 'first_ts TEXT, last_ts TEXT, crown INTEGER DEFAULT 0, '
+                 'resolved INTEGER DEFAULT 0)')
+
+
+def line12_daily_retry(conn, crawler, fetcher, batch=150):
+    """每日用 12BET 重試 crown 暫代中嘅場次，直至成功；
+    超過 7 日唔得 → 每日記錄一次（工作記錄面板會見到）。"""
+    _line12_track(conn)
+    rows = conn.execute(
+        'SELECT t.match_id, m.kickoff FROM line12_track t '
+        'JOIN matches m ON m.id=t.match_id '
+        'WHERE t.resolved=0 AND t.crown=1 '
+        'ORDER BY t.last_ts LIMIT ?', (batch,)).fetchall()
+    fixed = 0
+    for mid, ko in rows:
+        try:
+            crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12)
+        except Exception:
+            continue
+        if conn.execute(
+                'SELECT 1 FROM odds_asian WHERE match_id=? AND company_id=12 '
+                "AND label='closing'", (mid,)).fetchone():
+            conn.execute('UPDATE line12_track SET resolved=1, '
+                         'last_ts=? WHERE match_id=?',
+                         (time.strftime('%Y-%m-%d %H:%M:%S'), mid))
+            fixed += 1
+        else:
+            conn.execute('UPDATE line12_track SET attempts=attempts+1, '
+                         'last_ts=? WHERE match_id=?',
+                         (time.strftime('%Y-%m-%d %H:%M:%S'), mid))
+    conn.commit()
+    stuck = conn.execute(
+        'SELECT COUNT(*) FROM line12_track WHERE resolved=0 AND crown=1 '
+        "AND first_ts < datetime('now','localtime','-7 days')").fetchone()[0]
+    if stuck and _LINE12_NOTIFY['date'] != time.strftime('%Y-%m-%d'):
+        _LINE12_NOTIFY['date'] = time.strftime('%Y-%m-%d')
+        _LINE12_NOTIFY['count'] = stuck
+        crawler.log(conn, 'WARN',
+                    '【12BET 缺盤】超過 7 日仍用 Crown 暫代嘅場次：%d 場——'
+                    '每日重試緊，直至成功為止' % stuck)
+        conn.commit()
+    return fixed
+
+
 # ============ 健康 / 工作記錄（前端連線狀態列＋工作 Log 面板，2026-09-29） ============
 _health_cache = {'ts': 0.0, 'data_host_ok': None}
 
@@ -3004,7 +3071,9 @@ def api_health():
                        'error': _update_state['error'],
                        'last_done': _update_state['last_done']},
             'catchup': {k: _result_catchup[k]
-                        for k in ('last', 'fixed', 'error')}}
+                        for k in ('last', 'fixed', 'error')},
+            'line12': {'stuck': _LINE12_NOTIFY['count'],
+                       'notify_date': _LINE12_NOTIFY['date']}}
 
 
 def api_worklog(limit=30):
@@ -3922,6 +3991,14 @@ def _result_catchup_job():
         _result_catchup['running'] = True
         try:
             _result_catchup['fixed'] = _result_catchup_once()
+            # 12BET 優先政策：每日（巡邏節奏）用 12BET 重試 crown 暫代場次
+            try:
+                _cr, _fw = get_crawler()
+                conn2 = db()
+                line12_daily_retry(conn2, _cr, _fw)
+                conn2.close()
+            except Exception:
+                pass
             _result_catchup['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
             _result_catchup['error'] = None
         except Exception:
