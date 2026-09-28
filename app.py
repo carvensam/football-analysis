@@ -3740,6 +3740,75 @@ def _seed_check_rows():
         return False
 
 
+def _seed_v3_featured_import():
+    """開機種入精選W 歷史回溯（_fw_import.jsonl，2026-08-01 起合格場次＋賽果）。
+    同 tools/import_fw_backtest.py 同一口徑；雲端硬碟係舊 DB（冇歷史），
+    種入後「事後回查／過往紀錄／命中率」即刻有 2026-08-01 起嘅統計。
+    已種過（有任何 imported 列）就跳過，可重複開機冇副作用。"""
+    p = os.path.join(BASE_DIR, '_fw_import.jsonl')
+    if not os.path.exists(p):
+        return False
+    try:
+        conn = db()
+        n_imp = int(conn.execute(
+            "SELECT COUNT(*) FROM v3_featured WHERE detail LIKE '%\"imported\": 1%'"
+        ).fetchone()[0])
+        if n_imp > 0:
+            conn.close()
+            return True
+        rows = []
+        with open(p, encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    r = json.loads(line)
+                    if r.get('pass'):
+                        rows.append(r)
+        if not rows:
+            conn.close()
+            return False
+        now = time.strftime('%Y-%m-%d %H:%M:%S')
+        n_ins = 0
+        for r in rows:
+            mid = int(r['id'])
+            d = r['direction']
+            res = r['res']
+            result = 'P' if res == 'P' else (
+                'W' if (res == 'A') == (d == 'up') else 'L')
+            detail = json.dumps({'imported': 1, 'conds': None, 'gap30': None,
+                                 'lookback': r.get('lookback')},
+                                ensure_ascii=False)
+            cur = conn.execute(
+                'INSERT INTO v3_featured(match_id, direction, detail, '
+                'added_at, result, settled_at) VALUES(?,?,?,?,?,?) '
+                'ON CONFLICT(match_id) DO NOTHING',
+                (mid, d, detail, r['kickoff'], result, now))
+            n_ins += cur.rowcount
+            oc = conn.execute(
+                "SELECT handicap, giver, home_odds, away_odds FROM odds_asian "
+                "WHERE match_id=? AND company_id=12 "
+                "ORDER BY (label='closing') DESC, label DESC LIMIT 1",
+                (mid,)).fetchone()
+            hc, gv, ho, ao = oc if oc else (None, None, None, None)
+            conn.execute(
+                'INSERT INTO v3_featured_log(match_id, direction, added_at, '
+                'handicap, giver, home_odds, away_odds) '
+                'VALUES(?,?,?,?,?,?,?) '
+                'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction, '
+                'handicap=excluded.handicap, giver=excluded.giver, '
+                'home_odds=excluded.home_odds, away_odds=excluded.away_odds',
+                (mid, d, r['kickoff'], hc, gv, ho, ao))
+        conn.commit()
+        conn.close()
+        print(f'[fw-import] 已種入 {n_ins} 場精選W 歷史回溯（事後回查有晒歷史）',
+              flush=True)
+        return True
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 # ============ 賽果補抓（開賽後 2.5 小時仍無賽果 → 自動重抓補上） ============
 _result_catchup = {'running': False, 'last': None, 'fixed': 0, 'error': None}
 
@@ -3880,6 +3949,7 @@ if __name__ == '__main__':
     print(f'篩查 APP v{SERVER_VERSION}：http://localhost:{port}')
     init_picks()
     _seed_check_rows()
+    _seed_v3_featured_import()
     _auto_scans()
     threading.Thread(target=_warmup, daemon=True).start()
     threading.Thread(target=_result_catchup_job, daemon=True).start()
