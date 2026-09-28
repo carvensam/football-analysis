@@ -388,15 +388,24 @@ class Fetcher:
             wait = delay - (time.time() - self.last_req_time)
             if wait > 0:
                 time.sleep(wait)
-            # 分層休息（2026-09-29 用戶指示）：每 100 次休息 1 秒、
-            # 每 1000 次休息 2 秒、每 5000 次休息 30 秒（高階優先，命中即止）
+            # 分層休息（2026-09-29 用戶指示——APP／日常抓取用）：每 100 次休息 1 秒、
+            # 每 1000 次休息 2 秒、每 5000 次休息 30 秒（高階優先，命中即止）。
+            # 大型歷史回填（cfg 設咗 max_requests_before_rest）沿用舊節奏：
+            # 每 N 次請求休息 M 分鐘——新爬速唔適用於最大資料庫回填。
             n = self.req_count
             if n:
-                for every, secs in self.cfg.get('rest_tiers', REST_TIERS):
-                    if n % every == 0:
-                        if secs:
-                            time.sleep(secs)
-                        break
+                if self.cfg.get('max_requests_before_rest'):
+                    if n >= self.cfg['max_requests_before_rest']:
+                        self._rest(self.cfg.get('rest_minutes', 8),
+                                   f'已達 {n} 次請求（反爬蟲限流）')
+                        self.req_count = 0
+                        self._set_state(self.pk, 0)
+                else:
+                    for every, secs in self.cfg.get('rest_tiers', REST_TIERS):
+                        if n % every == 0:
+                            if secs:
+                                time.sleep(secs)
+                            break
             headers = {'Referer': referer} if referer else {}
 
             # 連線逾時冷卻期（5 分鐘）：其間拒絕任何 request——
