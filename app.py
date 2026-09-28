@@ -2738,6 +2738,108 @@ def api_fwcheck_target(mid, g):
         conn.close()
 
 
+# ============ 聯賽規則提示（>78% 規則出現即提示） ============
+_LG_ALERT_SEEN = os.path.join(BASE_DIR, '_lg_alerts_seen.json')
+
+
+def _lg_alert_seen_load():
+    try:
+        if os.path.exists(_LG_ALERT_SEEN):
+            with open(_LG_ALERT_SEEN, encoding='utf-8') as f:
+                return set(json.load(f) or [])
+    except Exception:
+        pass
+    return set()
+
+
+def _lg_alert_seen_save(ids):
+    try:
+        with open(_LG_ALERT_SEEN, 'w', encoding='utf-8') as f:
+            json.dump(sorted(int(x) for x in ids), f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
+def get_lg_alerts(mark=False):
+    """掃未開賽賽事，搵符合 _lg_preds.json >78% 規則嘅場次（出現即提示）。
+    回傳 {'new': [...], 'all': [...]}；mark=True 將而家嘅 new 標記做已提示。
+    每場一條：{id, kickoff, home, away, league, rule, direction, up_r, n}。"""
+    import v3_engine
+    preds = (_lgpred_load() or {}).get('leagues') or {}
+    if not preds:
+        return {'new': [], 'all': []}
+    conn = db()
+    now = v3_engine.hk_now_str()
+    try:
+        rows = conn.execute(
+            "SELECT m.id, m.kickoff, ht.name_tc, at.name_tc, c.req_name, "
+            "oi.handicap, oi.giver, oi.home_odds, oi.away_odds, "
+            "oc.handicap, oc.giver, oc.home_odds, oc.away_odds "
+            "FROM matches m "
+            "JOIN seasons s ON s.id=m.season_id "
+            "JOIN competitions c ON c.titan_id=s.titan_id "
+            "JOIN teams ht ON ht.titan_id=m.home_id "
+            "JOIN teams at ON at.titan_id=m.away_id "
+            "JOIN odds_asian oi ON oi.match_id=m.id AND oi.label='initial' "
+            "AND oi.company_id=12 "
+            "JOIN odds_asian oc ON oc.match_id=m.id AND oc.label='closing' "
+            "AND oc.company_id=12 "
+            "WHERE m.home_score IS NULL AND m.kickoff >= ? "
+            "ORDER BY m.kickoff",
+            (now,)).fetchall()
+    finally:
+        conn.close()
+
+    def sgn(h, g):
+        return h * (1.0 if g == 'home' else -1.0 if g == 'away' else 0.0)
+
+    alerts = []
+    seen = _lg_alert_seen_load()
+    for (mid, ko, h, a, lg, ih, ig, iho, iao, ch, cg, cho, cao) in rows:
+        lp = preds.get(lg)
+        if not lp:
+            continue
+        for rule in lp.get('rules') or []:
+            kind = rule.get('kind')
+            p = rule.get('params') or {}
+            if ih is None or ch is None or cg is None:
+                continue
+            if cg != p.get('g') or abs(ch - (p.get('h') or 0)) > 1e-9:
+                continue
+            hit = False
+            if kind == 'move' and ig is not None:
+                mv = sgn(ch, cg) - sgn(ih, ig)
+                d = p.get('delta')
+                hit = ((mv > 0.001) if d == '讓深'
+                       else (mv < -0.001) if d == '讓淺'
+                       else (abs(mv) <= 0.001))
+            elif kind == 'wmove':
+                if cg == 'home':
+                    iw, cw = iho, cho
+                elif cg == 'away':
+                    iw, cw = iao, cao
+                else:
+                    iw = min(x for x in (iho, iao) if x is not None) \
+                        if iho is not None and iao is not None else None
+                    cw = min(x for x in (cho, cao) if x is not None) \
+                        if cho is not None and cao is not None else None
+                if iw is not None and cw is not None:
+                    wd = cw - iw
+                    hit = (p.get('lo', 0) - 1e-9) <= wd < (p.get('hi', 0))
+            if hit:
+                alerts.append({
+                    'id': mid, 'kickoff': ko, 'home': h, 'away': a,
+                    'league': lg, 'rule': rule.get('desc', ''),
+                    'direction': rule.get('direction'),
+                    'up_r': rule.get('up_r'), 'n': rule.get('n')})
+                break   # 每場報一次就夠
+    new = [x for x in alerts if x['id'] not in seen]
+    if mark and new:
+        seen.update(x['id'] for x in new)
+        _lg_alert_seen_save(seen)
+    return {'new': new, 'all': alerts}
+
+
 # ============ 命中率回查（各規則喺全庫／同聯賽嘅實際命中率） ============
 _fwgrid_hr_cache = {'ts': 0, 'data': None}
 FWGRID_HR_CACHE_TTL = 600
@@ -3260,6 +3362,17 @@ class Handler(BaseHTTPRequestHandler):
                 kind = (q.get('kind') or [''])[0]
                 mid = int((q.get('id') or ['0'])[0] or 0)
                 self._send(200, json.dumps(api_hitrate(kind, mid),
+                                           ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/lgalerts':
+            try:
+                q = parse_qs(u.query)
+                mark = (q.get('mark') or [''])[0] in ('1', 'true')
+                self._send(200, json.dumps(get_lg_alerts(mark=mark),
                                            ensure_ascii=False, default=_jdefault))
             except Exception as e:
                 import traceback

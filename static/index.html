@@ -165,6 +165,14 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
 <body>
 <div class="gold-banner top">冷靜．最強念力</div>
 
+<div id="alertPanel" style="display:none;position:fixed;top:96px;right:8px;width:min(420px,92vw);max-height:60vh;overflow:auto;background:#141a24;border:2px solid var(--gold2,#c9a227);border-radius:10px;z-index:999;box-shadow:0 6px 24px rgba(0,0,0,.6)">
+  <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid #2a3346;position:sticky;top:0;background:#141a24">
+    <b style="color:var(--gold2,#c9a227)">🎯 聯賽規則提示（&gt;78% 規則出現即提示）</b>
+    <button id="alertClose" class="btn">✕</button>
+  </div>
+  <div id="alertList" style="padding:6px 10px"></div>
+</div>
+
 <header id="topbar">
   <span id="status">啟動中…</span>
   <nav id="tabs">
@@ -182,6 +190,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <button class="tab" data-pg="featlog">📜 過往紀錄</button>
     <button class="tab" data-pg="v1">📼 舊版本</button>
     <button class="tab" data-pg="settings">⚙️ 設定</button>
+    <button class="tab" id="alertBell" title="聯賽規則提示" style="position:relative">🔔<span id="alertCnt" style="position:absolute;top:2px;right:2px;background:#e33;color:#fff;border-radius:8px;font-size:10px;padding:0 4px;display:none">0</span></button>
   </nav>
 </header>
 

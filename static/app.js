@@ -90,7 +90,7 @@ function goto(pg){
 }
 $('#tabs').addEventListener('click', e => {
   const b = e.target.closest('.tab');
-  if (b) goto(b.dataset.pg);
+  if (b && b.dataset.pg) goto(b.dataset.pg);
 });
 
 /* ---------- 主頁 ---------- */
@@ -105,10 +105,64 @@ async function loadHome(){
       .catch(() => {});
     renderHome();
     fillCheckSelect();
+    checkLgAlerts();
   } catch (e) {
     $('#homeList').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>';
   }
 }
+
+/* ---------- 聯賽規則提示（>78% 規則出現即提示） ---------- */
+let lgAlerts = [];
+async function checkLgAlerts(){
+  let d;
+  try { d = await jget('/api/lgalerts'); } catch (e) { return; }
+  lgAlerts = d.all || [];
+  const n = (d.new || []).length;
+  const bell = $('#alertBell'), cnt = $('#alertCnt');
+  if (n > 0) {
+    cnt.style.display = 'inline';
+    cnt.textContent = n;
+    bell.style.color = '#ffd34d';
+    if (!checkLgAlerts._toastAt || Date.now() - checkLgAlerts._toastAt > 60000) {
+      toast('🎯 ' + n + ' 場新提示：有賽事符合 >78% 聯賽規則！');
+      checkLgAlerts._toastAt = Date.now();
+    }
+  } else {
+    cnt.style.display = 'none';
+    bell.style.color = '';
+  }
+}
+function renderAlertPanel(){
+  const box = $('#alertList');
+  if (!lgAlerts.length) {
+    box.innerHTML = '<div class="note">暫無符合 >78% 聯賽規則嘅未開賽賽事。</div>';
+    return;
+  }
+  box.innerHTML = lgAlerts.map(x =>
+    `<div class="mrow" data-mid="${x.id}" style="display:block;padding:8px 4px;border-bottom:1px solid #222a3a;cursor:pointer">
+      <div><b>${esc((x.kickoff || '').slice(5, 16))}</b>　${esc(x.league)}</div>
+      <div>${esc(x.home)} <span class="r">vs</span> ${esc(x.away)}</div>
+      <div class="sub">規則：${esc(x.rule)}</div>
+      <div>方向：<b class="${x.direction === 'up' ? 'r-up' : 'r-down'}">${x.direction === 'up' ? '上盤' : '下盤'}</b>
+        <span style="color:var(--dim)">（歷史 ${pct(x.up_r)} 上・${x.n}場基數）</span></div>
+    </div>`).join('');
+  [...box.querySelectorAll('.mrow')].forEach(r => r.onclick = () => {
+    $('#alertPanel').style.display = 'none';
+    openDetail(+r.dataset.mid);
+  });
+}
+$('#alertBell').onclick = async () => {
+  const p = $('#alertPanel');
+  if (p.style.display === 'none') {
+    renderAlertPanel();
+    p.style.display = 'block';
+    try { await jget('/api/lgalerts?mark=1'); } catch (e) {}
+    checkLgAlerts();
+  } else {
+    p.style.display = 'none';
+  }
+};
+$('#alertClose').onclick = () => { $('#alertPanel').style.display = 'none'; };
 function _stateTag(st){
   if (st === 'live') return '<span class="tag live">進行中</span>';
   if (st === 'finished') return '<span class="tag dim">完場</span>';
