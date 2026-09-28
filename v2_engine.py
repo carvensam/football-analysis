@@ -269,7 +269,7 @@ def _water12(df, m):
     return {'n': int(len(idx)), 'zones': zones}
 
 
-def _dist_lines(df, m, cur_zone12=None):
+def _dist_lines(df, m, cur_line_key=None):
     """盤口分佈：每個(讓球,讓球方) 場數＋上/下/走＋12 段水位；列＝盤口（同今場尾盤嗰列黃底）"""
     if m is None:
         return []
@@ -318,8 +318,8 @@ def _dist_lines(df, m, cur_zone12=None):
         h = (k // 10) / 100.0
         gg = ('away', 'home', 'none')[k % 10]
         line_txt = se.fmt_line(h, None if gg == 'none' else gg)
-        is_cur = cur_zone12 is not None and abs(h - (cur_zone12[0] or 0)) < 1e-9 \
-            and gg == (cur_zone12[1] or 'none')
+        is_cur = cur_line_key is not None and abs(h - (cur_line_key[0] or 0)) < 1e-9 \
+            and gg == (cur_line_key[1] or 'none')
         rows.append({'line': line_txt, 'h': h, 'g': gg, 'n': n,
                      'up': a, 'down': b_, 'push': p,
                      'up_r': a / eff if eff else None,
@@ -543,7 +543,7 @@ def item_form_goal_rank(ctx, no):
     if kind in ('dist', 'both'):
         out['dist'] = _dist_lines(
             df, base,
-            cur_zone12=(Tc['h'], Tc.get('g') or 'none') if Tc else None)
+            cur_line_key=(Tc['h'], Tc.get('g') or 'none') if Tc else None)
     if kind in ('water', 'both'):
         out['water'] = {'all': _water12(df, base)}
     return out
@@ -559,7 +559,7 @@ def item29(ctx):
             'ref': ctx['t'].get('home', '') + ' 對上一次比賽同樣角色、同樣讓/受讓、同樣讓球數',
             'oc': _oc_mask(df, ctx['m16']),
             'dist': _dist_lines(df, ctx['m16'],
-                                cur_zone12=ctx['cur_line_key']),
+                                cur_line_key=ctx['cur_line_key']),
             'cur_zone12': ctx['cur_zone12'], 'zones12': ZONES12}
 
 
@@ -621,7 +621,7 @@ def item32(ctx):
             'ref': f'差距 {ctx["d32"]:+d}（±1）',
             'oc': _oc_mask(df, ctx['m32']),
             'dist': _dist_lines(df, ctx['m32'],
-                                cur_zone12=(Tc['h'], Tc.get('g') or 'none')
+                                cur_line_key=(Tc['h'], Tc.get('g') or 'none')
                                 if Tc else None),
             'water': {'all': _water12(df, ctx['m32'])},
             'cur_zone12': ctx['cur_zone12'], 'zones12': ZONES12}

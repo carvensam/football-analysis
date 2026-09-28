@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""精選7／精選12 格引擎（2026-09-28 減格實驗定稿）。
+"""精選7／精選8／精選12 格引擎（2026-09-28 減格實驗定稿）。
 
 12 格：1A 1G 1I 1O 3A 3G 3I 3O 7 19 21 25
   1X＝同初盤&水位＋同尾盤；3X＝同開賽前30分鐘&水位＋同尾盤
@@ -8,6 +8,7 @@
   25＝主主場及客客場入失球±3
 方向判定同減格實驗：n≥5 且 上或下 >49.99%。
 精選7＝7/19/21/25 有共識＋1I、3A、3I 全部同方向（驗證期下盤70.0%）。
+精選8＝7/19/21/25 有共識＋1I、1O、3A、3I 全部同方向。
 精選12＝全部 12 格有方向且一致。
 合格後附 29/31/33/35 相同尾盤盤口嚴格版回查。
 """
@@ -127,13 +128,75 @@ def grid_report(conn, t, cells=None):
             oc = v2._oc_mask(df, andm & mm & same)
             strict[rn] = oc
 
+    # 相同情況回查（Check 頁用）：格組合 AND 樣本嘅四個口徑，
+    # 每口徑 綜合上/下/走 ＋ 12 段水位區域。
+    # 1X/3X 格有互換版（base_sw），7/19/21/25 冇（兩版相同）。
+    # 缺數據嘅格（mask None）唔計入，但會列出用咗邊啲格（cb_cells）。
+    lb = None
+    tp1, tp3 = ctx['tp']['1'], ctx['tp']['3']
+
+    def _cell_ms(cn):
+        if cn[0] in ('1', '3') and cn[1:] in ('A', 'G', 'I', 'O'):
+            _tp = tp1 if cn[0] == '1' else tp3
+            return _tp[3], _tp[4]
+        m = masks.get(cn)
+        return m, m
+
+    _mp = _ms = None
+    _used = []
+    for cn in want:
+        p, s = _cell_ms(cn)
+        if p is None or s is None:
+            continue
+        _used.append(cn)
+        _mp = p if _mp is None else _mp & p
+        _ms = s if _ms is None else _ms & s
+    if _mp is not None and len(_used) >= 2:
+        def _lb_pack2(mm):
+            return {'oc': v2._oc_mask(df, mm), 'water': v2._water12(df, mm)}
+        lb = {'all': _lb_pack2(_ms & sc_all), 'pure': _lb_pack2(_mp & sc_all),
+              'lg_all': _lb_pack2(_ms & sc_lg),
+              'lg_pure': _lb_pack2(_mp & sc_lg),
+              'cells_used': _used}
+
     # 30 項語義淺深（上賽完全相同樣本：最多盤口／最接近50%盤 vs 今場尾盤）
     gap = v3.item_gap_v3(ctx, '30', ctx['m16']) if ctx['m16'] is not None \
         else None
+    # 情境歸類（Check 一下用）：格方向 × 現時盤vs最多盤口 × 現時盤vs最接近50%盤口
+    scenario = None
+    if gap is not None and gap.get('mode') and gap.get('d50') and \
+            ctx['T_close'] is not None:
+        T_close = ctx['T_close']
+        cur_s = T_close['h'] * {'home': 1, 'away': -1, 'none': 0}.get(
+            T_close.get('g') or 'none', 0)
+
+        def _s(pk):
+            if not pk:
+                return None
+            return pk['h_g'] * {'home': 1, 'away': -1, 'none': 0}.get(
+                pk.get('g_g') or 'none', 0)
+
+        def _st(ref_s):
+            if ref_s is None:
+                return None
+            dd = cur_s - ref_s
+            if abs(dd) < 1e-9:
+                return 'same'
+            return 'deep' if dd > 0 else 'shallow'
+
+        scenario = {'dir': direction,
+                    'mode_gap': _st(_s(gap.get('mode'))),
+                    'd50_gap': _st(_s(gap.get('d50')))}
+        if scenario['dir'] and scenario['mode_gap'] and scenario['d50_gap']:
+            scenario['key'] = '{}|{}|{}'.format(
+                scenario['dir'], scenario['mode_gap'], scenario['d50_gap'])
+        else:
+            scenario['key'] = None
 
     cells_out = [{'cell': cn, 'name': CELL_NAMES[cn], **info[cn]}
                  for cn in GRID12]
     grid_no = cells if cells in ('7', '8') else '12'
     return {'pass': pass_, 'direction': direction, 'fail': fail,
-            'cells': cells_out, 'strict': strict, 'gap30': gap,
+            'cells': cells_out, 'strict': strict, 'lb': lb, 'gap30': gap,
+            'scenario': scenario,
             'grid': grid_no, 'grid_cells': want}

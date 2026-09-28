@@ -43,7 +43,6 @@ TP7 = v2.TP7
 SCOPES8 = v2.SCOPES8
 LETTERS = v2.LETTERS
 ZONES12 = v2.ZONES12
-RECENT2Y = v2.RECENT2Y
 RETURN_LO, RETURN_HI = 0.939 - 0.04, 0.939 + 0.04   # 雙向總返還率容差
 
 
@@ -54,15 +53,6 @@ def hk_now():
 
 def hk_now_str():
     return hk_now().strftime('%Y-%m-%d %H:%M:%S')
-
-
-def match_state(kickoff, home_score):
-    """scheduled / live / finished（開賽後冇比分＝進行中）"""
-    if home_score is not None:
-        return 'finished'
-    if kickoff and kickoff <= hk_now_str():
-        return 'live'
-    return 'scheduled'
 
 
 # ---------- V3 數據池（V2 池 + 對調盤/對調水位欄） ----------
@@ -275,12 +265,8 @@ def build_context(conn, t):
     odds = t.get('odds') or {}
     T_close = se.tline(odds, 'closing')
     ctx = {'df': df, 't': t, 'T_close': T_close,
-           'cur_zone12': zone12_of(_up_water_of(T_close)),
-           'cur_line_key': (T_close['h'], T_close.get('g') or 'none')
-                           if T_close and T_close.get('h') is not None else None}
+           'cur_zone12': zone12_of(_up_water_of(T_close))}
     ctx['same_close'] = v2._line_only_eq(df, 'c', T_close) if T_close else None
-    sc = _signed_T(T_close)
-    ctx['sc_close'] = sc
 
     # 時點組 1–6：淨主淨客 base / 互換 base_sw
     tp = {}
@@ -338,10 +324,6 @@ def build_context(conn, t):
               (df['hp_h'] == hp['h'])
     ctx['m16'] = m16
     return ctx
-
-
-def pre_get(t, k):
-    return (t.get('pre') or {}).get(k)
 
 
 # ---------- 16 格（V3：A–H 淨主淨客／I–P 互換） ----------
@@ -492,7 +474,7 @@ def item_cond_v3(ctx, no):
              'down_r': oc['down_r'] if oc else None,
              'push_r': oc['push_r'] if oc else None})
     if not water_only:
-        out['dist'] = _dist_lines(df, base, cur_zone12=cur)
+        out['dist'] = _dist_lines(df, base, cur_line_key=cur)
         out['water'] = {'all': _water12(df, base)}
     else:
         out['water'] = {'all': _water12(df, base)}
@@ -513,8 +495,8 @@ def _mode_d50(df, m):
     return mode, (d50[1] if d50 else None)
 
 
-def _gap_pack(df, r, T_close, conn=None):
-    """淺深 pack：盤＋勝率＋全部水位區勝率場次"""
+def _gap_pack(df, r, T_close):
+    """淺深 pack：盤＋勝率＋全部水位區勝率場次（h_g/g_g＝帶符號換算用原始盤口）"""
     if r is None:
         return None
     gap = se.gap_text(r['h'], None if r['g'] == 'none' else r['g'], T_close)
@@ -568,7 +550,7 @@ def item19_v3(ctx):
              'up_r': oc['up_r'] if oc else None,
              'down_r': oc['down_r'] if oc else None,
              'push_r': oc['push_r'] if oc else None})
-    res['dist'] = _dist_lines(df, base, cur_zone12=cur)
+    res['dist'] = _dist_lines(df, base, cur_line_key=cur)
     res['water'] = {'all': _water12(df, base)}
     return res
 
@@ -754,34 +736,50 @@ def combo_v3(conn, t, sel):
 
 # ---------- 精選 W ----------
 
-def _cell_dir(c):
-    ur, dr = c.get('up_r'), c.get('down_r')
-    if ur is not None and ur > 0.4999:
-        return 'up', ur
-    if dr is not None and dr > 0.4999:
-        return 'down', dr
-    return None, None
-
-
 def featured_w(conn, t):
     """精選W：1A、1I、19同主客、19+互換、31、35 全部同方向≥50%。
     每項展示 盤口%＋同水位區%。合格後展示方向＋淺深分析（30項：最多/最平均盤）。
-    回傳 {'pass', 'direction', 'conds', 'gap30'}；不適用／唔合格照樣回傳 details。"""
+    回傳 {'pass', 'direction', 'conds', 'gap30', 'lookback', 'any5', 'any4',
+    'any_lb'}；不適用／唔合格照樣回傳 details。
+    lookback＝同初盤&尾盤樣本四個口徑（每口徑 綜合oc＋12段水位區域）；
+    any_lb＝Any5／Any4 首個組合（相同情況＝該組合條件AND）嘅四口子回查。"""
     ctx = build_context(conn, t)
     df = ctx['df']
     T1, _p1, _n1, base1, base1_sw = ctx['tp']['1']
     if base1 is None or base1_sw is None or ctx['T_close'] is None:
         return {'pass': False, 'error': '今場缺少初盤或尾盤數據'}
     scopes = _scope_masks(df, t.get('league'))
+    sc_lg = scopes['同一聯賽']
+    sc_all = scopes['全庫']
+
+    def _lb_pack(mask):
+        # 回查一口徑：綜合上/下/走 ＋ 12 段水位區域
+        return {'oc': _oc_mask(df, mask), 'water': v2._water12(df, mask)}
+
     # 回查實際：同初盤&尾盤樣本（盤口100%一樣＋水位±0.03）嘅實際上下盤%，四個口徑。
     # 合格與否都計——Check 下先頁都要展示。
-    sc_lg = scopes['同一聯賽']
     lookback = {
-        'all': _oc_mask(df, base1_sw & scopes['全庫']) if base1_sw is not None else None,
-        'pure': _oc_mask(df, base1 & scopes['全庫']),
-        'lg_all': _oc_mask(df, base1_sw & sc_lg) if base1_sw is not None else None,
-        'lg_pure': _oc_mask(df, base1 & sc_lg),
+        'all': _lb_pack(base1_sw & sc_all),
+        'pure': _lb_pack(base1 & sc_all),
+        'lg_all': _lb_pack(base1_sw & sc_lg),
+        'lg_pure': _lb_pack(base1 & sc_lg),
     }
+
+    # 每條件嘅 mask（p＝淨主淨客版／s＝計埋主客互換版）——Any5／Any4 組合回查用。
+    # 次序同 conds 一致：1A、1I、19同主客、19+互換、31、35。
+    m16 = ctx['m16']
+    pv_same = df['pv_same'].to_numpy() if m16 is not None else None
+    has_pv = df['pv_h'].notna().to_numpy() if m16 is not None else None
+    m31 = ctx['m31']
+    g8 = ctx['cond'].get('g8')
+    cm_p = [base1, base1,
+            (m16 & pv_same) if m16 is not None else None,
+            (m16 & pv_same) if m16 is not None else None,
+            m31, g8]
+    cm_s = [base1_sw, base1_sw,
+            (m16 & has_pv) if m16 is not None else None,
+            (m16 & has_pv) if m16 is not None else None,
+            m31, g8]
 
     def cond_pack(mask, note):
         oc = _oc_mask(df, mask)
@@ -802,14 +800,11 @@ def featured_w(conn, t):
         return {'dir': d, 'oc': oc, 'zone_r': zr, 'note': note}
 
     conds = []
-    conds.append(cond_pack(base1 & scopes['全庫'], '1A：同初盤&水位＋同尾盤（淨主淨客·全庫）'))
-    conds.append(cond_pack(base1_sw & scopes['全庫'],
+    conds.append(cond_pack(base1 & sc_all, '1A：同初盤&水位＋同尾盤（淨主淨客·全庫）'))
+    conds.append(cond_pack(base1_sw & sc_all,
                            '1I：同上但計埋主客互換（全庫）'))
     # 19：上賽完全相同（同主客／＋互換）
-    m16 = ctx['m16']
     if m16 is not None:
-        pv_same = df['pv_same'].to_numpy()
-        has_pv = df['pv_h'].notna().to_numpy()
         conds.append(cond_pack(m16 & pv_same,
                                '19：上賽完全相同（只計同主、同客）'))
         conds.append(cond_pack(m16 & has_pv,
@@ -817,9 +812,9 @@ def featured_w(conn, t):
     else:
         conds.append({'dir': None, 'oc': None, 'note': '19：無上次比賽數據'})
         conds.append({'dir': None, 'oc': None, 'note': '19＋互換：無上次比賽數據'})
-    conds.append(cond_pack(ctx['m31'],
+    conds.append(cond_pack(m31,
                            '31：主主場排名−客客場排名差距淨值（±1）'))
-    conds.append(cond_pack(ctx['cond'].get('g8'),
+    conds.append(cond_pack(g8,
                            '35：主主場入失球 及 客客場（各±3）'))
     dirs = [c['dir'] for c in conds]
 
@@ -833,18 +828,43 @@ def featured_w(conn, t):
         for comb in combinations(range(len(conds)), k):
             ds = {conds[i]['dir'] for i in comb}
             if len(ds) == 1:
-                out.append({'dir': ds.pop(),
+                out.append({'dir': ds.pop(), 'comb': list(comb),
                             'which': [_short(conds[i].get('note')) for i in comb]})
         return out
+
+    def _combo_lb(comb):
+        """任 k 組合嘅「相同情況」回查：四個口徑各 綜合＋12段水位區域。
+        口徑同 lookback 一致：all/pure（全庫，連互換／淨主淨客）×
+        lg_all/lg_pure（同一聯賽）。條件 mask 由 1A/1I（base1/base1_sw）同
+        19/19+互換（pv_same/has_pv）互換構成，31/35 兩版相同。"""
+        mp = ms = None
+        for i in comb:
+            p, s = cm_p[i], cm_s[i]
+            if p is None or s is None:
+                return None
+            mp = p if mp is None else mp & p
+            ms = s if ms is None else ms & s
+        return {'all': _lb_pack(ms & sc_all), 'pure': _lb_pack(mp & sc_all),
+                'lg_all': _lb_pack(ms & sc_lg), 'lg_pure': _lb_pack(mp & sc_lg)}
+
+    any5 = _subsets(5)
+    any4 = _subsets(4)
+    any_lb = {}
+    if any5:
+        any_lb['any5'] = _combo_lb(any5[0]['comb'])
+    if any4:
+        any_lb['any4'] = _combo_lb(any4[0]['comb'])
 
     if any(d is None for d in dirs):
         return {'pass': False, 'conds': conds,
                 'fail_note': '有條件未有方向（數據不足或未過50%）',
-                'any5': _subsets(5), 'any4': _subsets(4), 'lookback': lookback}
+                'any5': any5, 'any4': any4, 'any_lb': any_lb,
+                'lookback': lookback}
     if len(set(dirs)) != 1:
         return {'pass': False, 'conds': conds,
                 'fail_note': f'方向唔一致：{dirs}',
-                'any5': _subsets(5), 'any4': _subsets(4), 'lookback': lookback}
+                'any5': any5, 'any4': any4, 'any_lb': any_lb,
+                'lookback': lookback}
     direction = dirs[0]
     # 淺深分析（30項語義：上賽完全相同樣本）
     gap = item_gap_v3(ctx, '30', ctx['m16']) if ctx['m16'] is not None else None

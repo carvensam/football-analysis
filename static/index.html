@@ -35,9 +35,16 @@ a{color:var(--accent)}
   background:var(--bg2); border-bottom:1px solid var(--line);
   display:flex; align-items:center; gap:8px; padding:6px 10px; flex-wrap:wrap;
 }
-#status{font-size:12px;color:var(--dim);white-space:nowrap}
+#status{font-size:14px;color:var(--dim);white-space:normal;flex-basis:100%;line-height:1.4}
 #status b{color:var(--up)}
 #status .err{color:var(--down)}
+#connChip{
+  font-size:12px;padding:3px 10px;border-radius:12px;cursor:default;
+  border:1px solid var(--line);background:var(--card);color:var(--dim);white-space:nowrap;
+}
+#connChip.ok{color:#7ee2a0;border-color:#2c5c3c}
+#connChip.warn{color:#ffd766;border-color:#6b5510}
+#connChip.bad{color:#ff9d9d;border-color:#7a2d2d;background:#2a1515}
 #tabs{display:flex;gap:4px;flex-wrap:wrap;flex:1}
 .tab{
   background:var(--card); color:var(--tx); border:1px solid var(--line);
@@ -133,13 +140,6 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
 .gaprow .lab{color:var(--gold2);font-weight:700;margin-right:6px}
 .statbar{display:flex;gap:10px;flex-wrap:wrap;background:var(--bg2);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin:8px 0;font-size:14px}
 .statbar b{color:var(--gold2)}
-/* ---- 走勢 ---- */
-.trend{display:flex;gap:3px;align-items:flex-end;height:70px;margin:10px 0;border-bottom:1px solid var(--line);padding:0 4px}
-.trend .bar{flex:1;min-width:8px;border-radius:3px 3px 0 0;position:relative}
-.trend .bar.hi{background:var(--up)} .trend .bar.lo{background:var(--down)}
-.trend .bar:hover::after{
-  content:attr(data-tip);position:absolute;bottom:100%;left:50%;transform:translateX(-50%);
-  background:#000;color:#fff;font-size:11px;padding:2px 6px;border-radius:4px;white-space:nowrap}
 /* ---- 設定 ---- */
 .set-doc details{margin:8px 0}
 .set-tb{width:100%;border-collapse:collapse;font-size:13px}
@@ -153,6 +153,19 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
 }
 .checkwrap{overflow-x:auto}
 .hint{font-size:12px;color:var(--dim)}
+#updInfo{display:block;width:100%;font-size:14px;color:var(--dim);margin-top:4px;white-space:normal;line-height:1.4}
+/* ---- 工作記錄／規律說明 ---- */
+#workLog{font-size:12px;color:var(--dim);max-height:260px;overflow:auto}
+#workLog .wl-row{padding:3px 0;border-bottom:1px dashed var(--line)}
+#workLog .wl-row .wl-ts{color:var(--gold2);margin-right:6px}
+#workLog .wl-row.ERR{color:#ff9d9d}
+#workLog .wl-row.WARN{color:#ffd766}
+.leg-row{display:flex;gap:8px;padding:6px 0;border-bottom:1px dashed var(--line);font-size:13px}
+.leg-row .leg-nm{color:var(--gold2);font-weight:700;min-width:64px}
+.lb4-tbl{width:100%;border-collapse:collapse;font-size:12px;margin:4px 0}
+.lb4-tbl th,.lb4-tbl td{border:1px solid var(--line);padding:3px 6px;text-align:center}
+.lb4-tbl th{background:var(--bg2);color:var(--gold2)}
+.lb4-tbl td.cur,.lb4-tbl tr.cur td{background:rgba(255,200,40,.22)}
 /* 手機 */
 @media (max-width:640px){
   body{font-size:14px;padding:44px 0 48px}
@@ -175,6 +188,8 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
 
 <header id="topbar">
   <span id="status">啟動中…</span>
+  <span id="connChip" title="連線情況：綠＝正常・黃＝數據主機中斷（自動重試）・紅＝伺服器斷線">🟢 檢查緊…</span>
+  <button class="btn" id="btnRepair" style="font-size:12px;padding:3px 10px" title="斷線或數據有問題時撳呢個自行修復">🔧 修復</button>
   <nav id="tabs">
     <button class="tab on" data-pg="home">🏠 主頁</button>
     <button class="tab" data-pg="featw">★ 精選W <span id="fwCnt"></span></button>
@@ -212,6 +227,10 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
       <button class="btn accent" id="btnWin10">⚡ 更新未來10分鐘</button>
       <span class="hint" id="updInfo"></span>
     </div>
+    <details id="workLogBox" style="font-size:13px">
+      <summary><span class="sum-t">📋 工作記錄（伺服器最近動態＋錯誤）</span><span class="sub" id="workLogSum"></span></summary>
+      <div class="body"><div id="workLog">撳開先載入…</div></div>
+    </details>
     <div id="homeList"><div class="note">載入中…</div></div>
   </section>
 
@@ -231,7 +250,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
       <label class="hint">場次 <select id="ckMatch"><option value="">載入中…</option></select></label>
       <span class="hint" id="ckInfo"></span>
     </div>
-    <div id="ckBody"><div class="note">揀一場即將開賽嘅賽事，即刻檢查五條件方向＋深淺分析。</div></div>
+    <div id="ckBody"><div class="note">揀一場即將開賽嘅賽事，即刻檢查六條件方向＋深淺分析。</div></div>
   </section>
 
   <!-- 精選7／8／12（共用結構，JS 以 grid 參數渲染） -->
@@ -308,15 +327,21 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   </section>
 
   <!-- 舊版本（V1 精選／精選Z） -->
+  <!-- 舊版本（V1 精選／精選Z＋V2 十六字頭精選） -->
   <section class="pg" id="pg-v1">
     <div class="toolbar">
       <button class="btn accent" id="btnV1Scan">🔍 重新掃描 V1</button>
+      <button class="btn accent" id="btnV2Scan">🔍 重新掃描 V2</button>
       <span class="hint" id="v1ScanInfo"></span>
     </div>
     <div id="v1Stats"></div>
     <div id="v1List"><div class="note">載入中…</div></div>
     <div id="v1zStats"></div>
     <div id="v1zList"></div>
+    <div id="v2Stats"></div>
+    <div id="v2List"></div>
+    <div id="v2zStats"></div>
+    <div id="v2zList"></div>
   </section>
 
   <!-- 設定 -->

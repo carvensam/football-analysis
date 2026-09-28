@@ -14,14 +14,37 @@ function toast(msg){
   toastTimer = setTimeout(() => { t.style.display = 'none'; }, 2500);
 }
 async function _jf(url, opt, tries){
+  /* 伺服器更新緊／重啟中會吐 HTML 維護頁——檢查 Content-Type／首字元 '<'，
+     指數退避重試，最後先抛人話錯誤（2026-09-29 修復「Unexpected token '<'」） */
+  let backoff = 2000;
+  const maxTries = tries ?? 2;
   for (let i = 0; ; i++) {
     try {
       const r = await fetch(url, opt);
-      if (r.status >= 500 && i < (tries ?? 2)) { await new Promise(x => setTimeout(x, 1500)); continue; }
-      return await r.json();
+      const ct = r.headers.get('Content-Type') || '';
+      const looksHtml = ct.indexOf('json') === -1;
+      if ((r.status >= 500 || looksHtml) && i < maxTries) {
+        await new Promise(x => setTimeout(x, backoff)); backoff *= 2; continue;
+      }
+      const txt = await r.text();
+      if (txt.charAt(0) === '<' && i < maxTries) {
+        await new Promise(x => setTimeout(x, backoff)); backoff *= 2; continue;
+      }
+      try { return JSON.parse(txt); }
+      catch (e) {
+        if (i < maxTries) {
+          await new Promise(x => setTimeout(x, backoff)); backoff *= 2; continue;
+        }
+        throw new Error('伺服器更新緊，請稍候 30 秒再試（或撳頂部「🔧 修復」）');
+      }
     } catch (e) {
-      if (i >= (tries ?? 2)) throw e;
-      await new Promise(x => setTimeout(x, 1500));
+      markConnBad();
+      if (i >= maxTries) {
+        if (e instanceof TypeError)
+          throw new Error('連唔到伺服器——請檢查網絡，或撳頂部「🔧 修復」掣');
+        throw e;
+      }
+      await new Promise(x => setTimeout(x, backoff)); backoff *= 2;
     }
   }
 }
@@ -48,24 +71,113 @@ function setStatus(t, isErr){
   const el = $('#status');
   el.innerHTML = isErr ? `<span class="err">${esc(t)}</span>` : esc(t);
 }
+/* ---------- 連線狀態列（2026-09-29）：🟢 正常／🟠 數據主機中斷／🔴 斷線 + 自行修復 ---------- */
+let _connState = 'ok';
+function _setConnChip(cls, txt){
+  const el = $('#connChip');
+  if (!el) return;
+  el.className = cls;
+  el.textContent = txt;
+}
+function markConnBad(){
+  if (_connState === 'bad') return;
+  _connState = 'bad';
+  _setConnChip('bad', '🔴 伺服器斷線');
+}
+async function refreshConnChip(){
+  try {
+    const h = await jget('/api/health');
+    _connState = 'ok';
+    const upd = h.last_data_update ? h.last_data_update.slice(5, 16) : '—';
+    if (h.data_host_ok === false)
+      _setConnChip('warn', `🟠 數據主機中斷・最後更新 ${upd}（每5分鐘自動重試）`);
+    else
+      _setConnChip('ok', `🟢 連線正常・數據更新於 ${upd}`);
+  } catch (e) {
+    markConnBad();
+  }
+}
+async function repairConn(){
+  toast('🔧 修復緊：重試連線…');
+  _setConnChip('', '⏳ 修復緊…');
+  try {
+    const ok = await pollReady();
+    await refreshUpdInfo();
+    await refreshConnChip();
+    if (curPage === 'home') loadHome();
+    toast(ok ? '🔧 修復完成' : '🔧 伺服器未就緒，30 秒後會再自動試');
+  } catch (e) {
+    toast('🔧 修復失敗：' + e.message);
+    refreshConnChip();
+  }
+}
+/* ---------- 工作記錄面板：crawl_log 最近動態 + 更新狀態 ---------- */
+let _worklogLoaded = false;
+async function refreshWorkLog(){
+  const box = $('#workLogBox');
+  if (!box || !box.open) return;
+  let d;
+  try { d = await jget('/api/worklog?limit=30'); }
+  catch (e) { $('#workLog').innerHTML = '<div class="err">工作記錄載入失敗：' + esc(String(e)) + '</div>'; return; }
+  const u = d.update || {}, w = d.window || {}, c = d.catchup || {};
+  let sum = '';
+  if (u.running) sum = `更新緊：${u.phase || ''}`;
+  else if (u.error) sum = '⚠️ 上次更新失敗（見下）';
+  else if (u.last_done) sum = '上次更新：' + Math.round((Date.now() / 1000 - u.last_done) / 60) + ' 分鐘前';
+  if (w.running) sum += `${sum ? '｜' : ''}⚡窗口更新 ${w.done}/${w.total}`;
+  if (c.last) sum += `${sum ? '｜' : ''}賽果補抓：${c.last.slice(5, 16)} 補 ${c.fixed || 0} 場`;
+  $('#workLogSum').textContent = sum;
+  let h = '';
+  if (u.error) h += `<div class="wl-row ERR"><span class="wl-ts">更新</span>${esc(u.error)}</div>`;
+  if (u.last_result && typeof u.last_result === 'object'){
+    const lr = u.last_result;
+    const bits = [];
+    if (lr.seasons != null) bits.push(`賽季檔 ${lr.seasons} 個`);
+    if (lr.odds != null) bits.push(`補盤口 ${lr.odds} 場${lr.odds_fail ? `（敗 ${lr.odds_fail}）` : ''}`);
+    if (lr.odds_refresh) bits.push(`刷新盤口 ${lr.odds_refresh}`);
+    if (lr.odds_fill) bits.push(`補爬盤口 ${lr.odds_fill}`);
+    if (bits.length) h += `<div class="wl-row"><span class="wl-ts">上次更新</span>${bits.map(esc).join('｜')}</div>`;
+  }
+  h += (d.log || []).map(r =>
+    `<div class="wl-row ${esc(r.level || '')}"><span class="wl-ts">${esc((r.ts || '').slice(5, 19))}</span>${esc(r.msg || '').replace(/\n/g, '<br>')}</div>`
+  ).join('') || '<div class="note">暫無記錄</div>';
+  $('#workLog').innerHTML = h;
+}
 async function refreshUpdInfo(){
   try {
     const s = await jget('/api/update-status');
     const w = await jget('/api/update-window-status');
     let t = '';
     if (s.running) t += `⟳更新中：${s.phase || ''} `;
-    else if (s.last_done) t += `上次更新：${s.last_done_ago != null ? Math.round(s.last_done_ago/60) + '分鐘前' : ''}`;
-    if (w.running) t += `｜⚡${w.window_name}更新中 ${w.done}/${w.total}`;
+    else if (s.error) t += `⚠️ 上次更新失敗：${s.error}`;
+    else if (s.last_done) {
+      const ago = s.last_done_ago != null ? Math.round(s.last_done_ago / 60) + '分鐘前' : '';
+      let detail = '';
+      const lr = s.last_result;
+      if (lr && typeof lr === 'object') {
+        const bits = [];
+        if (lr.seasons != null) bits.push(`賽季檔 ${lr.seasons}`);
+        if (lr.odds != null) bits.push(`補盤口 ${lr.odds} 場`);
+        if (lr.odds_refresh) bits.push(`刷新盤口 ${lr.odds_refresh}`);
+        if (lr.odds_fill) bits.push(`補爬盤口 ${lr.odds_fill}`);
+        detail = '（' + bits.join('｜') + '）';
+      }
+      t += `✓ 上次更新完成${ago ? `（${ago}）` : ''}${detail}`;
+    }
+    if (w.running) t += `｜⚡${w.window_name || ''}更新中 ${w.done}/${w.total}`;
+    else if (w.error) t += `｜⚡窗口更新失敗：${w.error}`;
+    else if (w.last) t += `｜⚡上次窗口更新：成 ${w.ok || 0}／敗 ${w.fail || 0}`;
     $('#updInfo').textContent = t;
     $$('#btnUpdate,#btnWin24,#btnWin30,#btnWin10').forEach(b => {
       b.disabled = !!(s.running || w.running);
     });
-    return s.running || w.running;
+    _updBusy = !!(s.running || w.running);
+    return _updBusy;
   } catch (e) { return false; }
 }
+let _updBusy = false;
 
 /* ---------- 分頁 ---------- */
-const PAGES = ['home','featw','check','fw7','fwck7','fw8','fwck8','fw12','fwck12','review','picks','featlog','v1','settings','detail'];
 let curPage = 'home';
 function goto(pg){
   curPage = pg;
@@ -104,7 +216,7 @@ async function loadHome(){
     jget('/api/lgpred').then(p => { lgPred = p.predictions || {}; renderHome(); })
       .catch(() => {});
     renderHome();
-    fillCheckSelect();
+    fillCheckSelect($('#ckMatch'), '— 揀場次 —');
     checkLgAlerts();
   } catch (e) {
     $('#homeList').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>';
@@ -199,7 +311,7 @@ function _lgPredBadge(m, p){
   return ` <span class="tag lgpred ${cls}" title="${esc(title)}">🎯${p.direction === 'up' ? '上' : '下'}｜${esc(team)}${rate != null ? ` ${rate}%・${n}場` : ''}</span>`;
 }
 function renderHome(){
-  let h = `<div class="day-h">🏟 即將開賽（${homeData.upcoming.length} 場・不設上限）</div>`;
+  let h = `<div class="day-h">🏟 即將開賽（${homeData.upcoming.length} 場）</div>`;
   if (!homeData.upcoming.length) h += '<div class="note">呢個時段冇即將開賽嘅賽事。</div>';
   let lastDay = null;
   for (const m of homeData.upcoming) {
@@ -221,32 +333,44 @@ $('#hoursSel').onchange = loadHome;
 $('#btnReload').onclick = loadHome;
 $('#btnFetchAll').onclick = async function(){
   this.disabled = true;
-  const list = homeData.upcoming.filter(m => !m.has_odds);
-  let ok = 0, fail = 0;
-  $('#updInfo').textContent = `獲取賠率中 0/${list.length}…`;
-  for (const m of list) {
-    try {
-      const r = await jpost('/api/fetch', {id: m.id});
-      r.ok ? ok++ : fail++;
-    } catch (e) { fail++; }
-    $('#updInfo').textContent = `獲取賠率中 ${ok + fail}/${list.length}…`;
+  try {
+    const list = homeData.upcoming.filter(m => !m.has_odds);
+    if (!list.length) { toast('全部場次都已有賠率'); this.disabled = false; return; }
+    let ok = 0, fail = 0, cached = 0;
+    $('#updInfo').textContent = `獲取賠率中 0/${list.length}…`;
+    for (const m of list) {
+      try {
+        const r = await jpost('/api/fetch', {id: m.id});
+        if (r.cached) cached++; else r.ok ? ok++ : fail++;
+      } catch (e) { fail++; }
+      $('#updInfo').textContent = `獲取賠率中 ${ok + fail + cached}/${list.length}…`;
+    }
+    $('#updInfo').textContent = `獲取完成：成功 ${ok}｜失敗 ${fail}${cached ? `｜${cached} 場兩分鐘內已獲取過（限流，唔使重複）` : ''}`;
+  } finally {
+    this.disabled = false;
+    loadHome();
   }
-  $('#updInfo').textContent = `獲取完成：成功 ${ok}｜失敗 ${fail}`;
-  this.disabled = false;
-  loadHome();
 };
 $('#btnUpdate').onclick = async function(){
   this.disabled = true;
-  await jpost('/api/update', {});
-  pollUpdateLoop();
+  try {
+    const r = await jpost('/api/update', {});
+    if (r.error) toast(r.error);
+    pollUpdateLoop();
+  } catch (e) {
+    toast('更新失敗：' + e.message);
+    this.disabled = false;
+  }
 };
 $('#btnWin24').onclick = () => winUpdate('24h');
 $('#btnWin30').onclick = () => winUpdate('30m');
 $('#btnWin10').onclick = () => winUpdate('10m');
 async function winUpdate(win){
-  const r = await jpost('/api/update-window', {window: win});
-  if (r.error) toast(r.error);
-  pollUpdateLoop();
+  try {
+    const r = await jpost('/api/update-window', {window: win});
+    if (r.error) toast(r.error);
+    pollUpdateLoop();
+  } catch (e) { toast('窗口更新失敗：' + e.message); }
 }
 let updPoll = null;
 async function pollUpdateLoop(){
@@ -282,7 +406,8 @@ async function openDetail(mid){
     <div class="lines">
       ${lb('尾盤（檢查基準）', t.close)}${lb('初盤', t.init)}${lb('開賽前4小時', t.h4)}
       ${lb('開賽前30分鐘', t.h30)}${lb('開賽前15分鐘', t.h15)}${lb('開賽前10分鐘', t.h10)}${lb('開賽前5分鐘', t.h5)}
-    </div></div>
+    </div>
+    <div id="detLgPred"></div></div>
     ${_pickBar(t.id, 'top')}
     <div class="tcard" id="v3sec">
       <h2 style="color:var(--gold2)">⚽ V3 場次分析（45 項）</h2>
@@ -293,6 +418,20 @@ async function openDetail(mid){
   $('#detBody').innerHTML = h;
   wirePickBars(t.id);
   initV3Section(t.id);
+  renderDetLgPred(t.id);
+}
+/* 🎯 聯賽預測明細：>78% 規則適用嘅場次，喺詳情頂部列出每條規則（lgPred＝主頁已載入嘅 /api/lgpred） */
+function renderDetLgPred(mid){
+  const box = $('#detLgPred');
+  if (!box) return;
+  const pr = lgPred[mid];
+  if (!pr) { box.innerHTML = ''; return; }
+  const cls = pr.direction === 'up' ? 'r-up' : 'r-down';
+  box.innerHTML = `<div class="gaprow" style="margin-top:8px"><span class="lab">🎯 聯賽規則</span>` +
+    `方向：<b class="${cls}">${pr.direction === 'up' ? '上盤' : '下盤'}</b>　` +
+    `<span style="color:var(--dim);font-size:12px">呢場符合 ${esc(pr.league || '')} 嘅 >78% 命中率規則${(pr.rules || []).length > 1 ? `（${pr.rules.length} 條，逐條獨立睇）` : ''}：</span></div>` +
+    (pr.rules || []).map(r =>
+      `<div class="note" style="margin:2px 0">・${esc(r.desc)}：${r.direction === 'up' ? '上' : '下'} ${Math.round(100 * (r.rate || 0))}%（${r.n}場基數）</div>`).join('');
 }
 function _pickBar(mid, pos){
   return `<div class="tcard pk-bar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -745,17 +884,104 @@ function _fwGapTxt(g, curZ){
     `<span style="color:var(--dim)">分佈最多</span> ` + v3GapCard(g.mode, curZ) +
     `<span style="color:var(--dim)">最接近50%</span> ` + v3GapCard(g.d50, curZ);
 }
-/* 回查實際：同初盤&尾盤樣本（盤口100%一樣＋水位±0.03）四個口徑嘅實際上下盤%及場次 */
-function _fwLookbackHTML(lb){
+/* ---------- 四口子回查渲染（2026-09-29）----------
+   每口徑：綜合上/下/走 ＋ 12 段水位區域。兼容舊 detail JSON（oc 直放無 water）。 */
+const LB_SCOPES = [['all', '全庫（連互換）'], ['pure', '淨主淨客（全庫）'],
+                   ['lg_all', '同聯賽/杯（連互換）'], ['lg_pure', '淨主淨客（同聯賽/杯）']];
+const LB_ZONES12 = ['≤0.64', '0.65-0.69', '0.70-0.74', '0.75-0.79', '0.80-0.84', '0.85-0.89',
+                    '0.90-0.94', '0.95-0.99', '1.00-1.04', '1.05-1.09', '1.10-1.14', '≥1.15'];
+function _lbOc(scope){
+  if (!scope) return null;
+  if ('oc' in scope) return scope.oc;   // 新格式（oc 可能係 null＝冇樣本）
+  return scope;                          // 舊格式（oc 直放，冇 water）
+}
+function _lbWater(scope){ return scope && scope.water; }
+function _lbZonesHTML(lb, curZ){
+  const rows = [];
+  for (let z = 0; z < 12; z++) {
+    let tds = '', any = false;
+    for (const [k] of LB_SCOPES) {
+      const w = _lbWater(lb[k]);
+      const zr = w && (w.zones || [])[z];
+      if (zr && zr.n > 0) {
+        any = true;
+        tds += `<td>上${pct(zr.up_r)} 下${pct(zr.down_r)}<br><span style="color:var(--dim)">${zr.n}場</span></td>`;
+      } else tds += '<td style="color:var(--dim)">—</td>';
+    }
+    if (!any) continue;
+    const cur = (curZ === z) ? ' class="cur"' : '';
+    rows.push(`<tr${cur}><td${cur}>${LB_ZONES12[z]}${curZ === z ? ' ◀今場' : ''}</td>${tds}</tr>`);
+  }
+  if (!rows.length) return '';
+  return `<details style="margin-top:4px"><summary><span class="sum-t" style="font-size:13px">各水位區域（12 段・黃底＝今場上盤水位區）</span></summary>` +
+    `<div class="checkwrap"><table class="lb4-tbl"><thead><tr><th>水位區</th>` +
+    LB_SCOPES.map(([, lab]) => `<th>${lab}</th>`).join('') +
+    `</tr></thead><tbody>${rows.join('')}</tbody></table></div></details>`;
+}
+/* 四口子回查主渲染：lb＝{all,pure,lg_all,lg_pure}，curZ＝今場上盤水位區 index（-1 無） */
+function _lb4HTML(lb, curZ, title, note){
   if (!lb) return '';
-  const cell = (o, lab) => `<div class="gi"><div class="t">${lab}</div><div class="v">` +
-    (o ? `${_udrates(o.up_r, o.down_r)}<span style="color:var(--dim)">｜${o.n}場</span>`
-       : '<span style="color:var(--dim)">—</span>') + `</div></div>`;
-  return `<div class="gaprow"><span class="lab">回查實際</span><span class="note">同初盤&尾盤樣本（盤口100%一樣＋水位±0.03）嘅實際開出結果</span></div>
-    <div class="grid6">` +
-    cell(lb.all, '全庫（連互換）') + cell(lb.pure, '淨主淨客（全庫）') +
-    cell(lb.lg_all, '同聯賽/杯（連互換）') + cell(lb.lg_pure, '淨主淨客（同聯賽/杯）') +
-    `</div>`;
+  const cell = (k, lab) => {
+    const o = _lbOc(lb[k]);
+    return `<div class="gi"><div class="t">${lab}</div><div class="v">` +
+      (o ? `${_udrates(o.up_r, o.down_r)}<span style="color:var(--dim)">｜走${pct(o.push_r)}｜${o.n}場</span>`
+         : '<span style="color:var(--dim)">—</span>') + `</div></div>`;
+  };
+  return `<div class="gaprow"><span class="lab">${title}</span><span class="note">${note || ''}</span></div>
+    <div class="grid6">${LB_SCOPES.map(([k, lab]) => cell(k, lab)).join('')}</div>` +
+    _lbZonesHTML(lb, curZ);
+}
+/* 回查實際：同初盤&尾盤樣本（盤口100%一樣＋水位±0.03）四個口徑嘅實際上下盤%、場數、各水位區 */
+function _fwLookbackHTML(lb, curZ){
+  return _lb4HTML(lb, curZ == null ? -1 : curZ, '回查實際',
+    '同初盤&尾盤樣本（盤口100%一樣＋水位±0.03）嘅實際開出結果・四個口徑');
+}
+/* Any5／Any4 首個組合嘅「相同情況」回查 */
+function _anyLbHTML(anyLb, curZ){
+  if (!anyLb) return '';
+  let h = '';
+  if (anyLb.any5)
+    h += _lb4HTML(anyLb.any5, curZ == null ? -1 : curZ, '⚡ Any 5 相同情況回查',
+      '上述 5 條件同時成立嘅歷史場次・四個口徑（綜合＋各水位區域）');
+  if (anyLb.any4)
+    h += _lb4HTML(anyLb.any4, curZ == null ? -1 : curZ, '🔸 Any 4 相同情況回查',
+      '上述 4 條件同時成立嘅歷史場次・四個口徑（綜合＋各水位區域）');
+  return h;
+}
+/* ---------- 六條件規律說明（1A／1I／19／19+互換／31／35 常駐說明，唔迫埋一齊） ---------- */
+const FW_COND_DEFS = [
+  ['1A', '同初盤&水位＋同尾盤（淨主淨客・全庫）',
+   '歷史場次【初盤】及【尾盤】同今場尾盤：讓球數＋讓球方 100% 相同，主、客水位各 ±0.03；只計主隊作主場、客隊作客場（淨主淨客）。'],
+  ['1I', '同上但計埋主客互換（全庫）',
+   '條件同 1A，但歷史場次計埋主客互換版（對調換算：讓球 s+0.5、水位用 HR 模型逆推）。'],
+  ['19', '上賽完全相同（只計同主、同客）',
+   '今場主隊對上一次比賽：主/客角色＋讓/受讓＋讓球數完全相同，兼且方向同今場（該場主隊當時都係主場）。'],
+  ['19＋互換', '上賽完全相同（同主客＋對調）',
+   '條件同 19，但計埋今場主隊上次作客（角色對調、換算後盤口相同）嘅場次。'],
+  ['31', '主主場排名−客客場排名差距淨值（±1）',
+   '歷史場次「主隊主場排名 − 客隊客場排名」嘅差距，同今場差距（±1 容差）相同。'],
+  ['35', '主主場入失球 及 客客場（各±3）',
+   '歷史場次主隊主場入球/失球/得失球差 及 客隊客場（各 ±3 球）同今場相同。'],
+];
+function _fwLegendHTML(){
+  return `<details style="margin-top:6px"><summary><span class="sum-t">📖 六條件規律說明（1A／1I／19／19+互換／31／35——每條都要全庫該方向 ≥50% 先有方向，六條一致先入選）</span></summary><div class="body">` +
+    FW_COND_DEFS.map(([nm, t, d]) =>
+      `<div class="leg-row"><span class="leg-nm">${esc(nm)}</span><div><b>${esc(t)}</b><div class="sub">${esc(d)}</div></div></div>`
+    ).join('') + `</div></details>`;
+}
+/* 精選7/8/12 格名對照（同 fw_grid_engine.CELL_NAMES） */
+const FW_CELL_NAMES = {
+  '1A': '同初盤&水位＋同尾盤（淨主淨客·全庫）', '1G': '同初盤&水位＋同尾盤（淨主淨客·同一聯賽）',
+  '1I': '同初盤&水位＋同尾盤（互換·全庫）', '1O': '同初盤&水位＋同尾盤（互換·同一聯賽）',
+  '3A': '同30分鐘&水位＋同尾盤（淨主淨客·全庫）', '3G': '同30分鐘&水位＋同尾盤（淨主淨客·同一聯賽）',
+  '3I': '同30分鐘&水位＋同尾盤（互換·全庫）', '3O': '同30分鐘&水位＋同尾盤（互換·同一聯賽）',
+  '7': '同初盤純盤口', '19': '上賽完全相同（同主客）',
+  '21': '主主場及客客場勝和負±7%', '25': '主主場及客客場入失球±3%',
+};
+function _fwgLegendHTML(cells){
+  return `<details style="margin-top:6px"><summary><span class="sum-t">📖 格規律說明（${cells.map(esc).join('、')}）</span></summary><div class="body">` +
+    cells.map(cn => `<div class="leg-row"><span class="leg-nm">${esc(cn)}</span><div>${esc(FW_CELL_NAMES[cn] || '')}</div></div>`).join('') +
+    `</div></details>`;
 }
 /* 命中率回查：呢套規則歷史入選場喺全庫／同聯賽嘅實際命中率（/api/hitrate） */
 const _hrCache = {};
@@ -811,17 +1037,14 @@ function _fwCard(p){
     <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
     <div class="gaprow"><span class="lab">本場</span>上盤＝<b>${esc(ud.up)}</b>｜下盤＝<b>${esc(ud.down)}</b>${ud.push ? '（平手盤：上盤＝平手主隊）' : ''}</div>
     <div class="grid6">${conds.map((c, i) => `<div class="gi"><div class="t">條件${i + 1}</div><div class="v">${_fwCondCell(c)}<div class="sub">${esc(c.note || '')}</div></div></div>`).join('')}</div>
-    ${p.lookback ? _fwLookbackHTML(p.lookback) : ''}
+    ${p.lookback ? _fwLookbackHTML(p.lookback, _zone12Idx(p.up_odds)) : ''}
     <div class="hrb" data-kind="fwx" data-mid="${p.id}"></div>
     <div class="gaprow"><span class="lab">30 淺深</span>${_fwGapTxt(p.gap30, _zone12Idx(p.up_odds))}</div>
     <details style="margin-top:6px"><summary><span class="sum-t">⚽ 場次分析 45 項（全資料）</span></summary><div class="body v3-fullitems"><div class="note">載入中…</div></div></details>
   </div>`;
 }
 function _fwUD(p){
-  if (!p.line) return {up: '上盤', down: '下盤', push: false};
-  if (p.line.indexOf('主讓') === 0) return {up: p.home, down: p.away, push: false};
-  if (p.line.indexOf('客讓') === 0) return {up: p.away, down: p.home, push: false};
-  return {up: p.home, down: p.away, push: true};
+  return _upDownOf(p.line, p.home, p.away) || {up: '上盤', down: '下盤', push: false};
 }
 async function loadFeaturedW(){
   const listEl = $('#fwList');
@@ -837,7 +1060,8 @@ async function loadFeaturedW(){
     <span>命中 <b class="r-up">${s.wins}</b></span><span>未中 <b class="r-down">${s.losses}</b></span>
     <span>走 <b>${s.pushes}</b></span>
     <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>
-    <div class="note">入選準則（六條件全部同方向≥50%）：①1A 同初盤&水位＋同尾盤（淨主淨客・全庫）②1I 同上但計埋主客互換 ③19 上賽完全相同（只計同主、同客）④19＋互換 ⑤31 主主場排名−客客場排名差距淨值（±1）⑥35 主主場入失球 及 客客場（各±3）。每條件展示盤口%＋同水位區%。合格後展示方向＋30 項淺深分析。已完場場次永久保留（事後回查頁）。</div>`;
+    <div class="note">入選準則（六條件全部同方向≥50%）：①1A 同初盤&水位＋同尾盤（淨主淨客・全庫）②1I 同上但計埋主客互換 ③19 上賽完全相同（只計同主、同客）④19＋互換 ⑤31 主主場排名−客客場排名差距淨值（±1）⑥35 主主場入失球 及 客客場（各±3）。每條件展示盤口%＋同水位區%。合格後展示方向＋30 項淺深分析。已完場場次永久保留（事後回查頁）。Any 5／Any 4 近合格場附「相同情況」四口子回查（綜合＋各水位區域）。</div>` +
+    _fwLegendHTML();
   const scan = d.scan || {};
   $('#fwScanInfo').textContent = scan.running
     ? `掃描中 ${scan.done}/${scan.total}…`
@@ -855,10 +1079,15 @@ async function loadFeaturedW(){
         `<div>⚡ Any 5 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, n.conds)}</div></div>`).join('');
       const a4 = (n.any4 || []).map(x =>
         `<div>🔸 Any 4 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, n.conds)}</div></div>`).join('');
-      return `<div class="mrow" data-mid="${n.id}">
-        <span class="ko">${esc((n.kickoff || '').slice(5, 16))}</span>
-        <span class="lg">${esc(n.league || '')}</span>
-        <span style="flex:1">${esc(n.home)} vs ${esc(n.away)}<div class="sub">${a5}${a4}</div></span>
+      const anyLb = _anyLbHTML(n.any_lb, -1);
+      return `<div class="fcard" data-mid="${n.id}">
+        <div class="f-top">
+          <span class="ko">${esc((n.kickoff || '').slice(5, 16))}</span>
+          <span class="lg">${esc(n.league || '')}</span>
+          <span style="flex:1">${esc(n.home)} vs ${esc(n.away)}</span>
+        </div>
+        <div class="sub" style="margin:4px 0">${a5}${a4}</div>
+        ${anyLb}
       </div>`;
     };
     h += `<div class="day-h">⚠️ Any 5／Any 4 近合格（${near.length} 場・未完全滿足六條件）</div>` + near.map(nearCard).join('');
@@ -869,6 +1098,11 @@ async function loadFeaturedW(){
   [...listEl.querySelectorAll('.fcard')].forEach(c => {
     const mid = +c.dataset.mid;
     const rec = [...d.pending, ...d.live, ...d.played].find(x => x.id === mid);
+    if (!rec) {
+      // 近合格卡（Any5/Any4）：淨係可以撳入詳情
+      c.querySelector('.f-top').onclick = () => openDetail(mid);
+      return;
+    }
     const ud = _fwUD(rec);
     c.querySelector('.ft-refresh').onclick = async ev => {
       ev.stopPropagation();
@@ -911,38 +1145,38 @@ function fwShareText(p, ud){
 }
 $('#btnFwScan').onclick = async function(){
   this.disabled = true;
-  await jpost('/api/v3/featured/scan', {});
-  pollFwScan();
-};
-let fwScanTimer = null;
-async function pollFwScan(){
-  clearTimeout(fwScanTimer);
-  const s = await jget('/api/v3/featured/scan-status');
-  const info = $('#fwScanInfo');
-  if (s.running) {
-    info.textContent = `掃描中 ${s.done}/${s.total}…`;
-    fwScanTimer = setTimeout(pollFwScan, 5000);
-    return;
+  try {
+    await jpost('/api/v3/featured/scan', {});
+    pollScanJob('fw', '/api/v3/featured/scan-status', '#btnFwScan', '#fwScanInfo', loadFeaturedW);
+  } catch (e) {
+    toast('掃描失敗：' + e.message);
+    this.disabled = false;
   }
-  $('#btnFwScan').disabled = false;
-  info.textContent = `完成｜新增 ${s.added || 0}${s.error ? '｜錯誤：' + s.error : ''}`;
-  loadFeaturedW();
-}
+};
 
 /* ---------- 精選7／8／12（減格實驗格組合） ---------- */
+/* 格組合定稿（2026-09-28）：必填格 7/19/21/25 先有共識，其餘格全部同方向先入選 */
 const FW_GRID_DEFS = {
-  '7': '1I、3A、3I、7、19、21、25（驗證期下盤70.0%・851場合格）',
-  '8': '1I、1O、3A、3I、7、19、21、25（驗證期下盤70.0%・531場合格）',
-  '12': '1A、1G、1I、1O、3A、3G、3I、3O、7、19、21、25（全部12格・極嚴格）'};
+  '7': {cells: ['1I', '3A', '3I', '7', '19', '21', '25'],
+        note: '驗證期下盤70.0%・851場合格'},
+  '8': {cells: ['1I', '1O', '3A', '3I', '7', '19', '21', '25'],
+        note: '驗證期下盤70.0%・531場合格'},
+  '12': {cells: ['1A', '1G', '1I', '1O', '3A', '3G', '3I', '3O', '7', '19', '21', '25'],
+        note: '全部12格・極嚴格'}};
 function _fwgCell(c, active){
   const on = active.includes(c.cell);
   const dr = c.dir === 'up' ? c.up_r : c.dir === 'down' ? c.down_r : null;
   const cls = c.dir === 'up' ? 'r-up' : c.dir === 'down' ? 'r-down' : '';
   const pctTxt = dr != null ? pct(dr) : (c.n ? '±' : '—');
-  return `<div class="gi${on ? ' on' : ''}" style="${on ? 'outline:2px solid #c9a227;' : 'opacity:.55;'}">` +
+  const fullName = FW_CELL_NAMES[c.cell] || c.name || '';
+  return `<div class="gi${on ? ' on' : ''}" title="${esc(fullName)}" style="${on ? 'outline:2px solid #c9a227;' : 'opacity:.55;'}">` +
     `<div class="t">${esc(c.cell)}${on ? '●' : ''}</div>` +
     `<div class="v"><b class="${cls}">${c.dir === 'up' ? '上' : c.dir === 'down' ? '下' : '—'} ${pctTxt}</b>` +
-    `<div class="sub">${c.n}場</div></div></div>`;
+    `<div class="sub">${c.n}場${!on && fullName ? '｜' + esc(fullName) : ''}</div></div></div>`;
+}
+/* 12 格方向格仔（黃框＝該格組合用到嘅格）；精選7/8/12 卡同 Check 單場檢驗共用 */
+function _fwgCellsHTML(cells, gridCells){
+  return (cells || []).map(c => _fwgCell(c, gridCells)).join('');
 }
 function _fwgStrict(s){
   if (!s) return '';
@@ -955,11 +1189,10 @@ function _fwgStrict(s){
   }).join('');
   return `<div class="grid6" style="margin-top:6px">${rows}</div>`;
 }
-function _fwGridCard(p, g, def){
+function _fwGridCard(p, g){
+  const def = FW_GRID_DEFS[g];
   const ud = _fwUD(p);
   const dn = p.direction === 'up' ? '上盤' : '下盤';
-  const active = (p.cells || []).filter(c => def.includes(c.cell.split(' ')[0])).map(c => c.cell);
-  const gridCells = def.split('（')[0].split('、');
   const resBadge = p.result === 'W' ? '<b class="r-up">✅命中</b>'
     : p.result === 'L' ? '<b class="r-down">❌未中</b>'
     : p.result === 'P' ? '<b>➖走</b>' : '';
@@ -967,13 +1200,13 @@ function _fwGridCard(p, g, def){
     <div class="f-top">
       <div class="f-head"><span class="ko">${esc((p.kickoff || '').slice(5, 16))}</span>
         <span class="lg">${esc(p.league || '')}</span>
-        <span class="dir ${p.direction === 'up' ? 'up' : 'down'}">${dn}</span>
+        <span class="tag ${p.direction}">${dn}</span>
         <button class="btn ft-refresh">⟳</button>
         <button class="btn gold ft-share">⇗</button></div>
       <div class="teams">${esc(p.home)} <span class="vs">vs</span> ${esc(p.away)}${p.score ? ` <b>${esc(p.score)}</b>` : ''} ${resBadge}</div>
       <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
       <div class="gaprow"><span class="lab">本場</span>上盤＝<b>${esc(ud.up)}</b>｜下盤＝<b>${esc(ud.down)}</b>${ud.push ? '（平手盤：上盤＝平手主隊）' : ''}</div>
-      <div class="grid6">${(p.cells || []).map(c => _fwgCell(c, gridCells)).join('')}</div>
+      <div class="grid6">${_fwgCellsHTML(p.cells, def.cells)}</div>
       ${_fwgStrict(p.strict)}
       <div class="hrb" data-kind="fw${g}" data-mid="${p.id}"></div>
       <details style="margin-top:6px"><summary><span class="sum-t">⚽ 場次分析 45 項（全資料）</span></summary><div class="body v3-fullitems"><div class="note">載入中…</div></div></details>
@@ -994,15 +1227,16 @@ async function loadFwGrid(g){
     <span>命中 <b class="r-up">${s.wins}</b></span><span>未中 <b class="r-down">${s.losses}</b></span>
     <span>走 <b>${s.pushes}</b></span>
     <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>
-    <div class="note">入選準則：格組合 ${esc(FW_GRID_DEFS[g])}。必填格 7/19/21/25 先有共識，其餘格全部同方向先入選；黃框＝該格組合用到嘅格。已完場場次永久保留。</div>`;
+    <div class="note">入選準則：格組合 ${FW_GRID_DEFS[g].cells.join('、')}（${FW_GRID_DEFS[g].note}）。必填格 7/19/21/25 先有共識，其餘格全部同方向先入選；黃框＝該格組合用到嘅格。已完場場次永久保留。</div>` +
+    _fwgLegendHTML(FW_GRID_DEFS[g].cells);
   const scan = d.scan || {};
   $('#fw' + g + 'ScanInfo').textContent = scan.running
     ? `掃描中 ${scan.done}/${scan.total}…`
     : (scan.last ? `上次掃描：${scan.last}｜新增 ${scan.added || 0}` : '');
   let h = '';
-  if (d.pending.length) h += `<div class="day-h">🔜 未開賽（${d.pending.length} 場・順開賽時間）</div>` + d.pending.map(p => _fwGridCard(p, g, FW_GRID_DEFS[g])).join('');
-  if (d.live.length) h += `<div class="day-h">🔴 進行中（${d.live.length} 場）</div>` + d.live.map(p => _fwGridCard(p, g, FW_GRID_DEFS[g])).join('');
-  if (d.played.length) h += `<div class="day-h">📼 已完場（${d.played.length} 場・最新排先・永久保留）</div>` + d.played.map(p => _fwGridCard(p, g, FW_GRID_DEFS[g])).join('');
+  if (d.pending.length) h += `<div class="day-h">🔜 未開賽（${d.pending.length} 場・順開賽時間）</div>` + d.pending.map(p => _fwGridCard(p, g)).join('');
+  if (d.live.length) h += `<div class="day-h">🔴 進行中（${d.live.length} 場）</div>` + d.live.map(p => _fwGridCard(p, g)).join('');
+  if (d.played.length) h += `<div class="day-h">📼 已完場（${d.played.length} 場・最新排先・永久保留）</div>` + d.played.map(p => _fwGridCard(p, g)).join('');
   if (!h) h = `<div class="note">暫無精選${g}場次。撳「🔍 重新掃描精選${g}」即刻篩過。</div>`;
   listEl.innerHTML = h;
   _fillHrBlocks(listEl);
@@ -1050,28 +1284,19 @@ async function loadFwGrid(g){
 ['7', '8', '12'].forEach(g => {
   $('#btnFw' + g + 'Scan').onclick = async function(){
     this.disabled = true;
-    await jpost('/api/fwgrid/scan', {g});
-    pollFwGridScan(g);
+    try {
+      await jpost('/api/fwgrid/scan', {g});
+      pollScanJob('fwg' + g, '/api/fwgrid/scan-status?g=' + g,
+                  '#btnFw' + g + 'Scan', '#fw' + g + 'ScanInfo', () => loadFwGrid(g));
+    } catch (e) {
+      toast('掃描失敗：' + e.message);
+      this.disabled = false;
+    }
   };
 });
-const fwGridScanTimers = {};
-async function pollFwGridScan(g){
-  clearTimeout(fwGridScanTimers[g]);
-  const s = await jget('/api/fwgrid/scan-status?g=' + g);
-  const info = $('#fw' + g + 'ScanInfo');
-  if (s.running) {
-    info.textContent = `掃描中 ${s.done}/${s.total}…`;
-    fwGridScanTimers[g] = setTimeout(() => pollFwGridScan(g), 5000);
-    return;
-  }
-  $('#btnFw' + g + 'Scan').disabled = false;
-  info.textContent = `完成｜新增 ${s.added || 0}${s.error ? '｜錯誤：' + s.error : ''}`;
-  loadFwGrid(g);
-}
 
-/* ---------- Check 一下 7／8／12（離線 8 情境回測表＋單場檢驗） ---------- */
-function fillFwCheckSelect(g){
-  const sel = $('#fwck' + g + 'Match');
+/* ---------- 主頁場次 <select> 共用填充：未開賽全部＋過去24小時已開賽（最近排先） ---------- */
+function fillCheckSelect(sel, firstLabel){
   const cur = sel.value;
   const now = homeData.now || '';
   const cut = now ? _hktMinusHours(now, 24) : '';
@@ -1079,12 +1304,13 @@ function fillFwCheckSelect(g){
     .filter(m => !cut || (m.kickoff || '') >= cut)
     .slice()
     .sort((a, b) => (b.kickoff || '').localeCompare(a.kickoff || ''));
-  sel.innerHTML = '<option value="">— 揀場次檢驗 —</option>' +
+  sel.innerHTML = `<option value="">${firstLabel}</option>` +
     homeData.upcoming.map(m => `<option value="${m.id}">${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}</option>`).join('') +
     (recent.length ? '<option disabled>──── 已開賽（過去24小時・最近排先）────</option>' : '') +
     recent.map(m => `<option value="${m.id}">🔴 ${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}${m.score ? '（' + esc(m.score) + '）' : ''}</option>`).join('');
   if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
 }
+/* ---------- Check 一下 7／8／12（離線 8 情境回測表＋單場檢驗） ---------- */
 async function runFwCheckOne(g, mid){
   const box = $('#fwck' + g + 'One');
   if (!mid) { box.innerHTML = ''; return; }
@@ -1098,14 +1324,7 @@ async function runFwCheckOne(g, mid){
   const st = d.scenario_stats;
   const dTxt = {deep: '深咗', shallow: '淺咗', same: '不變'};
   const gridCells = (r.grid_cells || []);
-  const cellsHtml = (r.cells || []).map(c => {
-    const on = gridCells.includes(c.cell);
-    const dr = c.dir === 'up' ? c.up_r : c.dir === 'down' ? c.down_r : null;
-    return `<div class="gi${on ? ' on' : ''}" style="${on ? 'outline:2px solid #c9a227;' : 'opacity:.55;'}">` +
-      `<div class="t">${esc(c.cell)}${on ? '●' : ''}</div>` +
-      `<div class="v"><b class="${c.dir === 'up' ? 'r-up' : c.dir === 'down' ? 'r-down' : ''}">${c.dir === 'up' ? '上' : c.dir === 'down' ? '下' : '—'} ${dr != null ? pct(dr) : (c.n ? '±' : '—')}</b>` +
-      `<div class="sub">${c.n}場</div></div></div>`;
-  }).join('');
+  const cellsHtml = _fwgCellsHTML(r.cells, gridCells);
   let scHtml;
   if (!r.pass) {
     scHtml = `<div class="note">⛔ 唔合格：${esc(r.fail || '格方向未一致')}（未入選精選${g}，以下情境只作參考）</div>`;
@@ -1122,15 +1341,19 @@ async function runFwCheckOne(g, mid){
     scHtml = `<div class="note">✅ 合格入選精選${g}（方向：${r.direction === 'up' ? '上盤' : '下盤'}）；但呢場歸唔到 8 個情境（其中一個參照盤同今場相同／數據不足）。</div>`;
   }
   box.innerHTML = `<div class="fcard"><div class="f-top">` +
-    `<div class="teams">格組合檢驡：${gridCells.map(esc).join('、')}</div>` +
+    `<div class="teams">格組合檢驗：${gridCells.map(esc).join('、')}</div>` +
     `<div class="grid6">${cellsHtml}</div>${scHtml || ''}` +
+    _fwgLegendHTML(gridCells) +
+    (r.lb ? _lb4HTML(r.lb, -1, '相同情況回查',
+      `上述格（有數據嘅：${(r.lb.cells_used || gridCells).join('、')}）同時成立嘅歷史場次・四個口徑（綜合＋各水位區域）`) : '') +
+    (r.strict ? `<div class="gaprow"><span class="lab">嚴格回查</span><span class="note">格組合＋相同尾盤盤口＋29/31/33/35 條件嘅實際開出</span></div>${_fwgStrict(r.strict)}` : '') +
     `<div class="hrb" data-kind="fw${g}" data-mid="${mid}"></div></div></div>`;
   _fillHrBlocks(box);
 }
 async function loadFwCheck(g){
   const body = $('#fwck' + g + 'Body');
   body.innerHTML = '<div class="note">載入中…</div>';
-  fillFwCheckSelect(g);
+  fillCheckSelect($('#fwck' + g + 'Match'), '— 揀場次檢驗 —');
   $('#fwck' + g + 'Match').onchange = () => runFwCheckOne(g, $('#fwck' + g + 'Match').value || null);
   if (!$('#fwck' + g + 'Match').value && homeData.upcoming.length) {
     $('#fwck' + g + 'Match').value = String(homeData.upcoming[0].id);
@@ -1144,6 +1367,15 @@ async function loadFwCheck(g){
     `合格 ${d.qualified} 場／全庫 ${d.M} 場｜不變剔除 ${d.excluded_same_line} 場｜計算於 ${d.computed_at}`;
   const dTxt = {deep: '深', shallow: '淺'};
   const dirTxt = {up: '上', down: '下'};
+  const tot = (d.scenarios || []).reduce((a, s) => ({
+    up: a.up + (s.up || 0), down: a.down + (s.down || 0),
+    push: a.push + (s.push || 0), n: a.n + (s.n || 0)}), {up: 0, down: 0, push: 0, n: 0});
+  const eff = tot.n - tot.push;
+  const hrLine = eff > 0
+    ? `<div class="statbar"><span>8 情境合計實際開出：<b class="r-up">上 ${pct(tot.up / eff)}</b></span>` +
+      `<span><b class="r-down">下 ${pct(tot.down / eff)}</b></span>` +
+      `<span>${tot.n} 場基數（走 ${tot.push} 唔計分母）</span></div>`
+    : '';
   const rows = d.scenarios.filter(s => s.n > 0).map(s => {
     const win = s.up_r >= s.down_r ? s.up_r : s.down_r;
     const winDir = s.up_r >= s.down_r ? '上' : '下';
@@ -1153,27 +1385,12 @@ async function loadFwCheck(g){
       `<td class="${win >= 0.55 ? 'r-up' : ''}">${winDir} ${pct(win)}</td>` +
       `<td>${s.n} 場</td><td>走 ${s.push}</td></tr>`;
   }).join('');
-  body.innerHTML = `<div class="note">情境＝格方向 × 現時盤對「分佈最多盤口」深淺 × 現時盤對「上盤勝率最接近50%盤口」深淺（參照盤＝上賽完全相同樣本，項目30語義）。以下係歷史合格場嘅實際開出比例。</div>` +
+  body.innerHTML = `<div class="note">情境＝格方向 × 現時盤對「分佈最多盤口」深淺 × 現時盤對「上盤勝率最接近50%盤口」深淺（參照盤＝上賽完全相同樣本，項目30語義）。以下係歷史合格場嘅實際開出比例（＝命中率回查）。</div>` +
+    hrLine +
     `<table class="ck-table"><thead><tr><th>格方向</th><th>最多盤口</th><th>最接近50%盤口</th><th>開出比例</th><th>場數</th><th>走盤</th></tr></thead><tbody>${rows || '<tr><td colspan="6">暫無數據</td></tr>'}</tbody></table>`;
 }
 
 /* ---------- Check 下先 ---------- */
-function fillCheckSelect(){
-  const sel = $('#ckMatch');
-  const cur = sel.value;
-  // 過去 24 小時已開賽場次（用 homeData.now 香港時間判定），最近開賽排最上
-  const now = homeData.now || '';
-  const cut = now ? _hktMinusHours(now, 24) : '';
-  const recent = (homeData.played || [])
-    .filter(m => !cut || (m.kickoff || '') >= cut)
-    .slice()
-    .sort((a, b) => (b.kickoff || '').localeCompare(a.kickoff || ''));
-  sel.innerHTML = '<option value="">— 揀場次 —</option>' +
-    homeData.upcoming.map(m => `<option value="${m.id}">${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}</option>`).join('') +
-    (recent.length ? '<option disabled>──── 已開賽（過去24小時・最近排先）────</option>' : '') +
-    recent.map(m => `<option value="${m.id}">🔴 ${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}${m.score ? '（' + esc(m.score) + '）' : ''}</option>`).join('');
-  if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
-}
 // 香港時間字串 'YYYY-MM-DD HH:MM:SS' 減 n 小時（自己足位運算，唔靠 client 時區）
 function _hktMinusHours(hkt, n){
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})/.exec(hkt || '');
@@ -1194,7 +1411,7 @@ function _hktMinusHours(hkt, n){
 }
 $('#ckMatch').onchange = () => runCheck($('#ckMatch').value || null);
 async function loadCheckPage(){
-  fillCheckSelect();
+  fillCheckSelect($('#ckMatch'), '— 揀場次 —');
   if (!$('#ckMatch').value && homeData.upcoming.length) {
     $('#ckMatch').value = String(homeData.upcoming[0].id);
   }
@@ -1202,7 +1419,7 @@ async function loadCheckPage(){
 }
 async function runCheck(mid){
   const body = $('#ckBody');
-  if (!mid) { body.innerHTML = '<div class="note">揀一場即將開賽嘅賽事，即刻檢查五條件方向＋深淺分析。</div>'; return; }
+  if (!mid) { body.innerHTML = '<div class="note">揀一場賽事（未開賽或已完場都得），即刻檢查六條件方向＋深淺分析；完場場次另有賽果總結＋45 項詳細逐項睇。</div>'; return; }
   body.innerHTML = '<div class="note">計算中…（首次約 1-3 秒）</div>';
   let s;
   try { s = await jget('/api/v3/summary?id=' + mid); }
@@ -1214,6 +1431,7 @@ async function runCheck(mid){
   const fw = s.featured_w || {};
   const dirTxt = fw.pass ? (fw.direction === 'up' ? '上盤' : '下盤') : null;
   const dirName = x => x === 'up' ? '上盤' : '下盤';
+  const curZ2 = _zone12Idx(t.line && t.line.line ? (t.line.line.indexOf('客讓') === 0 ? t.line.ao : t.line.ho) : null);
   let anyHtml = '';
   if (!fw.pass) {
     const a5 = (fw.any5 || []).map(x =>
@@ -1221,19 +1439,45 @@ async function runCheck(mid){
     const a4 = (fw.any4 || []).map(x =>
       `<div>🔸 Any 4 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, fw.conds)}</div></div>`).join('');
     anyHtml = (a5 || a4)
-      ? `<div class="gaprow"><span class="lab">近合格</span>${a5}${a4}</div>` : '';
+      ? `<div class="gaprow"><span class="lab">近合格</span>${a5}${a4}</div>` +
+        _anyLbHTML(fw.any_lb, curZ2) : '';
   }
   let h = `<div class="tcard"><h2 style="font-size:16px;color:var(--gold2)">✓ Check 下先（同精選W 六條件＋淺深分析）</h2>
     ${_udLegend()}
     <div style="font-size:15px;margin-bottom:6px">方向：${dirTxt ? `<b class="r-up">✅ 六條件一致 → ${dirTxt}(${esc(_un())})</b>` : `<span style="color:var(--dim)">❌ 未一致${fw.fail_note ? '（' + esc(fw.fail_note) + '）' : ''}</span>`}</div>
     ${anyHtml}
     <div class="grid6">${(fw.conds || []).map((c, i) => `<div class="gi"><div class="t">條件${i + 1}</div><div class="v">${_fwCondCell(c)}<div class="sub">${esc(c.note || '')}</div></div></div>`).join('')}</div>
-    ${fw.lookback ? _fwLookbackHTML(fw.lookback) : ''}
-    <div class="gaprow"><span class="lab">30 淺深</span>${_fwGapTxt(fw.gap30, _zone12Idx(t.line && t.line.line ? (t.line.line.indexOf('客讓') === 0 ? t.line.ao : t.line.ho) : null))}</div>
+    ${_fwLegendHTML()}
+    ${fw.lookback ? _fwLookbackHTML(fw.lookback, curZ2) : ''}
+    <div class="gaprow"><span class="lab">30 淺深</span>${_fwGapTxt(fw.gap30, curZ2)}</div>
     <div class="note">Check 下先＝對任一場即將開賽賽事，即場重算精選W 六條件（1A／1I／19同主客／19+互換／31／35）：每條件要全庫該方向≥50% 先有方向；六條方向一致即話你知邊邊係目前數據偏向。之後用 29 樣本（上賽完全相同）做淺深分析：今場尾盤 對 分佈最多盤口 及 上盤勝率最接近50%盤口，深咗／淺咗／一樣，連全部水位區嘅勝率場次。</div>
     <div class="hrb" data-kind="fwx" data-mid="${mid}"></div>
   </div>`;
+  // 完場賽事：賽果總結（邊邊贏＋六條件方向有冇命中）
+  if (s.result) {
+    const r = s.result.r;
+    const rTxt = r === 'A' ? '<b class="r-up">上盤贏</b>'
+      : r === 'B' ? '<b class="r-down">下盤贏</b>'
+      : r === 'P' ? '<b>➖ 走盤</b>'
+      : '<span style="color:var(--dim)">冇尾盤紀錄，未能結算</span>';
+    let hitTxt = '';
+    if (fw.pass && r === 'P') {
+      hitTxt = `｜六條件方向（${dirTxt}）<b>➖ 走盤</b>`;
+    } else if (fw.pass && r) {
+      const hit = (r === 'A') === (fw.direction === 'up');
+      hitTxt = `｜六條件方向（${dirTxt}）<b class="${hit ? 'r-up' : 'r-down'}">${hit ? '✅ 命中' : '❌ 未中'}</b>`;
+    }
+    h += `<div class="tcard"><h2 style="font-size:16px;color:var(--gold2)">🏁 賽果總結</h2>
+    <div style="font-size:15px">最終比分 <b>${esc(s.result.score)}</b>｜${rTxt}${hitTxt}</div>
+    <div class="note">結算以尾盤盤口計（同「我的選擇」規則）：讓球方淨勝球減讓球數，>0 上盤贏、<0 下盤贏、=0 走盤。</div>
+  </div>`;
+  }
+  h += `<div class="tcard"><h2 style="font-size:16px;color:var(--gold2)">📋 詳細項目（45 項＋組合篩查，逐項撳開睇）</h2>
+    <div class="note">每項即場重算，同詳情頁一模一樣：樣本結果、16 格、盤口分佈、12 段水位表。「不適用」＝該場冇對應數據（例如冇對賽紀錄）。完場場次照計——可以逐項對照實際賽果睇邊項準。</div>
+    <div id="ckItems"></div>
+  </div>`;
   body.innerHTML = h;
+  buildV3ItemsAccordion(+mid, $('#ckItems'), s.applicability);
   _fillHrBlocks(body);
 }
 
@@ -1399,17 +1643,20 @@ function _v1Card(p, z){
     <div class="gaprow"><span class="lab">✓ Check</span>${chkTxt}<div class="sub" style="margin-top:2px">＝V2 項目31 深淺不變＋組合</div></div>
   </div>`;
 }
-function _v1StatsBar(s, z){
+function _v1StatsBar(s, z, tag){
   return `<div class="statbar">
-    <span>${z ? 'V1精選Z' : 'V1精選'}：未開賽 <b>${s.pending}</b></span><span>已完場 <b>${s.played}</b></span>
+    <span>${tag || (z ? 'V1精選Z' : 'V1精選')}：未開賽 <b>${s.pending}</b></span><span>已完場 <b>${s.played}</b></span>
     <span>贏 <b class="r-up">${s.wins}</b></span><span>輸 <b class="r-down">${s.losses}</b></span>
     <span>走 <b>${s.pushes}</b></span>
     <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>`;
 }
 async function loadV1(){
   const listEl = $('#v1List'), zlistEl = $('#v1zList');
+  const v2El = $('#v2List'), v2zEl = $('#v2zList');
   listEl.innerHTML = '<div class="note">載入中…</div>';
   zlistEl.innerHTML = '<div class="note">載入中…</div>';
+  v2El.innerHTML = '<div class="note">載入中…</div>';
+  v2zEl.innerHTML = '<div class="note">載入中…</div>';
   let d, dz;
   try {
     [d, dz] = await Promise.all([
@@ -1422,21 +1669,23 @@ async function loadV1(){
   $('#v1ScanInfo').textContent = scan.running
     ? `掃描中 ${scan.done}/${scan.total}…`
     : (scan.last ? `上次掃描：${scan.last}｜新增 ${scan.added || 0}（Z ${scan.added_z || 0}）` : '');
-  $('#v1Stats').innerHTML = _v1StatsBar(d.stats, false) + V1_MAP_NOTE;
-  $('#v1zStats').innerHTML = _v1StatsBar(dz.stats, true);
-  const render = (dd, el, z) => {
+  $('#v1Stats').innerHTML = _v1StatsBar(d.stats, false, 'V1精選') + V1_MAP_NOTE;
+  $('#v1zStats').innerHTML = _v1StatsBar(dz.stats, true, 'V1精選Z');
+  const render = (dd, el, z, tag, refreshUrl) => {
     let h = '';
-    if (dd.pending.length) h += `<div class="day-h">🔜 V1${z ? '精選Z' : '精選'}・未開賽（${dd.pending.length} 場・順開賽時間）</div>` + dd.pending.map(p => _v1Card(p, z)).join('');
-    if (dd.played.length) h += `<div class="day-h">📼 V1${z ? '精選Z' : '精選'}・已完場（${dd.played.length} 場・最新排先，永久保留）</div>` + dd.played.map(p => _v1Card(p, z)).join('');
-    if (!h) h = `<div class="note">暫無 V1${z ? '精選Z' : '精選'}場次。撳「🔍 重新掃描 V1」即刻篩過。</div>`;
+    if (dd.pending.length) h += `<div class="day-h">🔜 ${tag}${z ? '精選Z' : '精選'}・未開賽（${dd.pending.length} 場・順開賽時間）</div>` + dd.pending.map(p => _v1Card(p, z)).join('');
+    if (dd.played.length) h += `<div class="day-h">📼 ${tag}${z ? '精選Z' : '精選'}・已完場（${dd.played.length} 場・最新排先，永久保留）</div>` + dd.played.map(p => _v1Card(p, z)).join('');
+    if (!h) h = `<div class="note">暫無 ${tag}${z ? '精選Z' : '精選'}場次。撳「🔍 重新掃描」即刻篩過。</div>`;
     el.innerHTML = h;
     [...el.querySelectorAll('.fcard')].forEach(c => {
       const mid = +c.dataset.mid;
       c.querySelector('.ft-refresh').onclick = async ev => {
         ev.stopPropagation();
         toast('重新整理中…');
-        await jpost('/api/v1/featured/refresh', {id: mid});
-        toast('完成'); loadV1();
+        try {
+          await jpost(refreshUrl, {id: mid});
+          toast('完成'); loadV1();
+        } catch (e) { toast('失敗：' + e.message); }
       };
       c.querySelector('.ft-share').onclick = async ev => {
         ev.stopPropagation();
@@ -1446,8 +1695,18 @@ async function loadV1(){
       c.onclick = () => openDetail(mid);
     });
   };
-  render(d, listEl, false);
-  render(dz, zlistEl, true);
+  render(d, listEl, false, 'V1', '/api/v1/featured/refresh');
+  render(dz, zlistEl, true, 'V1', '/api/v1/featured/refresh');
+  // V2（十六字頭）另外慢慢載——唔阻塞 V1 顯示
+  Promise.all([jget('/api/featured/full'), jget('/api/featured/full?z=1')])
+    .then(([d2, d2z]) => {
+      $('#v2Stats').innerHTML = `<div class="day-h" style="margin-top:14px">🆕 V2 精選（十六字頭規則引擎——用戶 2026-09-29 要求加入；卡片標籤「字頭 X X…」＝入選時合格字頭 A–P ＋31 深淺狀態）</div>` +
+        _v1StatsBar(d2.stats, false, 'V2精選');
+      $('#v2zStats').innerHTML = _v1StatsBar(d2z.stats, true, 'V2精選Z');
+      render(d2, v2El, false, 'V2', '/api/featured/refresh');
+      render(d2z, v2zEl, true, 'V2', '/api/featured/refresh');
+    })
+    .catch(e => { v2El.innerHTML = '<div class="err">V2 載入失敗：' + esc(String(e)) + '</div>'; });
 }
 function v1ShareText(p, z){
   const b = p.brief || {};
@@ -1463,22 +1722,48 @@ function v1ShareText(p, z){
 }
 $('#btnV1Scan').onclick = async function(){
   this.disabled = true;
-  await jpost('/api/v1/featured/scan', {});
-  pollV1Scan();
+  try {
+    await jpost('/api/v1/featured/scan', {});
+    pollScanJob('v1', '/api/v1/featured/scan-status', '#btnV1Scan', '#v1ScanInfo', loadV1,
+      s => `完成｜新增 ${s.added || 0}（Z ${s.added_z || 0}）${s.error ? '｜錯誤：' + s.error : ''}`);
+  } catch (e) {
+    toast('掃描失敗：' + e.message);
+    this.disabled = false;
+  }
 };
-let v1ScanTimer = null;
-async function pollV1Scan(){
-  clearTimeout(v1ScanTimer);
-  const s = await jget('/api/v1/featured/scan-status');
-  const info = $('#v1ScanInfo');
-  if (s.running) {
-    info.textContent = `掃描中 ${s.done}/${s.total}…`;
-    v1ScanTimer = setTimeout(pollV1Scan, 5000);
+$('#btnV2Scan').onclick = async function(){
+  this.disabled = true;
+  try {
+    await jpost('/api/featured/scan', {});
+    pollScanJob('v2', '/api/featured/scan-status', '#btnV2Scan', '#v1ScanInfo', loadV1);
+  } catch (e) {
+    toast('掃描失敗：' + e.message);
+    this.disabled = false;
+  }
+};
+/* 三個掃描頁共用：輪詢 scan-status，完咗解鎖掣＋回調刷新（fmtDone 可自定完成文案） */
+const _scanTimers = {};
+async function pollScanJob(key, url, btnSel, infoSel, onDone, fmtDone){
+  clearTimeout(_scanTimers[key]);
+  let s;
+  try { s = await jget(url); }
+  catch (e) {
+    const b = $(btnSel);
+    if (b) b.disabled = false;
+    const info = $(infoSel);
+    if (info) info.textContent = '掃描狀態讀取失敗：' + e.message + '（可再撳掣重試）';
     return;
   }
-  $('#btnV1Scan').disabled = false;
-  info.textContent = `完成｜新增 ${s.added || 0}（Z ${s.added_z || 0}）${s.error ? '｜錯誤：' + s.error : ''}`;
-  loadV1();
+  const info = $(infoSel);
+  if (s.running) {
+    info.textContent = `掃描中 ${s.done}/${s.total}…`;
+    _scanTimers[key] = setTimeout(() => pollScanJob(key, url, btnSel, infoSel, onDone, fmtDone), 5000);
+    return;
+  }
+  const b = $(btnSel);
+  if (b) b.disabled = false;
+  info.textContent = (fmtDone || (x => `完成｜新增 ${x.added || 0}${x.error ? '｜錯誤：' + x.error : ''}`))(s);
+  onDone();
 }
 
 /* ---------- 設定 ---------- */
@@ -1518,9 +1803,19 @@ async function shareText(txt){
     loadHome();
     refreshPicksMap();
     refreshUpdInfo();
+    refreshConnChip();
+    $('#btnRepair').onclick = repairConn;
+    $('#workLogBox').addEventListener('toggle', () => { refreshWorkLog(); });
     // 每 2 分鐘靜靜哋更新計數
     setInterval(refreshPicksMap, 120000);
-    setInterval(refreshUpdInfo, 30000);
+    setInterval(() => { refreshUpdInfo(); refreshConnChip(); refreshWorkLog(); }, 30000);
+    // 主頁／事後回查／過往紀錄自動刷新（完場狀態、新場次、新結算會自己更新，2026-09-29）
+    setInterval(() => {
+      if (document.hidden) return;
+      if (curPage === 'home' && !_updBusy) loadHome();
+      else if (curPage === 'review') loadReview();
+      else if (curPage === 'featlog') loadFeatlog();
+    }, 60000);
     // 賠率變舊自動重抓（>10 分鐘）
     setInterval(async () => {
       if (curPage !== 'home' || !homeData.upcoming) return;

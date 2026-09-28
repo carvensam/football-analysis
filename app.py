@@ -1,10 +1,23 @@
 # -*- coding: utf-8 -*-
 """篩查 APP 本機伺服器（標準函式庫 + 工作區 crawler / screen_engine）
-端點：
-  GET  /                      主頁（賽事清單 + 篩查結果）
-  GET  /api/upcoming?hours=48 未來賽事清單
-  POST /api/fetch  {id}       抓取該場最新賠率（titan007 易胜博，限流）
-  GET  /api/screen?id=        執行 14 項篩查
+端點（V3 5.0.x；舊版 V1/V2 端點照舊保留喺「舊版本」分頁）：
+  GET  /                          主頁（index.html）
+  GET  /api/ready                 數據池就緒狀態＋版本號（頂部狀態列用）
+  GET  /api/upcoming?hours=48     未來賽事清單＋已開賽（120h）
+  POST /api/fetch  {id}           抓取該場最新賠率（titan007 易胜博，限流）
+  GET  /api/screen?id=            舊版 V1 篩查（14 項＋第15項組合）
+  POST /api/update                一鍵更新（賽果＋新場次＋盤口賠率全部刷新）
+  POST /api/update-window         快掣：更新未來24／30／10 分鐘窗口
+  GET  /api/v3/list|target|summary|item   V3 主頁／場次頭／45 項適用＋精選W／單項
+  POST /api/v3/combo              V3 組合篩查（第 1–38 項多選 AND）
+  GET  /api/v3/featured/full      精選W 清單（POST …/scan|refresh 掃描／單場重算）
+  GET  /api/v3/featlog            精選W 過往紀錄（尾盤快照）
+  GET  /api/fwgrid/full?g=7|8|12  精選7／8／12 清單（POST …/scan|refresh）
+  GET  /api/fwcheck/full|target   Check 一下 7／8／12（8 情境回測表＋單場檢驗）
+  GET  /api/lgpred                聯賽預測標籤（>78% 規則）
+  GET  /api/lgalerts              🔔 聯賽規則提示鐘
+  GET  /api/hitrate?kind=&id=     命中率回查（fw7／fw8／fw12／fwx）
+  仲有：/api/picks、/api/results、/api/featlog、/api/v2/*、/api/v1/*（V1/V2 舊頁）
 """
 import json
 import os
@@ -39,7 +52,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.0.0'
+SERVER_VERSION = '5.0.4'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -188,8 +201,7 @@ def _update_worker():
         todo = conn.execute(
             'SELECT m.id, m.kickoff FROM matches m '
             'WHERE m.home_score IS NULL '
-            "AND (m.kickoff >= datetime('now','+8 hours') "
-            "OR m.kickoff >= datetime('now','+8 hours','-4 hours')) "
+            "AND m.kickoff >= datetime('now','+8 hours','-4 hours') "
             'AND EXISTS(SELECT 1 FROM odds_asian o '
             'WHERE o.match_id=m.id AND o.company_id=12) '
             'ORDER BY m.kickoff').fetchall()
@@ -731,7 +743,7 @@ def _i18_brief(it):
 
 
 def _screen_brief(mid):
-    """對單場跑篩查，抽出 1/5/8/12/15 摘要 及 14/17 差距（5 分鐘快取）"""
+    """對單場跑篩查，抽出 1/5/8/12/15/18 摘要 及 14/17 差距（5 分鐘快取）"""
     ts, data = _pk_full_cache.get(mid, (0, None))
     if data is not None and time.time() - ts < 300:
         return data
@@ -1612,22 +1624,8 @@ _check_scan = {'running': False, 'done': 0, 'total': 0, 'kept': 0,
 _GMAP = {'home': 1, 'away': -1, 'none': 0}
 
 
-def _rates_of(m, res):
-    """mask → {n, up_r, down_r}（分母剔除走盤），n=0 返回 None"""
-    n = int(m.sum())
-    if n == 0:
-        return None
-    r = res[m]
-    a = int((r == 1).sum())
-    p = int((r == 0).sum())
-    eff = n - p
-    return {'n': n,
-            'up_r': a / eff if eff else None,
-            'down_r': (eff - a) / eff if eff else None}
-
-
 def _idx_rates(idx, res):
-    """行號陣列版 _rates_of（加速回測用），idx=None 或空 → None"""
+    """行號陣列 → {n, up_r, down_r}（分母剔除走盤），idx=None 或空 → None"""
     if idx is None or idx.size == 0:
         return None
     n = int(idx.size)
@@ -1675,11 +1673,6 @@ def _d50_dir_idx(idx, c_h, c_gc, res, t_h, t_gc):
         return None
     gv = 1.0 if (t_gc == 1 or t_gc == 0) else -1.0   # 平手當主=上盤
     return 'deep' if delta * gv > 0 else 'shallow'
-
-
-def _d50_dir(m, c_h, c_gc, res, t_h, t_gc):
-    """mask 版（兼容舊呼叫）：轉行號後交畀 _d50_dir_idx"""
-    return _d50_dir_idx(np.nonzero(m)[0], c_h, c_gc, res, t_h, t_gc)
 
 
 _EMPTY_IDX = np.zeros(0, dtype=np.int64)
@@ -2207,28 +2200,51 @@ def api_v3_item(mid, no):
         conn.close()
 
 
+def _match_result(mid):
+    """完場賽事嘅賽果結算（A=上盤贏 B=下盤贏 P=走）——Check 下先結果總結用。
+    每次即場查（唔入快取），啱啱完場嘅場次唔會食到舊快取冇賽果。"""
+    conn = db()
+    try:
+        row = conn.execute('SELECT home_score, away_score FROM matches WHERE id=?',
+                           (mid,)).fetchone()
+        if not row or row[0] is None or row[1] is None:
+            return None
+        oc = conn.execute(
+            "SELECT handicap, giver FROM odds_asian WHERE match_id=? AND company_id=12 "
+            "ORDER BY (label='closing') DESC, label DESC LIMIT 1", (mid,)).fetchone()
+        if not oc or oc[0] is None:
+            return {'score': f'{row[0]}-{row[1]}', 'r': None}
+        return {'score': f'{row[0]}-{row[1]}',
+                'r': pick_result(oc[0], oc[1], row[0], row[1])}
+    finally:
+        conn.close()
+
+
 def api_v3_summary(mid):
-    """V3 一頁過：45 項適用情況＋精選W 五條件結果（詳情頁頂＋Check 下先用）"""
+    """V3 一頁過：45 項適用情況＋精選W 六條件結果＋完場賽果（詳情頁頂＋Check 下先用）"""
     import v3_engine
     key = ('v3sum', mid)
     now = time.time()
     with _v3_item_cache_lock:
         hit = _v3_item_cache.get(key)
-        if hit and now - hit[0] < V3_ITEM_CACHE_TTL:
-            return hit[1]
-    conn = db()
-    try:
-        t = screen_engine.get_target(conn, mid)
-        if not t:
-            return {'error': '找不到賽事'}
-        out = {'ok': True,
-               'applicability': v3_engine.item_applicability_v3(conn, t),
-               'featured_w': v3_engine.featured_w(conn, t)}
-        with _v3_item_cache_lock:
-            _v3_item_cache[key] = (now, out)
-        return out
-    finally:
-        conn.close()
+    if hit and now - hit[0] < V3_ITEM_CACHE_TTL:
+        out = hit[1]
+    else:
+        conn = db()
+        try:
+            t = screen_engine.get_target(conn, mid)
+            if not t:
+                return {'error': '找不到賽事'}
+            out = {'ok': True,
+                   'applicability': v3_engine.item_applicability_v3(conn, t),
+                   'featured_w': v3_engine.featured_w(conn, t)}
+            with _v3_item_cache_lock:
+                _v3_item_cache[key] = (now, out)
+        finally:
+            conn.close()
+    out = dict(out)
+    out['result'] = _match_result(mid)
+    return out
 
 
 def api_v3_combo(mid, sel):
@@ -2318,7 +2334,8 @@ def _v3_featured_scan_job():
                         'WHERE m.id=?', (mid,)).fetchone()
                     if info:
                         # 每條件嘅方向/% 一併帶上，前端 Any5/Any4 先顯示到
-                        # 同六項全中一樣嘅 % 細節（用戶 2026-09-28 指示）
+                        # 同六項全中一樣嘅 % 細節（用戶 2026-09-28 指示）；
+                        # any_lb＝Any5/Any4 首個組合嘅四口子回查（2026-09-29）
                         slim_conds = [{'dir': c.get('dir'), 'note': c.get('note'),
                                        'oc': c.get('oc'), 'zone_r': c.get('zone_r')}
                                       for c in (fw.get('conds') or [])]
@@ -2327,6 +2344,7 @@ def _v3_featured_scan_job():
                             'away': info[2], 'league': info[3],
                             'any5': fw.get('any5') or [],
                             'any4': fw.get('any4') or [],
+                            'any_lb': fw.get('any_lb') or {},
                             'conds': slim_conds})
             except Exception:
                 import traceback
@@ -2802,13 +2820,16 @@ def get_lg_alerts(mark=False):
         for rule in lp.get('rules') or []:
             kind = rule.get('kind')
             p = rule.get('params') or {}
-            if ih is None or ch is None or cg is None:
+            if ih is None or ch is None:
                 continue
-            if cg != p.get('g') or abs(ch - (p.get('h') or 0)) > 1e-9:
+            # 平手盤 giver 喺 DB 係 NULL——同 _rule_applies 一樣當 'none'，
+            # 否則 g='none' 嘅規則 lgpred 標到、🔔 又永遠彈唔出（唔一致）
+            cgn = cg or 'none'
+            if cgn != (p.get('g') or 'none') or abs(ch - (p.get('h') or 0)) > 1e-9:
                 continue
             hit = False
             if kind == 'move' and ig is not None:
-                mv = sgn(ch, cg) - sgn(ih, ig)
+                mv = sgn(ch, cgn) - sgn(ih, ig)
                 d = p.get('delta')
                 hit = ((mv > 0.001) if d == '讓深'
                        else (mv < -0.001) if d == '讓淺'
@@ -2916,6 +2937,66 @@ def api_hitrate(kind, mid):
     return {'ok': True, 'kind': kind, 'league': lg,
             'all': pick(d.get('all')),
             'league_stats': pick((d.get('leagues') or {}).get(lg))}
+
+
+# ============ 健康 / 工作記錄（前端連線狀態列＋工作 Log 面板，2026-09-29） ============
+_health_cache = {'ts': 0.0, 'data_host_ok': None}
+
+
+def api_health():
+    """連線狀態：伺服器就緒、數據主機（titan007）狀態、最後成功更新時間。
+    data_host 探測結果快取 60 秒——前端 30 秒輪詢一次，唔會增加主機負擔。"""
+    now = time.time()
+    if now - _health_cache['ts'] > 60:
+        try:
+            import crawler as _cr
+            _health_cache['data_host_ok'] = bool(_cr.data_host_probe())
+        except Exception:
+            _health_cache['data_host_ok'] = None
+        _health_cache['ts'] = now
+    last_upd = None
+    try:
+        conn = db()
+        last_upd = conn.execute(
+            'SELECT MAX(updated_at) FROM matches').fetchone()[0]
+        conn.close()
+    except Exception:
+        pass
+    return {'ok': True, 'ready': bool(_pool_ready.get('done')),
+            'version': SERVER_VERSION,
+            'data_host_ok': _health_cache['data_host_ok'],
+            'last_data_update': last_upd,
+            'update': {'running': _update_state['running'],
+                       'phase': _update_state['phase'],
+                       'error': _update_state['error'],
+                       'last_done': _update_state['last_done']},
+            'catchup': {k: _result_catchup[k]
+                        for k in ('last', 'fixed', 'error')}}
+
+
+def api_worklog(limit=30):
+    """最近嘅 crawler 工作記錄（crawl_log 表）＋更新／窗口更新／補抓狀態。
+    前端「📋 工作記錄」面板用。"""
+    rows = []
+    try:
+        conn = db()
+        rows = conn.execute(
+            'SELECT ts, level, msg FROM crawl_log ORDER BY id DESC LIMIT ?',
+            (max(1, min(int(limit), 100)),)).fetchall()
+        conn.close()
+    except Exception:
+        pass
+    return {'ok': True,
+            'update': {'running': _update_state['running'],
+                       'phase': _update_state['phase'],
+                       'error': _update_state['error'],
+                       'last_result': _update_state['last_result'],
+                       'last_done': _update_state['last_done']},
+            'window': dict(_win_state),
+            'catchup': {k: _result_catchup[k]
+                        for k in ('last', 'fixed', 'error')},
+            'log': [{'ts': ts, 'level': lv,
+                     'msg': (msg or '')[:400]} for ts, lv, msg in rows]}
 
 
 # ============ 聯賽預測（逐聯賽 >78% 規則，_lg_preds.json 離線挖掘） ============
@@ -3102,6 +3183,26 @@ class Handler(BaseHTTPRequestHandler):
                 'ready': _pool_ready['done'], 'version': SERVER_VERSION,
                 'started': _started, 'error': _pool_ready['err']},
                 ensure_ascii=False))
+            return
+        if u.path == '/api/health':
+            try:
+                self._send(200, json.dumps(api_health(), ensure_ascii=False,
+                                           default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/worklog':
+            try:
+                q = parse_qs(u.query)
+                limit = int(q.get('limit', ['30'])[0])
+                self._send(200, json.dumps(api_worklog(limit), ensure_ascii=False,
+                                           default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/upcoming':
             q = parse_qs(u.query)
@@ -3646,14 +3747,25 @@ _result_catchup = {'running': False, 'last': None, 'fixed': 0, 'error': None}
 def _result_catchup_once():
     """搵開賽超過 2.5 小時但仲未入賽果嘅場次，
     按所屬聯賽分組重抓現行賽季檔（save_season 會順便更新賽果）。
-    每輪最多 20 個聯賽，其餘下輪再補，避免一次太重。"""
+    一般場次只巡最近 10 日；但有「未結算紀錄」引用嘅場次（精選W／精選／
+    精選Z／格組合／我的選擇）唔受 10 日限制——呢啲正係「完場好耐仍待結算」嘅場。
+    每輪最多 30 個聯賽，其餘下輪再補，避免一次太重。"""
     conn = db()
     rows = conn.execute(
         'SELECT m.id, s.titan_id FROM matches m '
         'JOIN seasons s ON s.id=m.season_id '
         'WHERE m.home_score IS NULL '
         "AND m.kickoff <= datetime('now','+8 hours','-2 hours 30 minutes') "
-        "AND m.kickoff >= datetime('now','+8 hours','-10 days') "
+        "AND (m.kickoff >= datetime('now','+8 hours','-10 days') "
+        '     OR m.id IN (SELECT match_id FROM v3_featured WHERE result IS NULL '
+        '                 UNION SELECT match_id FROM v3_featured_log '
+        '                 UNION SELECT match_id FROM featured WHERE result IS NULL '
+        '                 UNION SELECT match_id FROM featured_log '
+        '                 UNION SELECT match_id FROM featured_z WHERE result IS NULL '
+        '                 UNION SELECT match_id FROM featured_z_log '
+        '                 UNION SELECT match_id FROM fw_grid_featured '
+        '                               WHERE result IS NULL '
+        '                 UNION SELECT match_id FROM user_picks)) '
         'ORDER BY m.kickoff').fetchall()
     if not rows:
         conn.close()
@@ -3665,7 +3777,7 @@ def _result_catchup_once():
     conn = db()
     fixed = 0
     for i, (tid, mids) in enumerate(by_lg.items()):
-        if i >= 20:
+        if i >= 30:
             break
         try:
             seasons = crawler.get_season_list(fetcher, tid)
@@ -3689,6 +3801,10 @@ def _result_catchup_once():
         except Exception:
             crawler.log(conn, 'ERROR',
                         f'賽果補抓失敗 {tid}\n' + traceback.format_exc())
+    if fixed:
+        crawler.log(conn, 'INFO',
+                    f'賽果補抓：補上 {fixed} 場賽果（涉及 {min(len(by_lg), 30)} '
+                    f'個聯賽，候補 {len(rows)} 場）')
     conn.close()
     return fixed
 
@@ -3712,11 +3828,14 @@ def _result_catchup_job():
 
 def _auto_scans():
     """開機自動補數：featured 空咗（雲端重部署會清磁碟）就重掃精選；
-    check_rows 太少（種入失敗）就自動開始全庫回測。唔阻塞服務。"""
+    check_rows 太少（種入失敗）就自動開始全庫回測；
+    v3_featured（精選W）空咗就自動補掃（事後回查唔會空住）。
+    唔阻塞服務。"""
     try:
         conn = db()
         n_feat = int(conn.execute('SELECT COUNT(*) FROM featured').fetchone()[0])
         n_chk = int(conn.execute('SELECT COUNT(*) FROM check_rows').fetchone()[0])
+        n_v3 = int(conn.execute('SELECT COUNT(*) FROM v3_featured').fetchone()[0])
         conn.close()
         if n_feat == 0 and not _feat_scan['running']:
             print('[auto] featured 空白，開始重掃精選', flush=True)
@@ -3724,6 +3843,9 @@ def _auto_scans():
         if n_chk < 1000 and not _check_scan['running']:
             print('[auto] check_rows 不足，開始全庫回測', flush=True)
             threading.Thread(target=_check_scan_job, daemon=True).start()
+        if n_v3 == 0 and not _v3_scan['running']:
+            print('[auto] v3_featured 空白，開始補掃精選W', flush=True)
+            threading.Thread(target=_v3_featured_scan_job, daemon=True).start()
     except Exception:
         pass
 
@@ -3805,7 +3927,10 @@ if __name__ == '__main__':
                           f'{int(time.time() - down_since) // 60} 分鐘），'
                           f'自動開始全量更新…', flush=True)
                     down_since = None
-                    do_update(auto=True)
+                    # 行人手模式（auto=False）跳過 30 分鐘節流——復活觸發每次中斷
+                    # 只會有一次，但之前失敗嘅更新更新咗 last_done，auto 模式會
+                    # 誤判做「啱啱更新過」而跳過（復活後數據其實未刷新嘅漏洞）
+                    do_update(auto=False)
                 elif not alive and down_since is None:
                     down_since = time.time()
                     print('[watchdog] titan007 數據主機暫時中斷，'
