@@ -23,7 +23,13 @@ import traceback
 import requests
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(BASE_DIR)   # 倉庫根（正本 config.json / football.db 所在）
+# 倉庫根（正本 config.json / football.db 所在）。
+# 注意：crawl_extra 會將倉庫根插到 sys.path[0]，所以「正本」import 嘅
+# 係倉庫根呢份 crawler.py（BASE_DIR=倉庫根）。engine/ 同 deploy_repo/
+# 兩份係後備同步。三份都要令 ROOT_DIR 指向倉庫根／正確嘅 db 目錄：
+#   根副本：ROOT_DIR=自己（倉庫根）；engine 副本：上一層；其他：自己（保持舊行為）
+ROOT_DIR = os.path.dirname(BASE_DIR) \
+    if os.path.basename(BASE_DIR) == 'engine' else BASE_DIR
 try:
     sys.stdout.reconfigure(encoding='utf-8')   # 無控制台環境（Hidden/服務）會是 None
 except (AttributeError, ValueError, OSError):
@@ -254,6 +260,10 @@ def db_connect(cfg):
     for attempt in range(3):
         try:
             conn.execute('PRAGMA journal_mode=WAL')
+            # 預設 1000 頁（~4MB）就 auto-checkpoint 一次——多進程長開下
+            # checkpoint 太密係 Windows disk I/O error 嘅溫床；改 32MB 一次，
+            # 其間由 crawl_extra 巡邏每 10 分鐘 PASSIVE checkpoint 補位
+            conn.execute('PRAGMA wal_autocheckpoint=8000')
             conn.executescript(SCHEMA)
             break
         except sqlite3.OperationalError:
