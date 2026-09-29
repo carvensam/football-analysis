@@ -23,6 +23,7 @@ import traceback
 import requests
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(BASE_DIR)   # 倉庫根（正本 config.json / football.db 所在）
 try:
     sys.stdout.reconfigure(encoding='utf-8')   # 無控制台環境（Hidden/服務）會是 None
 except (AttributeError, ValueError, OSError):
@@ -240,11 +241,23 @@ LEFT JOIN odds_asian oc  ON oc.match_id  = m.id AND oc.label  = 'closing'  AND o
 
 
 def db_connect(cfg):
-    # timeout=30：全速爬時多進程共用 DB，busy 即刻彈 locked 會殺死爬蟲；
-    # busy-wait 等最多 30 秒先讓步（screen_app 都係咁做）
-    conn = sqlite3.connect(os.path.join(BASE_DIR, cfg['db_path']), timeout=30)
-    conn.execute('PRAGMA journal_mode=WAL')
-    conn.executescript(SCHEMA)
+    # timeout=120：全速爬時多進程共用 DB，busy 即刻彈 locked 會殺死爬蟲；
+    # busy-wait 等最多 120 秒先讓步（screen_app 都係咁做）
+    # 相對 db_path 一律解析到倉庫根：正本 football.db 喺 root，
+    # 之前靠 engine/football.db 軟鏈接力，鏈一斷就各自開空庫（孤兒 WAL 事件）
+    db_path = cfg['db_path']
+    if not os.path.isabs(db_path):
+        db_path = os.path.join(ROOT_DIR, db_path)
+    conn = sqlite3.connect(db_path, timeout=120)
+    # 多進程同時啟動會喺建表度撞 locked——SCHEMA 冇新東西就唔使建，
+    # 撞鎖瞓 1 秒重試一次，三次都唔得都繼續（表早存在）
+    for attempt in range(3):
+        try:
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.executescript(SCHEMA)
+            break
+        except sqlite3.OperationalError:
+            time.sleep(1)
     cols = [r[1] for r in conn.execute('PRAGMA table_info(odds_asian)')]
     if 'giver' not in cols:                      # 舊庫升級
         conn.execute("ALTER TABLE odds_asian ADD COLUMN giver TEXT")
@@ -299,14 +312,20 @@ def _proxy_pool_path():
     return os.path.join(os.path.dirname(here), 'proxy_pool.json')
 
 
-def _chrome_get(url, headers=None, timeout=DIRECT_TIMEOUT, proxies=None):
+def _chrome_get(url, headers=None, timeout=DIRECT_TIMEOUT, proxies=None,
+                session=None):
     """以 Chrome TLS 指紋抓取（curl_cffi impersonate=chrome）。
 
     部份網絡商 DPI 只放行瀏覽器 TLS 指紋，curl/requests/OpenSSL 會被重置
     （TCP 通但 TLS 無限 renegotiation）；用 Chrome 指紋就直過。用於 PROXY_HOSTS。
+    session：重用嘅 curl_cffi Session（keep-alive＋TLS session 續期，
+    DPI 網絡上快 2-4 倍）；冇就自己開新。
     異常統一轉拋 requests.ConnectionError，原有斷路/中繼/代理池邏輯照舊接住。"""
     try:
         from curl_cffi import requests as creq
+        if session is not None:
+            return session.get(url, headers=headers or {}, timeout=timeout,
+                               proxies=proxies)
         return creq.get(url, headers=headers or {}, timeout=timeout,
                         impersonate='chrome', proxies=proxies)
     except Exception as e:                                  # noqa: BLE001
@@ -362,15 +381,35 @@ class Fetcher:
         self._proxy_budget = int(cfg.get('proxy_req_budget', PROXY_REQ_BUDGET))
         self._proxy_cooldown = int(cfg.get('proxy_ban_cooldown_sec',
                                           PROXY_BAN_COOLDOWN_SEC))
+        self._csession = None        # 重用嘅 Chrome 指紋 session（TLS 續期提速）
+
+    def _chrome(self, url, headers=None, timeout=DIRECT_TIMEOUT, proxies=None):
+        if self._csession is None:
+            from curl_cffi import requests as creq
+            self._csession = creq.Session(impersonate='chrome')
+        try:
+            return _chrome_get(url, headers=headers, timeout=timeout,
+                               proxies=proxies, session=self._csession)
+        except requests.ConnectionError:
+            # session 入面有條逾時死連線會搞到之後全部請求都 timeout——
+            # 一見失敗即棄 session 下次開過（每個 worker 獨立 session）
+            self._csession = None
+            raise
 
     def _state(self, k, default=None):
         r = self.conn.execute('SELECT v FROM crawl_state WHERE k=?', (k,)).fetchone()
         return r[0] if r else default
 
     def _set_state(self, k, v):
-        self.conn.execute('INSERT INTO crawl_state(k,v) VALUES(?,?) '
-                          'ON CONFLICT(k) DO UPDATE SET v=excluded.v', (k, str(v)))
-        self.conn.commit()
+        for i in range(8):
+            try:
+                self.conn.execute(
+                    'INSERT INTO crawl_state(k,v) VALUES(?,?) '
+                    'ON CONFLICT(k) DO UPDATE SET v=excluded.v', (k, str(v)))
+                self.conn.commit()
+                return
+            except sqlite3.OperationalError:
+                time.sleep(1)
 
     def _rest(self, minutes, reason):
         log(self.conn, 'WARN', f'{reason}，休息 {minutes} 分鐘後繼續…')
@@ -378,11 +417,20 @@ class Fetcher:
         log(self.conn, 'INFO', '休息完畢，繼續爬取')
 
     # ---- 電路斷路（2026-09-28 加）：主機連續死 → 冷卻期內直接行中繼 ----
+    def _cooldown_sec(self, host):
+        """幾何退避：30s → 60s → 120s … 上限 30 分鐘。
+        黑洞主機（zq/vip 被 null-route）用固定 30s 會每 45 秒空轉一次
+        10 秒逾時；退避後變成每 30 分鐘探一次，其餘時間全部讓返俾
+        alive 主機嘅任務。"""
+        streak = self.fail_streak.get(host, 1)
+        base = int(self.cfg.get('timeout_cooldown_sec', TIMEOUT_COOLDOWN_SEC))
+        return min(base * (2 ** max(0, streak - 1)), 1800)
+
     def _note_fail(self, host, err):
         self.last_error = str(err)
         self.fail_streak[host] = self.fail_streak.get(host, 0) + 1
         if self.fail_streak[host] >= 2:
-            self.host_down_until[host] = time.time() + FAIL_COOLDOWN_SEC
+            self.host_down_until[host] = time.time() + self._cooldown_sec(host)
 
     def _note_ok(self, host):
         self.fail_streak[host] = 0
@@ -468,9 +516,9 @@ class Fetcher:
             now = time.time()
             try:
                 # Chrome 指紋經代理：DPI 對代理出口一樣會攔非瀏覽器 TLS
-                r = _chrome_get(url, headers=dict(self.s.headers),
-                                timeout=RELAY_TIMEOUT,
-                                proxies={'http': proxy, 'https': proxy})
+                r = self._chrome(url, headers=dict(self.s.headers),
+                                 timeout=RELAY_TIMEOUT,
+                                 proxies={'http': proxy, 'https': proxy})
             except requests.RequestException:
                 # 連唔到（可能 proxy 死，或者都俾 titan007 封咗）→ 停 6 分鐘
                 st['rest_until'] = now + self._proxy_cooldown
@@ -557,10 +605,11 @@ class Fetcher:
 
             try:
                 if host in PROXY_HOSTS:
-                    # DPI 只放行瀏覽器 TLS 指紋：zq/vip 一律用 Chrome 指紋直連，
-                    # 失敗會轉拋 ConnectionError，落喺下面原有斷路邏輯
-                    r = _chrome_get(url, headers=dict(self.s.headers, **headers),
-                                    timeout=DIRECT_TIMEOUT)
+                    # DPI 只放行瀏覽器 TLS 指紋：zq/vip 一律用 Chrome 指紋直連
+                    # （重用 session，TLS 續期免每次握手）；失敗轉拋
+                    # ConnectionError，落喺下面原有斷路邏輯
+                    r = self._chrome(url, headers=dict(self.s.headers, **headers),
+                                     timeout=DIRECT_TIMEOUT)
                 else:
                     r = self.s.get(url, headers=headers, timeout=DIRECT_TIMEOUT)
                 self.last_req_time = time.time()
@@ -572,9 +621,10 @@ class Fetcher:
                 # connect timeout：短冷卻（30 秒）＋轉 IP（2026-09-29 修訂：取消 5 分鐘強制等待）
                 # （輪換中繼出口）；冷卻期內所有 request 一律即時拒絕（唔緩存）
                 if _is_conn_timeout(e):
+                    # 幾何退避（睇 _cooldown_sec）：黑洞主機一路 30s 冷卻
+                    # 會不斷空轉逾時，退避落嚟每 30 分鐘先探一次
                     self.host_down_until[host] = time.time() + \
-                        int(self.cfg.get('timeout_cooldown_sec',
-                                         TIMEOUT_COOLDOWN_SEC))
+                        self._cooldown_sec(host)
                     self._relay_i = (self._relay_i + 1) % len(RELAYS)
                     self.relay_first[host] = True
                     # 被封主機（zq/vip）有代理池 → 即刻行代理，唔使等冷卻期完
@@ -1141,6 +1191,9 @@ def recent_update(conn, cfg, days=3, progress=None):
     唔會重掃歷史賽季——歷史已入庫，無謂再爬。
     progress(msg) 可傳回呼用嚟顯示進度。"""
     fetcher = Fetcher(conn, cfg)
+    fin_before = conn.execute(
+        'SELECT COUNT(*) FROM matches WHERE home_score IS NOT NULL'
+    ).fetchone()[0]
     leagues = json.load(open(os.path.join(BASE_DIR, 'leagues.json'),
                              encoding='utf-8'))
     stats = {'leagues': 0, 'seasons': 0, 'odds': 0, 'odds_fail': 0}
@@ -1202,12 +1255,21 @@ def recent_update(conn, cfg, days=3, progress=None):
         except Exception:
             stats['odds_fail'] += 1
             log(conn, 'ERROR', f'補爬盤口失敗 {mid}\n' + traceback.format_exc())
+    # 完場數冇點變就唔重建 prematch：build_all 係單一大交易，
+    # 會鎖成張表幾分鐘——爬蟲同 APP 係咁互搶 database is locked 嘅元兇。
+    # 只有真係補咗新賽果（≥50 場）先值得重建
     if progress:
         progress('重建開賽前對賽數據')
     try:
         import prematch
-        n = prematch.build_all(conn)
-        log(conn, 'INFO', f'開賽前對賽數據已重建：{n} 場')
+        fin_after = conn.execute(
+            'SELECT COUNT(*) FROM matches WHERE home_score IS NOT NULL'
+        ).fetchone()[0]
+        if fin_after - fin_before >= 50:
+            n = prematch.build_all(conn)
+            log(conn, 'INFO', f'開賽前對賽數據已重建：{n} 場')
+        else:
+            log(conn, 'INFO', '完場數變化少於 50，跳過開賽前數據重建')
     except Exception:
         log(conn, 'ERROR', '開賽前對賽數據重建失敗\n' + traceback.format_exc())
     log(conn, 'INFO',

@@ -10,5 +10,6 @@
   "proxy_ban_cooldown_sec": 360,
   "blocked_retry_times": 3,
   "discover_sub_leagues": true,
-  "log_file": "logs/crawler.log"
+  "log_file": "logs/crawler.log",
+  "crawl_threads": 24
 }
