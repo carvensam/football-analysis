@@ -4053,20 +4053,14 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == '__main__':
-    # 雲端：數據庫放永久硬碟（/data）。兩個來源邊新用邊個：
-    #   - 映像種子：Dockerfile 每次部署焗入最新 football.db（mtime=build 時間）
-    #   - 硬碟庫：容器運行時雲端自己更新寫入（mtime=最後更新時間）
-    # 舊版「硬碟冇庫先複製」搞到每日管道推新 DB 上嚟都永遠用唔到舊硬碟庫
-    # （2026-09-30 實錄：未來48h場次=0）。複製前清 WAL——舊 WAL 配新庫會數據損壞。
-    seed = os.path.join(BASE_DIR, 'football.db')   # Dockerfile 焗入嘅快照
-    if os.path.exists(seed) and os.path.abspath(seed) != os.path.abspath(DB_PATH):
+    # 數據庫路徑：render.yaml 可揀 /app（映像焗入，每次部署自動最新）或
+    # /data（永久硬碟，記錄唔會随部署清空但數據要靠啟動時由映像更新）。
+    # seed == DB_PATH（/app 模式）時乜都唔使複製。
+    seed = os.path.join(BASE_DIR, 'football.db')
+    if os.path.abspath(seed) != os.path.abspath(DB_PATH) \
+            and os.path.exists(seed):
         import shutil
-        disk_existed = os.path.exists(DB_PATH)
-        seed_mt = os.path.getmtime(seed)
-        need_copy = not disk_existed
-        if disk_existed:
-            need_copy = seed_mt > os.path.getmtime(DB_PATH)
-        if need_copy:
+        if not os.path.exists(DB_PATH):
             for ext in ('-wal', '-shm', '-journal'):
                 junk = DB_PATH + ext
                 if os.path.exists(junk):
@@ -4075,10 +4069,23 @@ if __name__ == '__main__':
                     except OSError:
                         pass
             shutil.copy(seed, DB_PATH)
-            why = '較新（%s）' % time.ctime(seed_mt) if disk_existed else '未見數據庫'
-            print(f'[boot] 映像種子{why}，已複製到 {DB_PATH}', flush=True)
+            print(f'[boot] 數據庫路徑未見庫，已由映像種子複製到 {DB_PATH}',
+                  flush=True)
         else:
-            print(f'[boot] 硬碟數據庫較新，保留唔複製', flush=True)
+            # /data 模式：映像種子新過硬碟庫先更新（每日管道推新 DB 上嚟，
+            # 靠重新部署帶入）。複製前清 WAL——舊 WAL 配新庫會數據損壞。
+            seed_mt = os.path.getmtime(seed)
+            if seed_mt > os.path.getmtime(DB_PATH):
+                for ext in ('-wal', '-shm', '-journal'):
+                    junk = DB_PATH + ext
+                    if os.path.exists(junk):
+                        try:
+                            os.remove(junk)
+                        except OSError:
+                            pass
+                shutil.copy(seed, DB_PATH)
+                print(f'[boot] 映像種子較新（{time.ctime(seed_mt)}），'
+                      f'已複製到 {DB_PATH}', flush=True)
     port = int(os.environ.get('PORT') or (sys.argv[1] if len(sys.argv) > 1 else 7100))
     host = os.environ.get('HOST', '127.0.0.1')
     try:
