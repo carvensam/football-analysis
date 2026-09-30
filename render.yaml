@@ -17,3 +17,8 @@ services:
       # 數據庫 release asset（build 階段下載焗入映像做種子）
       - key: DB_URL
         value: https://github.com/carvensam/football-analysis/releases/download/db-20260920/football.db
+      # titan007 長期封鎖 datacenter IP——雲端直接爬注定失敗；
+      # 數據由本機每日朝早推送（更新雲端數據.py → GitHub → 重新部署），
+      # 閂咗雲端自動更新免得主機每 30 秒白探＋頂部常駐「更新失敗」警告（2026-09-30）
+      - key: DISABLE_UPDATE
+        value: "1"

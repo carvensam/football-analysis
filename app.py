@@ -176,6 +176,11 @@ def do_fetch(mid, force=False):
 _update_state = {'running': False, 'phase': '', 'last_done': 0.0,
                  'last_result': None, 'error': None}
 UPDATE_THROTTLE_SEC = 1800
+# 雲端（Render）伺服器 IP 被 titan007 長期封鎖（datacenter IP），佢哋直接爬唔到數據；
+# 雲端數據靠本機每日朝早推送（更新雲端數據.py → GitHub Release → 重新部署）。
+# DISABLE_UPDATE=1 就唔再每 30 秒白探主機——否則頂部常駐「上次更新失敗」警告，
+# 誤導用戶以為 APP 壞（2026-09-30 用戶投訴）。
+DISABLE_UPDATE = os.environ.get('DISABLE_UPDATE') == '1'
 
 
 def _update_worker():
@@ -187,8 +192,10 @@ def _update_worker():
     ok = False
     # 開工前快測數據主機；死緊就即刻收工，唔好逐場捱逾時（watchdog 會自動重試）
     if not crawler.data_host_probe():
-        _update_state['error'] = ('titan007 數據伺服器暫時中斷——已排定每 30 秒自動重試，'
-                                  '復活後會自動更新，現有數據不受影響')
+        _update_state['error'] = (
+            '連唔到 titan007 數據主機——多數係封咗你而家嘅 IP（例如爬蟲用得多），'
+            '唔係 APP 壞。每 30 秒自動重試；換個網絡（手機 USB 分享/重開 router '
+            '攞新 IP）即自動恢復，現有數據唔受影響照用')
         _update_state['running'] = False
         _update_state['phase'] = ''
         _update_state['last_done'] = time.time()
@@ -273,6 +280,9 @@ def _update_worker():
 
 
 def do_update(auto=False):
+    if DISABLE_UPDATE:
+        return {'ok': False, 'disabled': True,
+                'error': '雲端版唔直接爬數據——每日朝早由電腦自動推送新數據上嚟'}
     if _update_state['running']:
         return {'ok': False, 'running': True, 'error': '更新進行中'}
     if (auto and _update_state['last_done']
@@ -4138,6 +4148,10 @@ if __name__ == '__main__':
                           '每 30 秒自動重試直至復活', flush=True)
             except Exception:
                 pass
-    threading.Thread(target=_data_host_watchdog, daemon=True).start()
-    threading.Timer(5, _boot_auto_update).start()
+    if DISABLE_UPDATE:
+        print('[boot] DISABLE_UPDATE=1：雲端唔直接爬數據（由電腦每日推送），'
+              '跳過更新守候同開機自動更新', flush=True)
+    else:
+        threading.Thread(target=_data_host_watchdog, daemon=True).start()
+        threading.Timer(5, _boot_auto_update).start()
     httpd.serve_forever()
