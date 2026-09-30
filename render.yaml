@@ -3,17 +3,15 @@ services:
   - type: web
     name: football-analysis
     runtime: docker
-    # plan 唔寫死——保留服務而家嘅方案（付費版先支援永久硬碟）
+    # plan 唔寫死——保留服務而家嘅方案
     healthCheckPath: /api/ready
-    # 永久硬碟：數據庫放呢度，重新部署／重啟都唔會冇數據
-    disk:
-      name: football-data
-      mountPath: /data
-      sizeGB: 1
+    # 注意：唔設永久硬碟。908MB 數據庫放 1GB 硬碟必定爆（複製都冇位），
+    # 2026-09-30 搞到截斷庫＋長時間 502。而家直接用映像焗入嘅 /app/football.db，
+    # 每次部署都係最新 DB；代價係重新部署清「我的選擇」記錄（使用說明已載）。
     envVars:
-      # 數據庫放永久硬碟（app.py 啟動時會由映像種子複製一次）
+      # 數據庫直接用映像焗入嘅（Dockerfile 下載 db release 做種子）
       - key: DB_PATH
-        value: /data/football.db
+        value: /app/football.db
       # 數據庫 release asset（build 階段下載焗入映像做種子）
       - key: DB_URL
         value: https://github.com/carvensam/football-analysis/releases/download/db-20260920/football.db

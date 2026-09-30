@@ -4053,13 +4053,18 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == '__main__':
-    # 雲端：數據庫放永久硬碟（/data）。首次啟動（硬碟全新）由映像焗入嘅種子複製一份
-    if not os.path.exists(DB_PATH):
-        seed = os.path.join(BASE_DIR, 'football.db')   # Dockerfile 焗入嘅快照
-        if os.path.exists(seed) and os.path.abspath(seed) != os.path.abspath(DB_PATH):
-            import shutil
+    # 雲端數據庫：直接用映像焗入嘅 /app/football.db（render.yaml DB_PATH）。
+    # 每次部署映像都係最新 DB——唔使複製、唔使永久硬碟（1GB 硬碟裝唔落
+    # 908MB 庫，複製必爆；2026-09-30 事故）。代價：重新部署會清「我的選擇」
+    # 記錄（使用說明一早有寫）。DB_PATH 同 seed 唔同（本機/其他環境）
+    # 而且目標冇庫 → 先由種子複製一份。
+    seed = os.path.join(BASE_DIR, 'football.db')   # Dockerfile 焗入嘅快照
+    if os.path.exists(seed) and os.path.abspath(seed) != os.path.abspath(DB_PATH):
+        import shutil
+        if not os.path.exists(DB_PATH):
             shutil.copy(seed, DB_PATH)
-            print(f'[boot] 永久硬碟未見數據庫，已由映像種子複製到 {DB_PATH}', flush=True)
+            print(f'[boot] 數據庫路徑未見庫，已由映像種子複製到 {DB_PATH}',
+                  flush=True)
     port = int(os.environ.get('PORT') or (sys.argv[1] if len(sys.argv) > 1 else 7100))
     host = os.environ.get('HOST', '127.0.0.1')
     try:
