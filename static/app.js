@@ -15,9 +15,12 @@ function toast(msg){
 }
 async function _jf(url, opt, tries){
   /* 伺服器更新緊／重啟中會吐 HTML 維護頁——檢查 Content-Type／首字元 '<'，
-     指數退避重試，最後先抛人話錯誤（2026-09-29 修復「Unexpected token '<'」） */
+     指數退避重試，最後先抛人話錯誤（2026-09-29 修復「Unexpected token '<'」）。
+     2026-09-30：GET 重試加碼至 4 次（2+4+8+16+32≈62 秒）——Render 免費版
+     閒置瞓著後冷啟動要 30-60 秒，舊預算 6 秒內就放棄，搞到每次開 APP
+     精選都「載入失敗」；POST 維持 1 次避免雙重提交。 */
   let backoff = 2000;
-  const maxTries = tries ?? 2;
+  const maxTries = tries ?? 4;
   for (let i = 0; ; i++) {
     try {
       const r = await fetch(url, opt);
@@ -48,7 +51,7 @@ async function _jf(url, opt, tries){
     }
   }
 }
-const jget = url => _jf(url, {}, 2);
+const jget = url => _jf(url, {}, 4);
 async function jpost(url, body){
   return _jf(url, {method:'POST', headers:{'Content-Type':'application/json'},
                    body: JSON.stringify(body || {})}, 1);
