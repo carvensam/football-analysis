@@ -4053,13 +4053,32 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == '__main__':
-    # 雲端：數據庫放永久硬碟（/data）。首次啟動（硬碟全新）由映像焗入嘅種子複製一份
-    if not os.path.exists(DB_PATH):
-        seed = os.path.join(BASE_DIR, 'football.db')   # Dockerfile 焗入嘅快照
-        if os.path.exists(seed) and os.path.abspath(seed) != os.path.abspath(DB_PATH):
-            import shutil
+    # 雲端：數據庫放永久硬碟（/data）。兩個來源邊新用邊個：
+    #   - 映像種子：Dockerfile 每次部署焗入最新 football.db（mtime=build 時間）
+    #   - 硬碟庫：容器運行時雲端自己更新寫入（mtime=最後更新時間）
+    # 舊版「硬碟冇庫先複製」搞到每日管道推新 DB 上嚟都永遠用唔到舊硬碟庫
+    # （2026-09-30 實錄：未來48h場次=0）。複製前清 WAL——舊 WAL 配新庫會數據損壞。
+    seed = os.path.join(BASE_DIR, 'football.db')   # Dockerfile 焗入嘅快照
+    if os.path.exists(seed) and os.path.abspath(seed) != os.path.abspath(DB_PATH):
+        import shutil
+        disk_existed = os.path.exists(DB_PATH)
+        seed_mt = os.path.getmtime(seed)
+        need_copy = not disk_existed
+        if disk_existed:
+            need_copy = seed_mt > os.path.getmtime(DB_PATH)
+        if need_copy:
+            for ext in ('-wal', '-shm', '-journal'):
+                junk = DB_PATH + ext
+                if os.path.exists(junk):
+                    try:
+                        os.remove(junk)
+                    except OSError:
+                        pass
             shutil.copy(seed, DB_PATH)
-            print(f'[boot] 永久硬碟未見數據庫，已由映像種子複製到 {DB_PATH}', flush=True)
+            why = '較新（%s）' % time.ctime(seed_mt) if disk_existed else '未見數據庫'
+            print(f'[boot] 映像種子{why}，已複製到 {DB_PATH}', flush=True)
+        else:
+            print(f'[boot] 硬碟數據庫較新，保留唔複製', flush=True)
     port = int(os.environ.get('PORT') or (sys.argv[1] if len(sys.argv) > 1 else 7100))
     host = os.environ.get('HOST', '127.0.0.1')
     try:
