@@ -4053,39 +4053,13 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == '__main__':
-    # 數據庫路徑：render.yaml 可揀 /app（映像焗入，每次部署自動最新）或
-    # /data（永久硬碟，記錄唔會随部署清空但數據要靠啟動時由映像更新）。
-    # seed == DB_PATH（/app 模式）時乜都唔使複製。
-    seed = os.path.join(BASE_DIR, 'football.db')
-    if os.path.abspath(seed) != os.path.abspath(DB_PATH) \
-            and os.path.exists(seed):
-        import shutil
-        if not os.path.exists(DB_PATH):
-            for ext in ('-wal', '-shm', '-journal'):
-                junk = DB_PATH + ext
-                if os.path.exists(junk):
-                    try:
-                        os.remove(junk)
-                    except OSError:
-                        pass
+    # 雲端：數據庫放永久硬碟（/data）。首次啟動（硬碟全新）由映像焗入嘅種子複製一份
+    if not os.path.exists(DB_PATH):
+        seed = os.path.join(BASE_DIR, 'football.db')   # Dockerfile 焗入嘅快照
+        if os.path.exists(seed) and os.path.abspath(seed) != os.path.abspath(DB_PATH):
+            import shutil
             shutil.copy(seed, DB_PATH)
-            print(f'[boot] 數據庫路徑未見庫，已由映像種子複製到 {DB_PATH}',
-                  flush=True)
-        else:
-            # /data 模式：映像種子新過硬碟庫先更新（每日管道推新 DB 上嚟，
-            # 靠重新部署帶入）。複製前清 WAL——舊 WAL 配新庫會數據損壞。
-            seed_mt = os.path.getmtime(seed)
-            if seed_mt > os.path.getmtime(DB_PATH):
-                for ext in ('-wal', '-shm', '-journal'):
-                    junk = DB_PATH + ext
-                    if os.path.exists(junk):
-                        try:
-                            os.remove(junk)
-                        except OSError:
-                            pass
-                shutil.copy(seed, DB_PATH)
-                print(f'[boot] 映像種子較新（{time.ctime(seed_mt)}），'
-                      f'已複製到 {DB_PATH}', flush=True)
+            print(f'[boot] 永久硬碟未見數據庫，已由映像種子複製到 {DB_PATH}', flush=True)
     port = int(os.environ.get('PORT') or (sys.argv[1] if len(sys.argv) > 1 else 7100))
     host = os.environ.get('HOST', '127.0.0.1')
     try:

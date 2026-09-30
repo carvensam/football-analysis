@@ -11,11 +11,9 @@ services:
       mountPath: /data
       sizeGB: 1
     envVars:
-      # 數據庫直接用映像焗入嘅 /app/football.db——每次重新部署（每日管道）自動最新。
-      # 舊版 /data 永久硬碟：記錄唔隨部署清，但開機要複製 908MB 種子，
-      # Render 健康檢查等到超時搞到長時間 502（2026-09-30 教訓），暫棄用。
+      # 數據庫放永久硬碟（app.py 啟動時會由映像種子複製一次）
       - key: DB_PATH
-        value: /app/football.db
+        value: /data/football.db
       # 數據庫 release asset（build 階段下載焗入映像做種子）
       - key: DB_URL
         value: https://github.com/carvensam/football-analysis/releases/download/db-20260920/football.db
