@@ -4053,18 +4053,46 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == '__main__':
-    # 雲端數據庫：直接用映像焗入嘅 /app/football.db（render.yaml DB_PATH）。
-    # 每次部署映像都係最新 DB——唔使複製、唔使永久硬碟（1GB 硬碟裝唔落
-    # 908MB 庫，複製必爆；2026-09-30 事故）。代價：重新部署會清「我的選擇」
-    # 記錄（使用說明一早有寫）。DB_PATH 同 seed 唔同（本機/其他環境）
-    # 而且目標冇庫 → 先由種子複製一份。
+    # 雲端：數據庫放永久硬碟（/data），映像每次部署焗入最新種子。
+    # 2026-09-30 事故：1GB 硬碟複製 908MB 中途爆滿 → 截斷庫 → 之後每次部署
+    # 開機即「database disk image is malformed」崩潰死循環。所以開機必須
+    # 校驗硬碟庫：冇庫／損壞／截斷／種子較新 → 則刪舊檔後由映像種子重新複製
+    # （先刪舊檔先夠位；複製前清 WAL，舊 WAL 配新庫會數據損壞）。
     seed = os.path.join(BASE_DIR, 'football.db')   # Dockerfile 焗入嘅快照
     if os.path.exists(seed) and os.path.abspath(seed) != os.path.abspath(DB_PATH):
         import shutil
-        if not os.path.exists(DB_PATH):
+
+        def _db_ok(path):
+            try:
+                if os.path.getsize(path) < os.path.getsize(seed) * 0.9:
+                    return False
+                c = sqlite3.connect(path, timeout=10)
+                r = c.execute('PRAGMA quick_check').fetchone()
+                c.close()
+                return bool(r and r[0] == 'ok')
+            except sqlite3.Error:
+                return False
+
+        need_copy = not os.path.exists(DB_PATH)
+        if not need_copy:
+            need_copy = not _db_ok(DB_PATH) \
+                or os.path.getmtime(seed) > os.path.getmtime(DB_PATH)
+        if need_copy:
+            for ext in ('-wal', '-shm', '-journal'):
+                junk = DB_PATH + ext
+                if os.path.exists(junk):
+                    try:
+                        os.remove(junk)
+                    except OSError:
+                        pass
+            if os.path.exists(DB_PATH):
+                try:
+                    os.remove(DB_PATH)   # 先刪舊檔騰位，908MB 庫喺 1GB 硬碟啱啱夠
+                except OSError:
+                    pass
             shutil.copy(seed, DB_PATH)
-            print(f'[boot] 數據庫路徑未見庫，已由映像種子複製到 {DB_PATH}',
-                  flush=True)
+            print('[boot] 硬碟數據庫冇/損壞/過舊，已由映像種子重新複製到 '
+                  f'{DB_PATH}', flush=True)
     port = int(os.environ.get('PORT') or (sys.argv[1] if len(sys.argv) > 1 else 7100))
     host = os.environ.get('HOST', '127.0.0.1')
     try:
