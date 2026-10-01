@@ -60,8 +60,12 @@ def _total_ram_gb():
         class _M(ctypes.Structure):
             _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong),
                         ('ullTotalPhys', ctypes.c_ulonglong),
-                        ('ullAvailPhys', ctypes.c_ulonglong)] + \
-                       [('x', ctypes.c_ulonglong)] * 8
+                        ('ullAvailPhys', ctypes.c_ulonglong),
+                        ('ullTotalPageFile', ctypes.c_ulonglong),
+                        ('ullAvailPageFile', ctypes.c_ulonglong),
+                        ('ullTotalVirtual', ctypes.c_ulonglong),
+                        ('ullAvailVirtual', ctypes.c_ulonglong),
+                        ('ullAvailExtendedVirtual', ctypes.c_ulonglong)]
 
         m = _M()
         m.dwLength = ctypes.sizeof(m)
