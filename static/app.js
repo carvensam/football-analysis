@@ -329,7 +329,7 @@ function _mrow(m, playedSec){
   const at = pc
     ? `<span class="od at" title="手機直爬最後更新：${esc(pc.at)}（裝置 ${esc(window.PhoneCrawl.device)}）">📱 ${esc(pc.at.slice(11, 16))}</span>`
     : (m.odds_at ? `<span class="od at" title="賠率/盤口最後更新：${esc(m.odds_at)}">🕒 ${esc(fmtAt(m.odds_at))}</span>` : '');
-  const rfb = playedSec ? '' : `<button class="rfb" data-fb="${m.id}" title="即時更新呢場最新賠率同盤口">⟳</button>`;
+  const rfb = (playedSec && m.score) ? '' : `<button class="rfb" data-fb="${m.id}" data-ko="${esc(m.kickoff || '')}" title="即時更新呢場最新賠率同盤口">⟳</button>`;
   const sc = m.score ? `<span class="sc">${esc(m.score)}</span>` : '';
   const pr = (!playedSec && lgPred[m.id]) ? _lgPredBadge(m, lgPred[m.id]) : '';
   return `<div class="mrow" data-mid="${m.id}">
@@ -381,7 +381,9 @@ function renderHome(){
     b.textContent = '…';
     try {
       if (window.PhoneCrawl && PhoneCrawl.modeOn) {
-        const m = homeData.upcoming.find(x => x.id === +b.dataset.fb);
+        const m = homeData.upcoming.find(x => x.id === +b.dataset.fb)
+               || homeData.played.find(x => x.id === +b.dataset.fb);
+        if (!m) { toast('搵唔到場次資料'); b.disabled = false; b.textContent = '⟳'; return; }
         const r = await PhoneCrawl.crawlOne(m.id, m.kickoff);
         toast(r.snaps ? `📱 手機已直爬更新（${r.at.slice(11, 16)}）`
                       : (r.noOdds ? '該場仲未開盤' : '手機直爬失敗：' + (r.err || '')));
@@ -452,8 +454,9 @@ $('#btnOddsNow').onclick = async function(){
 };
 async function phoneBatchAll(btn){
   btn.disabled = true;
-  const list = homeData.upcoming;
-  if (!list.length) { toast('冇即將開賽場次'); btn.disabled = false; return; }
+  /* 即將開賽全部 ＋ 進行中（已開賽未有賽果）——後者尾盤即最新參考盤 */
+  const list = homeData.upcoming.concat(homeData.played.filter(m => !m.score));
+  if (!list.length) { toast('冇可更新場次'); btn.disabled = false; return; }
   $('#updInfo').textContent =
     `📱 裝置 ${PhoneCrawl.device} 開始直爬 ${list.length} 場（手機網絡 → titan007）…`;
   try {
