@@ -4296,6 +4296,15 @@ def _auto_scans():
         n_feat = int(conn.execute('SELECT COUNT(*) FROM featured').fetchone()[0])
         n_chk = int(conn.execute('SELECT COUNT(*) FROM check_rows').fetchone()[0])
         n_v3 = int(conn.execute('SELECT COUNT(*) FROM v3_featured').fetchone()[0])
+        # 表可能喺全新庫未建（CREATE 原本喺掃描函數入面）——計數前確保存在，
+        # 否則 SELECT 一抛錯成個 _auto_scans 跳走，後面 fw 補掃都冇埋
+        conn.execute('''CREATE TABLE IF NOT EXISTS fw_grid_featured(
+            grid TEXT NOT NULL, match_id INTEGER NOT NULL, direction TEXT NOT NULL,
+            detail TEXT, added_at TEXT, result TEXT, settled_at TEXT,
+            PRIMARY KEY(grid, match_id))''')
+        n_fw = int(conn.execute(
+            'SELECT COUNT(*) FROM fw_grid_featured').fetchone()[0])
+        conn.commit()
         conn.close()
         if n_feat == 0 and not _feat_scan['running']:
             print('[auto] featured 空白，開始重掃精選', flush=True)
@@ -4306,6 +4315,12 @@ def _auto_scans():
         if n_v3 == 0 and not _v3_scan['running']:
             print('[auto] v3_featured 空白，開始補掃精選W', flush=True)
             _scan_thread(_v3_featured_scan_job)
+        # 精選 7/8/12 格組合：重部署後種子庫格表空白，開機排隊補掃
+        # （掃描閘保證同其他掃錯開；512MB 機 1 worker 行慢啲但唔會爆）
+        if n_fw == 0:
+            for g in ('7', '8', '12'):
+                if not _fw_grid_scan[g]['running']:
+                    _scan_thread(_fw_grid_scan_job, g)
     except Exception:
         pass
 
