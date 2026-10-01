@@ -17,6 +17,7 @@ import os
 import re
 import sqlite3
 import sys
+import threading
 import time
 import traceback
 
@@ -255,6 +256,8 @@ def db_connect(cfg):
     db_path = cfg['db_path']
     if not os.path.isabs(db_path):
         db_path = os.path.join(ROOT_DIR, db_path)
+    global _DB_PATH
+    _DB_PATH = db_path
     conn = sqlite3.connect(db_path, timeout=120)
     # 多進程同時啟動會喺建表度撞 locked——SCHEMA 冇新東西就唔使建，
     # 撞鎖瞓 1 秒重試一次，三次都唔得都繼續（表早存在）
@@ -283,15 +286,35 @@ def db_connect(cfg):
     return conn
 
 
+_DB_PATH = None          # connect() 設定；log() 獨立短逾時連線用
+_log_local = threading.local()
+
+
 def log(conn, level, msg):
+    """寫 crawl_log——日誌係診斷用途，唔准阻塞爬蟲主流程：
+    用獨立連線（busy timeout 1 秒），鎖緊/繁忙即刻丟棄（2026-10-01 實測：
+    用主連線寫日誌曾喺大庫繁忙時阻塞近 3 分鐘，令即時更新掣假死）。"""
     ts = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     try:
-        conn.execute('INSERT INTO crawl_log(ts,level,msg) VALUES (?,?,?)',
-                     (ts, level, msg))
-        conn.commit()
+        c = getattr(_log_local, 'c', None)
+        if c is None:
+            c = sqlite3.connect(_DB_PATH or 'football.db', timeout=1)
+            _log_local.c = c
+        c.execute('INSERT INTO crawl_log(ts,level,msg) VALUES (?,?,?)',
+                  (ts, level, msg))
+        c.commit()
     except sqlite3.Error:
-        pass          # 資料庫被鎖定時不影響主流程（狀態以 status.json 為準）
-    print(f'[{ts}] {level}: {msg}', flush=True)
+        try:
+            _log_local.c.close()
+        except Exception:
+            pass
+        _log_local.c = None     # 連線壞咗（繁忙/鎖），下次開過
+    except Exception:
+        pass
+    try:
+        print(f'[{ts}] {level}: {msg}', flush=True)
+    except Exception:
+        pass          # stdout 俾人閂咗（服務/守護進程環境）都唔准炸
 
 
 # ---------------------------------------------------------------- 爬取器
