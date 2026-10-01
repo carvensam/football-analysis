@@ -320,8 +320,10 @@ function fmtLine(v){
 }
 function _mrow(m, playedSec){
   const pc = (!playedSec && window.PhoneCrawl) ? PhoneCrawl.lineFor(m.id) : null;
+  const pcMark = pc ? (pc.agree === true ? ' <span style="color:var(--up);font-size:10px">✓同本機</span>'
+                      : (pc.agree === false ? ' <span style="color:var(--down);font-size:10px" title="手機直爬同本機數據唔一致——分析/推算以本機（雲端）為準">⚠唔同·本機為準</span>' : '')) : '';
   const line = pc
-    ? `<div class="ln"><b>${esc(fmtLine(pc.line))}</b><span class="tag" style="font-size:10px;color:var(--gold2)">📱直爬</span><br>主${pc.ho.toFixed(2)}/客${pc.ao.toFixed(2)}</div>`
+    ? `<div class="ln"><b>${esc(fmtLine(pc.line))}</b><span class="tag" style="font-size:10px;color:var(--gold2)">📱直爬</span>${pcMark}<br>主${pc.ho.toFixed(2)}/客${pc.ao.toFixed(2)}</div>`
     : (m.line ? `<div class="ln"><b>${esc(m.line.line)}</b>${m.line.src === 'crown' ? '<span class="tag dim" style="font-size:10px">Crown</span>' : ''}<br>主${m.line.ho != null ? m.line.ho.toFixed(2) : '—'}/客${m.line.ao != null ? m.line.ao.toFixed(2) : '—'}</div>` : '<div class="ln">無盤</div>');
   const od = playedSec ? '' : ((m.has_odds || (m.line && m.line.src === 'crown'))
     ? `<span class="od has">已有賠率</span>`
@@ -384,9 +386,11 @@ function renderHome(){
         const m = homeData.upcoming.find(x => x.id === +b.dataset.fb)
                || homeData.played.find(x => x.id === +b.dataset.fb);
         if (!m) { toast('搵唔到場次資料'); b.disabled = false; b.textContent = '⟳'; return; }
-        const r = await PhoneCrawl.crawlOne(m.id, m.kickoff);
-        toast(r.snaps ? `📱 手機已直爬更新（${r.at.slice(11, 16)}）`
-                      : (r.noOdds ? '該場仲未開盤' : '手機直爬失敗：' + (r.err || '')));
+        const r = await PhoneCrawl.crawlOne(m.id, m.kickoff, m.line || null);
+        toast(r.snaps
+          ? (r.agree === false ? '📱 手機已更新：⚠ 同本機唔同（分析以本機為準）'
+                               : `📱 手機已直爬更新（${r.at.slice(11, 16)}）`)
+          : (r.noOdds ? '該場仲未開盤' : '手機直爬失敗：' + (r.err || '')));
       } else {
         const r = await jpost('/api/fetch', {id: +b.dataset.fb, force: true});
         toast(r.ok ? '已更新最新賠率同盤口' : ('更新失敗：' + (r.error || '未知')));
@@ -463,7 +467,7 @@ async function phoneBatchAll(btn){
     const r = await PhoneCrawl.crawlAll(list, st => {
       $('#updInfo').textContent =
         `📱 手機直爬緊 ${st.done} 場（✓${st.ok} ✗${st.fail} 未開盤${st.noOdds}）…`;
-    });
+    }, m => m.line || null);
     $('#updInfo').textContent =
       `📱 手機直爬完成：更新 ${r.ok}｜失敗 ${r.fail}｜未開盤 ${r.noOdds}——` +
       `已即時顯示＋同步雲端（裝置 ${PhoneCrawl.device}）`;

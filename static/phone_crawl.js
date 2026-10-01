@@ -119,8 +119,12 @@
       }
       return d;
     })(),
-    /* 撳掣入口：爬一場 */
-    crawlOne(mid, kickoff) {
+    /* 撳掣入口：爬一場。srv（可選）＝伺服器嘅現行盤口 {v, ho, ao}，
+     * 用嚟「核對」：同雲端（本機鏡像）比較，agree=true/false/null（冇本機數據）。
+     * 只係核對＋自己熒幕顯示——**唔寫入任何庫**（2026-10-02 用戶定調：
+     * 本機係數據主人，唔一致以本機為準；呢度嘅結果會 send 俾伺服器
+     * 做記錄（工作記錄見到），但伺服器唔會照單全收。） */
+    crawlOne(mid, kickoff, srv) {
       return new Promise((resolve) => {
         let txt = null;
         try {
@@ -146,10 +150,17 @@
           resolve(this.res[mid]);
           return;
         }
-        this.res[mid] = { snaps, at: fmtD(new Date()) };
+        const c = snaps.closing || snaps.initial;
+        let agree = null;
+        if (srv && c && srv.v != null && srv.ho != null && srv.ao != null) {
+          agree = Math.abs(c.hv - srv.v) < 0.01 &&
+                  Math.abs(c.ho - srv.ho) < 0.011 &&
+                  Math.abs(c.ao - srv.ao) < 0.011;
+        }
+        this.res[mid] = { snaps, at: fmtD(new Date()), agree };
         this.ok++;
         resolve(this.res[mid]);
-        /* 寫入雲端庫共享（邊個做：device 名會入工作記錄） */
+        /* 送核對結果俾伺服器記錄（只寫工作記錄，唔寫賠率庫） */
         try {
           fetch('/api/phone-odds', {
             method: 'POST',
@@ -159,13 +170,14 @@
         } catch (e) {}
       });
     },
-    /* 全部可見場次逐場爬（0.9 秒限流，跟伺服器爬蟲節奏） */
-    async crawlAll(list, onTick) {
+    /* 全部可見場次逐場爬（0.9 秒限流，跟伺服器爬蟲節奏）。
+     * srvOf（可選）：(match) => {v, ho, ao} 伺服器現行盤口，用嚟逐場核對 */
+    async crawlAll(list, onTick, srvOf) {
       if (this.running) return { running: true };
       this.running = true;
       this.done = 0; this.ok = 0; this.fail = 0; this.noOdds = 0;
       for (const m of list) {
-        await this.crawlOne(m.id, m.kickoff);
+        await this.crawlOne(m.id, m.kickoff, srvOf ? srvOf(m) : null);
         this.done++;
         if (onTick) onTick(this);
         await new Promise(r => setTimeout(r, 900));
@@ -179,7 +191,7 @@
       if (!r || r.err || r.noOdds || !r.snaps) return null;
       const c = r.snaps.closing || r.snaps.initial;
       if (!c) return null;
-      return { line: c.hv, ho: c.ho, ao: c.ao, at: r.at };
+      return { line: c.hv, ho: c.ho, ao: c.ao, at: r.at, agree: r.agree };
     },
   };
 

@@ -52,7 +52,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.0.9'
+SERVER_VERSION = '5.1.0'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -129,10 +129,12 @@ def upcoming(hours=48):
         line = None
         if hc is not None:
             line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao,
-                    'giver': gv or 'none'}
+                    'giver': gv or 'none',
+                    'v': (-hc if gv == 'home' else (0.0 if not gv else hc))}
         elif c3h is not None:
             line = {'line': screen_engine.fmt_line(c3h, c3g), 'ho': c3ho, 'ao': c3ao,
-                    'giver': c3g or 'none', 'src': 'crown'}
+                    'giver': c3g or 'none', 'src': 'crown',
+                    'v': (-c3h if c3g == 'home' else (0.0 if not c3g else c3h))}
         out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
                     'has_odds': bool(has), 'line': line, 'odds_at': odds_at,
                     'rank_home': hr_, 'rank_away': ar_,
@@ -162,7 +164,8 @@ def played():
     for mid, lg, ko, h, a, hs, aws, hc, gv, ho, ao, odds_at in rows:
         line = None
         if hc is not None:
-            line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao}
+            line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao,
+                    'v': (-hc if gv == 'home' else (0.0 if not gv else hc))}
         out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
                     'score': None if hs is None else f'{hs}-{aws}', 'line': line,
                     'odds_at': odds_at})
@@ -477,65 +480,57 @@ def fbatch_status():
     return d
 
 
-# ============ 📱 手機直爬寫入端點：WebView APP 喺手機直接抓 titan007，
-# 解析完經呢個端點寫入雲端庫（2026-10-02 用戶指示：手機 APP 改用手機端爬
-# 即將開賽及進行中嘅盤口賠率——雲端伺服器 IP 俾 titan007 封死爬唔到，
-# 手機網絡直連冇問題；伺服器只係代收已爬好嘅數據，唔會增加任何費用）。
-# 邊個做緊：device 名（APP 生成）會寫入 crawl_log，喺「📋 工作記錄」見到。
+# ============ 📱 手機直爬「核對」端點（2026-10-02 用戶定調） ============
+# 架構：本機係數據主人（獨立爬＋每日 06:17 推送上雲端）；手機自己爬嘅盤口賠率
+# **唔寫入任何庫**（唔使亦唔應該更新本機／雲端）——呢個端點只做「核對」：
+# 收到手機爬嘅七時點後，同雲端（＝本機鏡像）嘅尾盤比較，結果連裝置名寫入
+# crawl_log（📋 工作記錄見到），並回傳 agree 俾手機即場顯示 ✓／⚠。
+# 權責：唔一致時**以本機為準**（分析/推算全部行雲端本機數據；手機爬嘅
+# 只係自己熒幕嘅即時顯示）——本機每日推送會自動覆蓋雲端，權責天然兌現。
 _PHONE_LABELS = ('initial', 'pre_4h', 'pre_30m', 'pre_15m', 'pre_10m',
                  'pre_5m', 'closing')
 
 
 def do_phone_odds(body):
+    """核對手機直爬結果 vs 雲端（本機鏡像）尾盤。只記錄，唔寫 odds_asian。"""
     try:
         mid = int(body.get('id'))
         device = str(body.get('device') or '手機')[:30]
         snaps = body.get('snaps') or {}
+        close = snaps.get('closing') or snaps.get('initial') or {}
         conn = db()
-        if not conn.execute('SELECT 1 FROM matches WHERE id=?',
-                            (mid,)).fetchone():
-            conn.close()
-            return {'ok': False, 'error': '找不到賽事'}
-        now = time.strftime('%Y-%m-%d %H:%M:%S')
-        n = 0
-        for label, s in snaps.items():
-            if label not in _PHONE_LABELS or not isinstance(s, dict):
-                continue
+        try:
+            srv = conn.execute(
+                "SELECT handicap, giver, home_odds, away_odds FROM odds_asian "
+                "WHERE match_id=? AND label='closing' "
+                "ORDER BY CASE company_id WHEN 12 THEN 0 ELSE 1 END LIMIT 1",
+                (mid,)).fetchone()
+            agree = None
             try:
-                hv = float(s.get('hv'))
-                ho = float(s.get('ho'))
-                ao = float(s.get('ao'))
-                t = str(s.get('t') or '')[:16]
+                hv = float(close.get('hv'))
+                ho = float(close.get('ho'))
+                ao = float(close.get('ao'))
+                if srv and srv[0] is not None:
+                    s_hv = (-srv[0] if srv[1] == 'home'
+                            else (0.0 if not srv[1] else srv[0]))
+                    agree = (abs(hv - s_hv) < 0.01 and srv[2] is not None
+                             and srv[3] is not None
+                             and abs(ho - srv[2]) < 0.011
+                             and abs(ao - srv[3]) < 0.011)
             except (TypeError, ValueError):
-                continue
-            # 基本數值 sanity check——寫錯數自療靠每日推送，但擋住明顯垃圾
-            if (not (-5.0 <= hv <= 5.0) or not (0.4 <= ho <= 3.0)
-                    or not (0.4 <= ao <= 3.0) or len(t) < 16):
-                continue
-            abs_v = abs(hv)
-            giver = None if abs_v == 0 else ('away' if hv > 0 else 'home')
-            conn.execute(
-                'INSERT INTO odds_asian(match_id,label,company_id,handicap,'
-                'giver,home_odds,away_odds,change_time,fetched_at) '
-                'VALUES(?,?,?,?,?,?,?,?,?) '
-                'ON CONFLICT(match_id,label,company_id) DO UPDATE SET '
-                'handicap=excluded.handicap,giver=excluded.giver,'
-                'home_odds=excluded.home_odds,away_odds=excluded.away_odds,'
-                'change_time=excluded.change_time,fetched_at=excluded.fetched_at',
-                (mid, label, 12, abs_v, giver, ho, ao, t, now))
-            n += 1
-        if n:
-            conn.execute('UPDATE matches SET odds_done=1 WHERE id=?', (mid,))
-            conn.commit()
-            phone_push_note(device, n)
+                agree = None
+            mark = '✓一致' if agree else ('⚠與本機不同（以本機為準）'
+                                          if agree is False else '本機未有尾盤')
             try:
                 import crawler
                 crawler.log(conn, 'INFO',
-                            f'📱 {device} 手機直爬場次 {mid}：{n} 個時點寫入')
+                            f'📱 {device} 手機直爬核對場次 {mid}：{mark}')
             except Exception:
                 pass
-        conn.close()
-        return {'ok': True, 'written': n}
+        finally:
+            conn.close()
+        phone_push_note(device, 1 if agree else 0)
+        return {'ok': True, 'agree': agree, 'checked': True}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
 
