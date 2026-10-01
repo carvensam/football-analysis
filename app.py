@@ -52,7 +52,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.0.7'
+SERVER_VERSION = '5.0.8'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -474,6 +474,78 @@ def do_fetch_batch(hours=0):
 def fbatch_status():
     d = dict(_fbatch_state)
     return d
+
+
+# ============ 📱 手機直爬寫入端點：WebView APP 喺手機直接抓 titan007，
+# 解析完經呢個端點寫入雲端庫（2026-10-02 用戶指示：手機 APP 改用手機端爬
+# 即將開賽及進行中嘅盤口賠率——雲端伺服器 IP 俾 titan007 封死爬唔到，
+# 手機網絡直連冇問題；伺服器只係代收已爬好嘅數據，唔會增加任何費用）。
+# 邊個做緊：device 名（APP 生成）會寫入 crawl_log，喺「📋 工作記錄」見到。
+_PHONE_LABELS = ('initial', 'pre_4h', 'pre_30m', 'pre_15m', 'pre_10m',
+                 'pre_5m', 'closing')
+
+
+def do_phone_odds(body):
+    try:
+        mid = int(body.get('id'))
+        device = str(body.get('device') or '手機')[:30]
+        snaps = body.get('snaps') or {}
+        conn = db()
+        if not conn.execute('SELECT 1 FROM matches WHERE id=?',
+                            (mid,)).fetchone():
+            conn.close()
+            return {'ok': False, 'error': '找不到賽事'}
+        now = time.strftime('%Y-%m-%d %H:%M:%S')
+        n = 0
+        for label, s in snaps.items():
+            if label not in _PHONE_LABELS or not isinstance(s, dict):
+                continue
+            try:
+                hv = float(s.get('hv'))
+                ho = float(s.get('ho'))
+                ao = float(s.get('ao'))
+                t = str(s.get('t') or '')[:16]
+            except (TypeError, ValueError):
+                continue
+            # 基本數值 sanity check——寫錯數自療靠每日推送，但擋住明顯垃圾
+            if (not (-5.0 <= hv <= 5.0) or not (0.4 <= ho <= 3.0)
+                    or not (0.4 <= ao <= 3.0) or len(t) < 16):
+                continue
+            abs_v = abs(hv)
+            giver = None if abs_v == 0 else ('away' if hv > 0 else 'home')
+            conn.execute(
+                'INSERT INTO odds_asian(match_id,label,company_id,handicap,'
+                'giver,home_odds,away_odds,change_time,fetched_at) '
+                'VALUES(?,?,?,?,?,?,?,?,?) '
+                'ON CONFLICT(match_id,label,company_id) DO UPDATE SET '
+                'handicap=excluded.handicap,giver=excluded.giver,'
+                'home_odds=excluded.home_odds,away_odds=excluded.away_odds,'
+                'change_time=excluded.change_time,fetched_at=excluded.fetched_at',
+                (mid, label, 12, abs_v, giver, ho, ao, t, now))
+            n += 1
+        if n:
+            conn.execute('UPDATE matches SET odds_done=1 WHERE id=?', (mid,))
+            conn.commit()
+            phone_push_note(device, n)
+            try:
+                import crawler
+                crawler.log(conn, 'INFO',
+                            f'📱 {device} 手機直爬場次 {mid}：{n} 個時點寫入')
+            except Exception:
+                pass
+        conn.close()
+        return {'ok': True, 'written': n}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+
+_phone_push = {'ts': 0.0, 'device': '', 'total': 0}   # 狀態列顯示「邊個做緊」
+
+
+def phone_push_note(device, written):
+    _phone_push['ts'] = time.time()
+    _phone_push['device'] = str(device)[:30]
+    _phone_push['total'] += int(written or 0)
 
 
 # ============ V2 背景排程：每日 12 時起每 2 小時自動更新未來 24 小時盤口直至尾盤 ============
@@ -3182,6 +3254,7 @@ def api_health():
     return {'ok': True, 'ready': bool(_pool_ready.get('done')),
             'version': SERVER_VERSION,
             'data_host_ok': _health_cache['data_host_ok'],
+            'crawl_mode': 'cloud' if DISABLE_UPDATE else 'server',
             'last_data_update': last_upd,
             'update': {'running': _update_state['running'],
                        'phase': _update_state['phase'],
@@ -3189,6 +3262,7 @@ def api_health():
                        'last_done': _update_state['last_done']},
             'catchup': {k: _result_catchup[k]
                         for k in ('last', 'fixed', 'error')},
+            'phone_push': dict(_phone_push),
             'line12': {'stuck': _LINE12_NOTIFY['count'],
                        'notify_date': _LINE12_NOTIFY['date']}}
 
@@ -3746,6 +3820,16 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._send(200, json.dumps(
                     do_fetch_batch(int(body.get('hours', 0) or 0)), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/phone-odds':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(do_phone_odds(body), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()

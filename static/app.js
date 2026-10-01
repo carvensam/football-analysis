@@ -92,7 +92,16 @@ async function refreshConnChip(){
     const h = await jget('/api/health');
     _connState = 'ok';
     const upd = h.last_data_update ? h.last_data_update.slice(5, 16) : '—';
-    if (h.data_host_ok === false)
+    const pc = window.PhoneCrawl;
+    if (pc) {
+      pc.modeOn = (h.crawl_mode === 'cloud' && pc.avail);
+      pc.lastPushAgo = (h.phone_push && h.phone_push.ts)
+        ? Math.max(1, Math.round(Date.now() / 1000 - h.phone_push.ts)) : null;
+      pc.lastPusher = (h.phone_push && h.phone_push.device) || '';
+    }
+    if (pc && pc.modeOn)
+      _setConnChip('ok', `🟢 📱手機直爬模式（裝置 ${pc.device}）・伺服器數據 ${upd}`);
+    else if (h.data_host_ok === false)
       _setConnChip('warn', `🟠 數據主機中斷・最後更新 ${upd}（30 秒後自動重試）`);
     else
       _setConnChip('ok', `🟢 連線正常・數據更新於 ${upd}`);
@@ -291,12 +300,35 @@ function fmtAt(s){
   const today = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   return s.slice(0, 10) === today ? s.slice(11, 16) : s.slice(5, 16);
 }
+function fmtLine(v){
+  /* 帶方向盤口數值轉文字（同 screen_engine.fmt_line）：-0.5→主讓半球 +0.25→客讓平/半 */
+  const h = Math.abs(v);
+  const giver = v < 0 ? 'home' : (v > 0 ? 'away' : null);
+  const names = {0:'平手', 0.25:'平/半', 0.5:'半球', 0.75:'半/一', 1:'一球',
+                 1.25:'一/球半', 1.5:'球半', 1.75:'球半/兩', 2:'兩球',
+                 2.25:'兩/兩球半', 2.5:'兩球半'};
+  if (!giver || h === 0) return '平手';
+  const r = Math.round(h * 100) / 100;
+  let name = names[r];
+  if (!name) {
+    const whole = Math.floor(r), frac = Math.round((r - whole) * 100) / 100;
+    const cn = ['','一','二','三','四','五','六'][whole] || (whole + '');
+    const fmap = {0:'', 0.25:'平/半', 0.5:'半球', 0.75:'半/一'};
+    name = frac ? (cn || '') + (whole ? '/' : '') + (fmap[frac] || '') : cn + '球';
+  }
+  return (giver === 'home' ? '主讓' : '客讓') + name;
+}
 function _mrow(m, playedSec){
-  const line = m.line ? `<div class="ln"><b>${esc(m.line.line)}</b>${m.line.src === 'crown' ? '<span class="tag dim" style="font-size:10px">Crown</span>' : ''}<br>主${m.line.ho != null ? m.line.ho.toFixed(2) : '—'}/客${m.line.ao != null ? m.line.ao.toFixed(2) : '—'}</div>` : '<div class="ln">無盤</div>';
+  const pc = (!playedSec && window.PhoneCrawl) ? PhoneCrawl.lineFor(m.id) : null;
+  const line = pc
+    ? `<div class="ln"><b>${esc(fmtLine(pc.line))}</b><span class="tag" style="font-size:10px;color:var(--gold2)">📱直爬</span><br>主${pc.ho.toFixed(2)}/客${pc.ao.toFixed(2)}</div>`
+    : (m.line ? `<div class="ln"><b>${esc(m.line.line)}</b>${m.line.src === 'crown' ? '<span class="tag dim" style="font-size:10px">Crown</span>' : ''}<br>主${m.line.ho != null ? m.line.ho.toFixed(2) : '—'}/客${m.line.ao != null ? m.line.ao.toFixed(2) : '—'}</div>` : '<div class="ln">無盤</div>');
   const od = playedSec ? '' : ((m.has_odds || (m.line && m.line.src === 'crown'))
     ? `<span class="od has">已有賠率</span>`
     : '<span class="od">未獲取賠率</span>');
-  const at = m.odds_at ? `<span class="od at" title="賠率/盤口最後更新：${esc(m.odds_at)}">🕒 ${esc(fmtAt(m.odds_at))}</span>` : '';
+  const at = pc
+    ? `<span class="od at" title="手機直爬最後更新：${esc(pc.at)}（裝置 ${esc(window.PhoneCrawl.device)}）">📱 ${esc(pc.at.slice(11, 16))}</span>`
+    : (m.odds_at ? `<span class="od at" title="賠率/盤口最後更新：${esc(m.odds_at)}">🕒 ${esc(fmtAt(m.odds_at))}</span>` : '');
   const rfb = playedSec ? '' : `<button class="rfb" data-fb="${m.id}" title="即時更新呢場最新賠率同盤口">⟳</button>`;
   const sc = m.score ? `<span class="sc">${esc(m.score)}</span>` : '';
   const pr = (!playedSec && lgPred[m.id]) ? _lgPredBadge(m, lgPred[m.id]) : '';
@@ -341,15 +373,22 @@ function renderHome(){
   }
   $('#homeList').innerHTML = h;
   $$('#homeList .mrow').forEach(r => r.onclick = () => openDetail(+r.dataset.mid));
-  // 每場「⟳」掣：即時強制重抓呢場最新賠率同盤口（唔受 120 秒限流影響）
+  // 每場「⟳」掣：手機直爬模式由手機經原生接口直接抓；否則經伺服器
   $$('#homeList .rfb').forEach(b => b.onclick = async ev => {
     ev.stopPropagation();
     if (b.disabled) return;
     b.disabled = true;
     b.textContent = '…';
     try {
-      const r = await jpost('/api/fetch', {id: +b.dataset.fb, force: true});
-      toast(r.ok ? '已更新最新賠率同盤口' : ('更新失敗：' + (r.error || '未知')));
+      if (window.PhoneCrawl && PhoneCrawl.modeOn) {
+        const m = homeData.upcoming.find(x => x.id === +b.dataset.fb);
+        const r = await PhoneCrawl.crawlOne(m.id, m.kickoff);
+        toast(r.snaps ? `📱 手機已直爬更新（${r.at.slice(11, 16)}）`
+                      : (r.noOdds ? '該場仲未開盤' : '手機直爬失敗：' + (r.err || '')));
+      } else {
+        const r = await jpost('/api/fetch', {id: +b.dataset.fb, force: true});
+        toast(r.ok ? '已更新最新賠率同盤口' : ('更新失敗：' + (r.error || '未知')));
+      }
     } catch (e) { toast('更新失敗：' + e.message); }
     loadHome();
   });
@@ -397,10 +436,13 @@ async function winUpdate(win){
     pollUpdateLoop();
   } catch (e) { toast('窗口更新失敗：' + e.message); }
 }
-/* ⚡ 一鍵即時更新：畫面上列出的場次全部強制重抓最新賠率同盤口（服務器端批量） */
+/* ⚡ 一鍵即時更新：畫面上列出的場次全部強制重抓最新賠率同盤口。
+   手機直爬模式（雲端伺服器＋Android APP）：由手機經原生接口逐場直爬 titan007；
+   伺服器模式（本機）：伺服器端批量（代理池） */
 let fbPoll = null;
 $('#btnOddsNow').onclick = async function(){
   if (this.disabled) return;
+  if (window.PhoneCrawl && PhoneCrawl.modeOn) { phoneBatchAll(this); return; }
   this.disabled = true;
   try {
     const r = await jpost('/api/fetch-batch', {hours: +($('#hoursSel').value || 0)});
@@ -408,6 +450,25 @@ $('#btnOddsNow').onclick = async function(){
     pollFbatch();
   } catch (e) { toast('即時更新失敗：' + e.message); this.disabled = false; }
 };
+async function phoneBatchAll(btn){
+  btn.disabled = true;
+  const list = homeData.upcoming;
+  if (!list.length) { toast('冇即將開賽場次'); btn.disabled = false; return; }
+  $('#updInfo').textContent =
+    `📱 裝置 ${PhoneCrawl.device} 開始直爬 ${list.length} 場（手機網絡 → titan007）…`;
+  try {
+    const r = await PhoneCrawl.crawlAll(list, st => {
+      $('#updInfo').textContent =
+        `📱 手機直爬緊 ${st.done} 場（✓${st.ok} ✗${st.fail} 未開盤${st.noOdds}）…`;
+    });
+    $('#updInfo').textContent =
+      `📱 手機直爬完成：更新 ${r.ok}｜失敗 ${r.fail}｜未開盤 ${r.noOdds}——` +
+      `已即時顯示＋同步雲端（裝置 ${PhoneCrawl.device}）`;
+    loadHome();
+  } finally {
+    btn.disabled = false;
+  }
+}
 async function pollFbatch(){
   clearTimeout(fbPoll);
   let st;
