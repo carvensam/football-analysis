@@ -52,7 +52,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.0.8'
+SERVER_VERSION = '5.0.9'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -4271,10 +4271,29 @@ if __name__ == '__main__':
             try:
                 if os.path.getsize(path) < os.path.getsize(seed) * 0.9:
                     return False
+                # 驗證標記：上次開機 quick_check 通過後記低 size+mtime；
+                # 庫未變過（mtime 一樣）就信佢，唔使每個重啟都全庫掃一次——
+                # 908MB 嘅 PRAGMA quick_check 喺 512MB 實例上係 OOM 溫床
+                # （2026-10-02 凌晨雲端反覆重啟嘅元兇之一）
+                vm_path = path + '.verified'
+                sig = f"{os.path.getsize(path)}:{os.path.getmtime(path)}"
+                try:
+                    with open(vm_path, encoding='ascii') as vf:
+                        if vf.read().strip() == sig:
+                            return True
+                except OSError:
+                    pass
                 c = sqlite3.connect(path, timeout=10)
                 r = c.execute('PRAGMA quick_check').fetchone()
                 c.close()
-                return bool(r and r[0] == 'ok')
+                if r and r[0] == 'ok':
+                    try:
+                        with open(vm_path, 'w', encoding='ascii') as vf:
+                            vf.write(sig)
+                    except OSError:
+                        pass
+                    return True
+                return False
             except sqlite3.Error:
                 return False
 
@@ -4313,9 +4332,17 @@ if __name__ == '__main__':
     _seed_v3_featured_import()
     _auto_scans()
     threading.Thread(target=_warmup, daemon=True).start()
-    threading.Thread(target=_result_catchup_job, daemon=True).start()
-    # V2 排程：每日 12 時起每 2 小時自動更新未來 24 小時盤口直至尾盤（伺服器端，手機閂咗都行）
-    threading.Thread(target=_v2_sched_job, daemon=True).start()
+    # 雲端（DISABLE_UPDATE=1）：以下三個都係「伺服器直連 titan007」嘅工作——
+    # 雲端 IP 被封死，行只會白撞逾時（日誌入面嘅 chrome-fetch WARN）兼浪費資源；
+    # 雲端賽果/盤口數據靠每日朝早由電腦推送，唔靠呢啲（2026-10-02 凌晨雲端
+    # OOM 重啟調查：0.5c/512MB 實例被無效爬取同重複全庫校驗壓垮）。
+    if not DISABLE_UPDATE:
+        threading.Thread(target=_result_catchup_job, daemon=True).start()
+        # V2 排程：每日 12 時起每 2 小時自動更新未來 24 小時盤口直至尾盤（伺服器端，手機閂咗都行）
+        threading.Thread(target=_v2_sched_job, daemon=True).start()
+    else:
+        print('[boot] DISABLE_UPDATE=1：跳過賽果補抓＋V2 定時更新（雲端爬唔到，'
+              '數據靠每日推送）', flush=True)
     # 開機自動更新：雲端每次重新部署會用返舊數據快照起機（數據過舊），
     # 偵測到數據 stale 就喺背景自動更新（賽果＋新場次＋補爬缺少嘅盤口），無需人手撳；
     # 本機數據新鮮就唔會白行一次
