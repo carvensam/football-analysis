@@ -319,7 +319,7 @@ function fmtLine(v){
   return (giver === 'home' ? '主讓' : '客讓') + name;
 }
 function _mrow(m, playedSec){
-  const pc = (!playedSec && window.PhoneCrawl) ? PhoneCrawl.lineFor(m.id) : null;
+  const pc = window.PhoneCrawl ? PhoneCrawl.lineFor(m.id) : null;
   const pcMark = pc ? (pc.agree === true ? ' <span style="color:var(--up);font-size:10px">✓同本機</span>'
                       : (pc.agree === false ? ' <span style="color:var(--down);font-size:10px" title="手機直爬同本機數據唔一致——分析/推算以本機（雲端）為準">⚠唔同·本機為準</span>' : '')) : '';
   const line = pc
