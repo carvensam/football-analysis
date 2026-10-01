@@ -52,7 +52,7 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.0.6'
+SERVER_VERSION = '5.0.7'
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -77,6 +77,25 @@ def db():
     return sqlite3.connect(DB_PATH)
 
 
+def _migrate_db():
+    """開機遷移：odds_asian 加 fetched_at（每場賠率/盤口「最後更新」顯示用）。
+    同 crawler.connect() 內嘅遷移一致；喺度再做一次係保證 APP 查詢前欄位必存在
+    （例如雲端 DB 係舊快照種子，未行過 crawler 遷移）。"""
+    conn = sqlite3.connect(DB_PATH, timeout=120)
+    try:
+        cols = [r[1] for r in conn.execute('PRAGMA table_info(odds_asian)')]
+        if 'fetched_at' not in cols:
+            conn.execute("ALTER TABLE odds_asian ADD COLUMN fetched_at TEXT")
+            conn.execute("UPDATE odds_asian SET fetched_at = (SELECT updated_at FROM "
+                         "matches WHERE matches.id = odds_asian.match_id) "
+                         "WHERE fetched_at IS NULL")
+            conn.commit()
+            print('[boot] odds_asian 已升級：新增 fetched_at（賠率最後更新時間）',
+                  flush=True)
+    finally:
+        conn.close()
+
+
 def upcoming(hours=48):
     conn = db()
     # hours=0 → 不設時限上限，列出全部即將開賽賽事
@@ -87,7 +106,8 @@ def upcoming(hours=48):
         "EXISTS(SELECT 1 FROM odds_asian oa WHERE oa.match_id=m.id AND oa.company_id=12), "
         "oc.handicap, oc.giver, oc.home_odds, oc.away_odds, "
         "oc3.handicap, oc3.giver, oc3.home_odds, oc3.away_odds, "
-        "COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) "
+        "COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank), "
+        "(SELECT MAX(oa2.fetched_at) FROM odds_asian oa2 WHERE oa2.match_id=m.id) "
         "FROM matches m JOIN seasons s ON s.id=m.season_id "
         "JOIN competitions c ON c.titan_id=s.titan_id "
         "JOIN teams ht ON ht.titan_id=m.home_id "
@@ -105,7 +125,7 @@ def upcoming(hours=48):
         "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','+8 hours') "
         + cap + "ORDER BY m.kickoff", args).fetchall()
     out = []
-    for mid, lg, ko, h, a, od, has, hc, gv, ho, ao, c3h, c3g, c3ho, c3ao, hr_, ar_ in rows:
+    for mid, lg, ko, h, a, od, has, hc, gv, ho, ao, c3h, c3g, c3ho, c3ao, hr_, ar_, odds_at in rows:
         line = None
         if hc is not None:
             line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao,
@@ -114,7 +134,7 @@ def upcoming(hours=48):
             line = {'line': screen_engine.fmt_line(c3h, c3g), 'ho': c3ho, 'ao': c3ao,
                     'giver': c3g or 'none', 'src': 'crown'}
         out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
-                    'has_odds': bool(has), 'line': line,
+                    'has_odds': bool(has), 'line': line, 'odds_at': odds_at,
                     'rank_home': hr_, 'rank_away': ar_,
                     'fetched_ago': int(time.time() - _last_fetch[mid]) if mid in _last_fetch else None})
     conn.close()
@@ -127,7 +147,8 @@ def played():
     rows = conn.execute(
         "SELECT m.id, c.req_name, m.kickoff, ht.name_tc, at.name_tc, "
         "m.home_score, m.away_score, "
-        "oc.handicap, oc.giver, oc.home_odds, oc.away_odds "
+        "oc.handicap, oc.giver, oc.home_odds, oc.away_odds, "
+        "(SELECT MAX(oa2.fetched_at) FROM odds_asian oa2 WHERE oa2.match_id=m.id) "
         "FROM matches m JOIN seasons s ON s.id=m.season_id "
         "JOIN competitions c ON c.titan_id=s.titan_id "
         "JOIN teams ht ON ht.titan_id=m.home_id "
@@ -138,12 +159,13 @@ def played():
         "AND m.kickoff >= datetime('now','+8 hours','-120 hours') "
         "ORDER BY m.kickoff DESC LIMIT 1200", ()).fetchall()
     out = []
-    for mid, lg, ko, h, a, hs, aws, hc, gv, ho, ao in rows:
+    for mid, lg, ko, h, a, hs, aws, hc, gv, ho, ao, odds_at in rows:
         line = None
         if hc is not None:
             line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao}
         out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
-                    'score': None if hs is None else f'{hs}-{aws}', 'line': line})
+                    'score': None if hs is None else f'{hs}-{aws}', 'line': line,
+                    'odds_at': odds_at})
     conn.close()
     return out
 
@@ -370,6 +392,89 @@ def win_status():
     d = dict(_win_state)
     d['ok'] = True
     d['window_name'] = WIN_SQL.get(d['window'], ('', ''))[1]
+    return d
+
+
+# ============ ⚡ 一鍵即時更新：主頁可見場次全部強制重抓最新盤口及賠率 ============
+# 用戶 2026-10-01 要求：賠率/盤口要有鍵即刻更新＋每場顯示最後更新時間。
+# 同窗口更新分別：呢個係「畫面上列出的場次全部強制重抓最新」，已經有賠率嘅都會刷新；
+# 窗口更新只係補指定時段，唔會重抓已有嘅。
+_fbatch_state = {'running': False, 'phase': '', 'done': 0, 'total': 0,
+                 'ok': 0, 'fail': 0, 'last': None, 'error': None}
+
+
+def _fetch_batch_worker(hours):
+    import crawler
+    with open(os.path.join(crawler.BASE_DIR, 'config.json'), encoding='utf-8') as f:
+        cfg = json.load(f)
+    # 人手觸發要快閃失敗，唔好逐場長等重試
+    cfg['blocked_retry_times'] = 1
+    conn = sqlite3.connect(DB_PATH, timeout=180)
+    try:
+        # 開工前快測數據主機；死緊即刻收工俾清楚訊息（同 _update_worker 邏輯）
+        if not crawler.data_host_probe():
+            _fbatch_state['error'] = (
+                '連唔到 titan007 數據主機——可能封咗而家嘅 IP，稍後會自動重試')
+            print('[fbatch] 數據主機中斷，本次即時更新跳過', flush=True)
+            return
+        cap = "AND m.kickoff <= datetime('now','+8 hours', ?) " if hours else ""
+        args = (f'+{hours} hours',) if hours else ()
+        todo = conn.execute(
+            'SELECT m.id, m.kickoff FROM matches m '
+            'WHERE m.home_score IS NULL '
+            "AND m.kickoff >= datetime('now','+8 hours') " + cap +
+            'ORDER BY m.kickoff', args).fetchall()
+        _fbatch_state.update(total=len(todo), done=0, ok=0, fail=0)
+        fetcher = crawler.Fetcher(conn, cfg)
+        for i, (mid, ko) in enumerate(todo):
+            _fbatch_state['phase'] = f'即時更新盤口及賠率 {i + 1}/{len(todo)}'
+            try:
+                if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
+                    _fbatch_state['ok'] += 1
+                elif not conn.execute(
+                        'SELECT 1 FROM odds_asian WHERE match_id=? AND company_id=12',
+                        (mid,)).fetchone() \
+                        and crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 3):
+                    # 易胜博未開盤 → Crown(3) 後備
+                    _fbatch_state['ok'] += 1
+                else:
+                    _fbatch_state['fail'] += 1
+            except Exception:
+                _fbatch_state['fail'] += 1
+            _fbatch_state['done'] += 1
+        _fbatch_state['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        _fbatch_state['error'] = None
+        print(f"[fbatch] 完成：{_fbatch_state['ok']} 成 / "
+              f"{_fbatch_state['fail']} 敗 / 共 {len(todo)} 場", flush=True)
+    except Exception:
+        traceback.print_exc()
+        _fbatch_state['error'] = traceback.format_exc(limit=3)
+    finally:
+        conn.close()
+        _fbatch_state['running'] = False
+        _fbatch_state['phase'] = ''
+
+
+def do_fetch_batch(hours=0):
+    """人手撳『⚡ 即時更新全部』：可見場次全部重抓最新盤口賠率（後台線程）"""
+    if DISABLE_UPDATE:
+        return {'ok': False, 'disabled': True,
+                'error': '雲端版唔直接爬數據——每日朝早由電腦自動推送新數據上嚟'}
+    if _fbatch_state['running']:
+        return {'ok': False, 'running': True, 'error': '即時更新進行中'}
+    if _win_state['running'] or _update_state['running']:
+        return {'ok': False, 'running': True, 'error': '另一個更新進行中，等佢完成先'}
+    hours = max(0, int(hours or 0))
+    _fbatch_state.update(running=True, error=None, phase='準備中…',
+                         done=0, total=0)
+    threading.Thread(target=_fetch_batch_worker, daemon=True,
+                     args=(hours,)).start()
+    return {'ok': True, 'started': True}
+
+
+def fbatch_status():
+    d = dict(_fbatch_state)
+    d['ok'] = True
     return d
 
 
@@ -2201,6 +2306,9 @@ def api_v3_target(mid):
             ar = r[0] if r else None
         sc = conn.execute('SELECT home_score, away_score FROM matches WHERE id=?',
                           (mid,)).fetchone()
+        odds_at = conn.execute(
+            'SELECT MAX(fetched_at) FROM odds_asian WHERE match_id=?',
+            (mid,)).fetchone()[0]
         score = None
         state = 'scheduled'
         if sc and sc[0] is not None:
@@ -2213,6 +2321,7 @@ def api_v3_target(mid):
                            'rank_home': hr, 'rank_away': ar,
                            'league': t.get('league'), 'category': t.get('category'),
                            'kickoff': t['kickoff'], 'state': state, 'score': score,
+                           'odds_at': odds_at,
                            'close': boxes['close'], 'init': boxes['init'],
                            'h4': boxes['h4'], 'h30': boxes['h30'],
                            'h15': boxes['h15'], 'h10': boxes['h10'],
@@ -3353,6 +3462,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/update-window-status':
             self._send(200, json.dumps(win_status(), ensure_ascii=False))
             return
+        if u.path == '/api/fetch-batch-status':
+            self._send(200, json.dumps(fbatch_status(), ensure_ascii=False))
+            return
         if u.path == '/api/picks/full':
             try:
                 self._send(200, json.dumps(get_picks_full(), ensure_ascii=False))
@@ -3625,6 +3737,17 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 self._send(200, json.dumps(
                     do_update_window(str(body.get('window', ''))), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/fetch-batch':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(
+                    do_fetch_batch(int(body.get('hours', 0) or 0)), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -4102,6 +4225,7 @@ if __name__ == '__main__':
         print('如要重開，請先用工作管理員結束舊嘅 python/app.py 進程。')
         sys.exit(1)
     print(f'篩查 APP v{SERVER_VERSION}：http://localhost:{port}')
+    _migrate_db()
     init_picks()
     _seed_check_rows()
     _seed_v3_featured_import()

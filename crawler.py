@@ -189,6 +189,7 @@ CREATE TABLE IF NOT EXISTS odds_asian (
     home_odds   REAL,
     away_odds   REAL,
     change_time TEXT,          -- 該盤口的實際變化時間
+    fetched_at  TEXT,          -- 本程式成功抓取寫庫時間（每場「最後更新」顯示用）
     PRIMARY KEY (match_id, label, company_id)
 );
 CREATE TABLE IF NOT EXISTS match_prestandings (
@@ -271,6 +272,13 @@ def db_connect(cfg):
     cols = [r[1] for r in conn.execute('PRAGMA table_info(odds_asian)')]
     if 'giver' not in cols:                      # 舊庫升級
         conn.execute("ALTER TABLE odds_asian ADD COLUMN giver TEXT")
+        conn.commit()
+    if 'fetched_at' not in cols:                 # 舊庫升級（2026-10-01）
+        conn.execute("ALTER TABLE odds_asian ADD COLUMN fetched_at TEXT")
+        # 舊數據回補：暫用 matches.updated_at 頂住，之後每次成功抓取會自行更新
+        conn.execute("UPDATE odds_asian SET fetched_at = (SELECT updated_at FROM "
+                     "matches WHERE matches.id = odds_asian.match_id) "
+                     "WHERE fetched_at IS NULL")
         conn.commit()
     return conn
 
@@ -615,6 +623,7 @@ class Fetcher:
                 if host in PROXY_HOSTS:
                     t = self._via_proxy(url, encoding, is_odds_page)
                     if t is not None:
+                        self.last_error = None   # 直連失敗嘅殘留錯誤唔好再報
                         return t
                 self.last_error = (f'{host} 冷卻期中（連線逾時後休息 30 秒兼已轉 IP）'
                                    f'——請求自動略過，唔會緩存')
@@ -659,332 +668,7 @@ class Fetcher:
                     if host in PROXY_HOSTS:
                         t = self._via_proxy(url, encoding, is_odds_page)
                         if t is not None:
-                            return t
-                    self.last_error = (f'{host} 連線逾時——已休息 30 秒並切換 IP '
-                                       f'（期間請求自動略過，唔會緩存）')
-                    self.last_outage = True
-                    return None
-                log(self.conn, 'WARN', '改行中繼後備')
-                t = self._via_relay(url, encoding)
-                if t is not None:
-                    out, _ = self._check_page(t, url, is_odds_page)
-                    if out is not None:
-                        self._note_ok(host)
-                        self.relay_first[host] = False
-                        return out
-                # 直接+中繼都死：連線錯誤最多兩輪（約 60 秒內快閃），
-                # 之後靠電路斷路冷卻期擋住，唔再逐次重試
-                conn_fails[0] += 1
-                if conn_fails[0] >= 2:
-                    self.last_error = (f'{host} 數據伺服器暫時中斷，中繼後備都連唔到 '
-                                       f'（已排定每 30 秒自動重試，現有數據不受影響）')
-                    self.last_outage = True
-                    return None
-                time.sleep(5)
-                continue
-            if r.status_code != 200:
-                log(self.conn, 'WARN', f'HTTP {r.status_code}：{url}')
-                if r.status_code in (403, 429, 442):
-                    self._rest(self.cfg['rest_minutes'], f'疑似被封（HTTP {r.status_code}）')
-                    continue
-                self._note_fail(host, f'HTTP {r.status_code}')
-                return None
-            self._note_ok(host)
-            r.encoding = encoding
-            text = r.text
-            out, short = self._check_page(text, url, is_odds_page)
-            if short:
-                # 回應異常過短（疑似被封）：試一次中繼先放棄
-                self._note_fail(host, '回應異常過短（疑似被封）')
-                t = self._via_relay(url, encoding)
-                if t is not None:
-                    out2, short2 = self._check_page(t, url, is_odds_page)
-                    if not short2:
-                        self._note_ok(host)
-                        return out2
-                log(self.conn, 'WARN', f'回應異常過短（疑似被封）：{url}')
-                continue
-            return out
-        return None
-
-
-# ---------------------------------------------------------------- 賽季檔案解析
-
-
-class Fetcher:
-    """帶限流、被封偵測、中繼後備同電路斷路嘅抓取器"""
-
-    def __init__(self, conn, cfg, state_prefix=''):
-        self.conn = conn
-        self.cfg = cfg
-        self.s = requests.Session()
-        self.s.headers.update(HEADERS)
-        self.pk = f'{state_prefix}req_count'      # 計數鍵前綴（不同爬蟲分開計）
-        self.req_count = int(self._state(self.pk, '0'))
-        self.last_req_time = 0.0
-        self.fail_streak = {}        # host -> 連續失敗次數
-        self.host_down_until = {}    # host -> 冷卻期截止 timestamp
-        self.relay_first = {}        # host -> 逾時後先用中繼（新 IP）連線
-        self._relay_i = 0            # 中繼輪換游標（轉 IP 用）
-        self.last_error = None       # 最近一次失敗原因（供上層回報用戶）
-        self.last_outage = False     # 最近一次 get 失敗係「主機斷線」級別（vs 無數據/HTTP 錯）
-        self._proxy_pool = None      # 代理池（動態載入 proxy_pool.json）
-        self._proxy_pool_mtime = 0.0
-        self._proxy_state = {}       # proxy -> {'used': int, 'rest_until': ts}
-        self._proxy_cursor = 0       # 輪轉游標（順序行，唔亂跳）
-        self._proxy_budget = int(cfg.get('proxy_req_budget', PROXY_REQ_BUDGET))
-        self._proxy_cooldown = int(cfg.get('proxy_ban_cooldown_sec',
-                                          PROXY_BAN_COOLDOWN_SEC))
-        self._csession = None        # 重用嘅 Chrome 指紋 session（TLS 續期提速）
-
-    def _chrome(self, url, headers=None, timeout=DIRECT_TIMEOUT, proxies=None):
-        if self._csession is None:
-            from curl_cffi import requests as creq
-            self._csession = creq.Session(impersonate='chrome')
-        try:
-            return _chrome_get(url, headers=headers, timeout=timeout,
-                               proxies=proxies, session=self._csession)
-        except requests.ConnectionError:
-            # session 入面有條逾時死連線會搞到之後全部請求都 timeout——
-            # 一見失敗即棄 session 下次開過（每個 worker 獨立 session）
-            self._csession = None
-            raise
-
-    def _state(self, k, default=None):
-        r = self.conn.execute('SELECT v FROM crawl_state WHERE k=?', (k,)).fetchone()
-        return r[0] if r else default
-
-    def _set_state(self, k, v):
-        for i in range(8):
-            try:
-                self.conn.execute(
-                    'INSERT INTO crawl_state(k,v) VALUES(?,?) '
-                    'ON CONFLICT(k) DO UPDATE SET v=excluded.v', (k, str(v)))
-                self.conn.commit()
-                return
-            except sqlite3.OperationalError:
-                time.sleep(1)
-
-    def _rest(self, minutes, reason):
-        log(self.conn, 'WARN', f'{reason}，休息 {minutes} 分鐘後繼續…')
-        time.sleep(minutes * 60)
-        log(self.conn, 'INFO', '休息完畢，繼續爬取')
-
-    # ---- 電路斷路（2026-09-28 加）：主機連續死 → 冷卻期內直接行中繼 ----
-    def _cooldown_sec(self, host):
-        """幾何退避：30s → 60s → 120s … 上限 30 分鐘。
-        黑洞主機（zq/vip 被 null-route）用固定 30s 會每 45 秒空轉一次
-        10 秒逾時；退避後變成每 30 分鐘探一次，其餘時間全部讓返俾
-        alive 主機嘅任務。"""
-        streak = self.fail_streak.get(host, 1)
-        base = int(self.cfg.get('timeout_cooldown_sec', TIMEOUT_COOLDOWN_SEC))
-        return min(base * (2 ** max(0, streak - 1)), 1800)
-
-    def _note_fail(self, host, err):
-        self.last_error = str(err)
-        self.fail_streak[host] = self.fail_streak.get(host, 0) + 1
-        if self.fail_streak[host] >= 2:
-            self.host_down_until[host] = time.time() + self._cooldown_sec(host)
-
-    def _note_ok(self, host):
-        self.fail_streak[host] = 0
-        self.host_down_until.pop(host, None)
-        self.last_error = None
-
-    def _via_relay(self, url, encoding):
-        """經公共中繼代抓（由輪換游標開始＝每次「轉 IP」用唔同出口）；
-        全部失敗回傳 None。"""
-        import urllib.parse
-        q = urllib.parse.quote(url, safe='')
-        relays = RELAYS[self._relay_i:] + RELAYS[:self._relay_i]
-        for relay in relays:
-            try:
-                r = self.s.get(relay.format(q=q), timeout=RELAY_TIMEOUT)
-                if r.status_code != 200:
-                    continue
-                r.encoding = encoding
-                t = r.text
-                # 中繼錯誤回應（如 522 錯誤頁）好短，當失敗
-                if len(t) < 50 and ('jsData' in url or 'titan007' in url):
-                    continue
-                return t
-            except requests.RequestException:
-                continue
-        return None
-
-    def _check_page(self, text, url, is_odds_page):
-        """統一頁面檢查；回傳 (結果, 是否異常短)。"""
-        if is_odds_page and ('頁面不存在' in text or '页面不存在' in text):
-            return 'NO_DATA', False
-        if is_odds_page and not text.strip():
-            # 盤口頁空回應 = 該公司無此盤（如馬會半場盤），屬正常無數據
-            return 'NO_DATA', False
-        if len(text) < 50 and ('jsData' in url or 'vip.titan007' in url):
-            return None, True
-        return text, False
-
-    def _load_proxies(self):
-        """由 proxy_pool.json 載入代理池（檔案更新即自動重載）。"""
-        path = _proxy_pool_path()
-        try:
-            mtime = os.path.getmtime(path)
-        except OSError:
-            self._proxy_pool = []
-            return
-        if mtime == self._proxy_pool_mtime and self._proxy_pool is not None:
-            return
-        try:
-            with open(path, encoding='utf-8') as fp:
-                data = json.load(fp)
-            pool = [p.strip() for p in data.get('proxies', []) if p.strip()]
-        except (OSError, ValueError):
-            pool = []
-        self._proxy_pool = pool
-        self._proxy_pool_mtime = mtime
-
-    def _pick_proxy(self):
-        """順序輪轉：跳過休息緊或者用盡配額嘅代理；冇可用回 None。"""
-        pool = self._proxy_pool
-        now = time.time()
-        n = len(pool)
-        for i in range(n):
-            p = pool[(self._proxy_cursor + i) % n]
-            st = self._proxy_state.get(p)
-            if st and (now < st['rest_until'] or st['used'] >= self._proxy_budget):
-                continue
-            self._proxy_cursor = (self._proxy_cursor + i) % n
-            return p
-        return None
-
-    def _via_proxy(self, url, encoding, is_odds_page):
-        """行代理池：每個代理用夠配額/疑似被封就停 6 分鐘自動轉下一個。
-        每次最多試 5 個（ bounded latency ）；全部失敗回 None。"""
-        self._load_proxies()
-        if not self._proxy_pool:
-            return None
-        for _ in range(min(len(self._proxy_pool), 5)):
-            proxy = self._pick_proxy()
-            if proxy is None:
-                return None     # 冇可用代理（全部休息緊/用盡配額）
-            st = self._proxy_state.setdefault(proxy, {'used': 0, 'rest_until': 0.0})
-            now = time.time()
-            try:
-                # Chrome 指紋經代理：DPI 對代理出口一樣會攔非瀏覽器 TLS
-                r = self._chrome(url, headers=dict(self.s.headers),
-                                 timeout=RELAY_TIMEOUT,
-                                 proxies={'http': proxy, 'https': proxy})
-            except requests.RequestException:
-                # 連唔到（可能 proxy 死，或者都俾 titan007 封咗）→ 停 6 分鐘
-                st['rest_until'] = now + self._proxy_cooldown
-                st['used'] = 0
-                continue
-            if r.status_code in (403, 429, 442):
-                st['rest_until'] = now + self._proxy_cooldown   # 被封：停 6 分鐘
-                st['used'] = 0
-                continue
-            if r.status_code != 200:
-                continue
-            r.encoding = encoding
-            out, short = self._check_page(r.text, url, is_odds_page)
-            if out is None or short:
-                # 回應異常過短（疑似被封）→ 停 6 分鐘
-                st['rest_until'] = now + self._proxy_cooldown
-                st['used'] = 0
-                continue
-            st['used'] += 1
-            if st['used'] >= self._proxy_budget:
-                # 到配額：主動休息 6 分鐘轉下一個（唔觸發 titan007 封鎖）
-                st['rest_until'] = now + self._proxy_cooldown
-                st['used'] = 0
-            self.last_req_time = time.time()
-            self.req_count += 1
-            self._set_state('req_count', self.req_count)
-            return out
-        return None
-
-    def get(self, url, encoding='utf-8', referer=None, is_odds_page=False):
-        from urllib.parse import urlparse
-        delay = self.cfg['request_delay_sec']
-        host = urlparse(url).netloc
-        conn_fails = [0]
-        self.last_outage = False
-        for attempt in range(self.cfg.get('blocked_retry_times', 3) + 1):
-            # 請求間隔
-            wait = delay - (time.time() - self.last_req_time)
-            if wait > 0:
-                time.sleep(wait)
-            # 分層休息（2026-09-29 用戶指示——APP／日常抓取用）：每 100 次休息 1 秒、
-            # 每 1000 次休息 2 秒、每 5000 次休息 30 秒（高階優先，命中即止）。
-            # 大型歷史回填（cfg 設咗 max_requests_before_rest）沿用舊節奏：
-            # 每 N 次請求休息 M 分鐘——新爬速唔適用於最大資料庫回填。
-            n = self.req_count
-            if n:
-                if self.cfg.get('max_requests_before_rest'):
-                    if n >= self.cfg['max_requests_before_rest']:
-                        self._rest(self.cfg.get('rest_minutes', 8),
-                                   f'已達 {n} 次請求（反爬蟲限流）')
-                        self.req_count = 0
-                        self._set_state(self.pk, 0)
-                else:
-                    for every, secs in self.cfg.get('rest_tiers', REST_TIERS):
-                        if n % every == 0:
-                            if secs:
-                                time.sleep(secs)
-                            break
-            headers = {'Referer': referer} if referer else {}
-
-            # 連線逾時冷卻期（30 秒；用戶指示取消強制 5 分鐘等待）：拒絕直接 request——
-            # 即時回 None（自動忽略），唔試中繼、唔緩存（2026-09-29 用戶指示）
-            # 例外：zq/vip 呢類被封主機有代理池 → 行代理繞過（代理唔受冷卻期限制），
-            # 冷卻期照樣留住，等佢每 30 秒試下正路解封未
-            if time.time() < self.host_down_until.get(host, 0):
-                if host in PROXY_HOSTS:
-                    t = self._via_proxy(url, encoding, is_odds_page)
-                    if t is not None:
-                        return t
-                self.last_error = (f'{host} 冷卻期中（連線逾時後休息 30 秒兼已轉 IP）'
-                                   f'——請求自動略過，唔會緩存')
-                self.last_outage = True
-                return None
-
-            # 逾時復出後首次出擊：先經中繼（已轉新 IP），唔得先返直接連線
-            if self.relay_first.get(host):
-                t = self._via_relay(url, encoding)
-                if t is not None:
-                    out, _short = self._check_page(t, url, is_odds_page)
-                    if out is not None:
-                        self._note_ok(host)
-                        self.relay_first[host] = False
-                        return out
-
-            try:
-                if host in PROXY_HOSTS:
-                    # DPI 只放行瀏覽器 TLS 指紋：zq/vip 一律用 Chrome 指紋直連
-                    # （重用 session，TLS 續期免每次握手）；失敗轉拋
-                    # ConnectionError，落喺下面原有斷路邏輯
-                    r = self._chrome(url, headers=dict(self.s.headers, **headers),
-                                     timeout=DIRECT_TIMEOUT)
-                else:
-                    r = self.s.get(url, headers=headers, timeout=DIRECT_TIMEOUT)
-                self.last_req_time = time.time()
-                self.req_count += 1
-                self._set_state(self.pk, self.req_count)
-            except requests.RequestException as e:
-                self._note_fail(host, e)
-                log(self.conn, 'WARN', f'連線錯誤 {e}')
-                # connect timeout：短冷卻（30 秒）＋轉 IP（2026-09-29 修訂：取消 5 分鐘強制等待）
-                # （輪換中繼出口）；冷卻期內所有 request 一律即時拒絕（唔緩存）
-                if _is_conn_timeout(e):
-                    # 幾何退避（睇 _cooldown_sec）：黑洞主機一路 30s 冷卻
-                    # 會不斷空轉逾時，退避落嚟每 30 分鐘先探一次
-                    self.host_down_until[host] = time.time() + \
-                        self._cooldown_sec(host)
-                    self._relay_i = (self._relay_i + 1) % len(RELAYS)
-                    self.relay_first[host] = True
-                    # 被封主機（zq/vip）有代理池 → 即刻行代理，唔使等冷卻期完
-                    if host in PROXY_HOSTS:
-                        t = self._via_proxy(url, encoding, is_odds_page)
-                        if t is not None:
+                            self.last_error = None   # 直連失敗嘅殘留錯誤唔好再報
                             return t
                     self.last_error = (f'{host} 連線逾時——已休息 30 秒並切換 IP '
                                        f'（期間請求自動略過，唔會緩存）')
@@ -1341,7 +1025,9 @@ def crawl_odds_for_match(conn, fetcher, match_id, kickoff_str, company_id):
     if not snaps:
         # 頁面存在但仲未開盤（得個殼冇賠率列）：唔標 odds_done，
         # 下次更新會再試（舊版當成功，搞到永遠跳過呢啲場）
+        fetcher.last_error = '該場仲未開盤（titan007 未提供賠率），臨近開賽會自動有'
         return False
+    fetched_at = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     for label, _ in SNAPSHOTS:
         if label not in snaps:
             continue
@@ -1358,13 +1044,14 @@ def crawl_odds_for_match(conn, fetcher, match_id, kickoff_str, company_id):
                     f'主{ho}/客{ao}），請抽查')
         conn.execute(
             'INSERT INTO odds_asian(match_id,label,company_id,handicap,giver,'
-            'home_odds,away_odds,change_time) VALUES(?,?,?,?,?,?,?,?) '
+            'home_odds,away_odds,change_time,fetched_at) VALUES(?,?,?,?,?,?,?,?,?) '
             'ON CONFLICT(match_id,label,company_id) DO UPDATE SET '
             'handicap=excluded.handicap,giver=excluded.giver,'
             'home_odds=excluded.home_odds,'
-            'away_odds=excluded.away_odds,change_time=excluded.change_time',
+            'away_odds=excluded.away_odds,change_time=excluded.change_time,'
+            'fetched_at=excluded.fetched_at',
             (match_id, label, company_id, abs_v, giver, ho, ao,
-             t.strftime('%Y-%m-%d %H:%M')))
+             t.strftime('%Y-%m-%d %H:%M'), fetched_at))
     conn.execute('UPDATE matches SET odds_done=1 WHERE id=?', (match_id,))
     conn.commit()
     return True

@@ -88,6 +88,10 @@ a{color:var(--accent)}
 .mrow .ln b{color:var(--tx)}
 .mrow .od{font-size:11px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);color:var(--dim);white-space:nowrap}
 .mrow .od.has{color:var(--up);border-color:#2c5c3c}
+.mrow .od.at{color:var(--gold2);border-color:#6b5510}
+.mrow .rfb{flex:none;background:var(--bg2);border:1px solid var(--line);color:var(--accent);border-radius:6px;width:28px;height:28px;cursor:pointer;font-size:15px;line-height:1;padding:0}
+.mrow .rfb:hover{border-color:var(--accent)}
+.mrow .rfb:disabled{opacity:.45;cursor:default}
 .mrow .sc{font-weight:800;color:var(--gold2);font-size:16px}
 /* ---- 詳情頁 ---- */
 .tcard{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin:10px 0}
@@ -221,6 +225,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
       </select>
       <button class="btn" id="btnReload">重新整理賽事</button>
       <button class="btn" id="btnFetchAll">獲取全部賠率</button>
+      <button class="btn gold" id="btnOddsNow">⚡ 即時更新全部賠率</button>
       <button class="btn warn" id="btnUpdate">⟳ 更新賽事</button>
       <button class="btn accent" id="btnWin24">⚡ 更新未來24</button>
       <button class="btn accent" id="btnWin30">⚡ 更新未來30分鐘</button>

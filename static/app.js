@@ -283,18 +283,28 @@ function _stateTag(st){
   if (st === 'finished') return '<span class="tag dim">完場</span>';
   return '';
 }
+function fmtAt(s){
+  // 'YYYY-MM-DD HH:MM:SS' → 今日顯示 HH:MM；隔日顯示 MM-DD HH:MM
+  if (!s) return '';
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const today = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  return s.slice(0, 10) === today ? s.slice(11, 16) : s.slice(5, 16);
+}
 function _mrow(m, playedSec){
   const line = m.line ? `<div class="ln"><b>${esc(m.line.line)}</b>${m.line.src === 'crown' ? '<span class="tag dim" style="font-size:10px">Crown</span>' : ''}<br>主${m.line.ho != null ? m.line.ho.toFixed(2) : '—'}/客${m.line.ao != null ? m.line.ao.toFixed(2) : '—'}</div>` : '<div class="ln">無盤</div>';
   const od = playedSec ? '' : ((m.has_odds || (m.line && m.line.src === 'crown'))
     ? `<span class="od has">已有賠率</span>`
     : '<span class="od">未獲取賠率</span>');
+  const at = m.odds_at ? `<span class="od at" title="賠率/盤口最後更新：${esc(m.odds_at)}">🕒 ${esc(fmtAt(m.odds_at))}</span>` : '';
+  const rfb = playedSec ? '' : `<button class="rfb" data-fb="${m.id}" title="即時更新呢場最新賠率同盤口">⟳</button>`;
   const sc = m.score ? `<span class="sc">${esc(m.score)}</span>` : '';
   const pr = (!playedSec && lgPred[m.id]) ? _lgPredBadge(m, lgPred[m.id]) : '';
   return `<div class="mrow" data-mid="${m.id}">
     <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
     <span class="lg">${esc(m.league)}</span>
     <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}</span>
-    ${_stateTag(m.state)}${sc}${line}${od}</div>`;
+    ${_stateTag(m.state)}${sc}${line}${od}${at}${rfb}</div>`;
 }
 /* 聯賽預測：主頁球隊旁展示方向（lgPred = /api/lgpred 結果） */
 let lgPred = {};
@@ -331,6 +341,18 @@ function renderHome(){
   }
   $('#homeList').innerHTML = h;
   $$('#homeList .mrow').forEach(r => r.onclick = () => openDetail(+r.dataset.mid));
+  // 每場「⟳」掣：即時強制重抓呢場最新賠率同盤口（唔受 120 秒限流影響）
+  $$('#homeList .rfb').forEach(b => b.onclick = async ev => {
+    ev.stopPropagation();
+    if (b.disabled) return;
+    b.disabled = true;
+    b.textContent = '…';
+    try {
+      const r = await jpost('/api/fetch', {id: +b.dataset.fb, force: true});
+      toast(r.ok ? '已更新最新賠率同盤口' : ('更新失敗：' + (r.error || '未知')));
+    } catch (e) { toast('更新失敗：' + e.message); }
+    loadHome();
+  });
 }
 $('#hoursSel').onchange = loadHome;
 $('#btnReload').onclick = loadHome;
@@ -375,6 +397,36 @@ async function winUpdate(win){
     pollUpdateLoop();
   } catch (e) { toast('窗口更新失敗：' + e.message); }
 }
+/* ⚡ 一鍵即時更新：畫面上列出的場次全部強制重抓最新賠率同盤口（服務器端批量） */
+let fbPoll = null;
+$('#btnOddsNow').onclick = async function(){
+  if (this.disabled) return;
+  this.disabled = true;
+  try {
+    const r = await jpost('/api/fetch-batch', {hours: +($('#hoursSel').value || 0)});
+    if (r.error && !r.running) { toast(r.error); this.disabled = false; return; }
+    pollFbatch();
+  } catch (e) { toast('即時更新失敗：' + e.message); this.disabled = false; }
+};
+async function pollFbatch(){
+  clearTimeout(fbPoll);
+  let st;
+  try { st = await jget('/api/fetch-batch-status'); }
+  catch (e) { fbPoll = setTimeout(pollFbatch, 5000); return; }
+  if (st.running) {
+    $('#updInfo').textContent =
+      `⚡ ${st.phase || '即時更新中'}（成功 ${st.ok}・失敗 ${st.fail}）…`;
+    fbPoll = setTimeout(pollFbatch, 3000);
+    return;
+  }
+  $('#btnOddsNow').disabled = false;
+  if (st.error) { toast(st.error); return; }
+  if (st.last) {
+    $('#updInfo').textContent =
+      `⚡ 即時更新完成（${st.last}）：成功 ${st.ok}｜失敗 ${st.fail}，已載入最新賠率`;
+    loadHome();
+  }
+}
 let updPoll = null;
 async function pollUpdateLoop(){
   clearTimeout(updPoll);
@@ -405,7 +457,7 @@ async function openDetail(mid){
   const stateTxt = t.state === 'finished' ? '已完場' : t.state === 'live' ? '進行中' : '未開賽';
   let h = `<div class="tcard">
     <h2>${esc(rn(t.home, t.rank_home))} <span style="color:var(--dim)">vs</span> ${esc(rn(t.away, t.rank_away))}</h2>
-    <div class="meta">${esc(t.league)}｜${esc(t.category || '')}　${esc(t.kickoff)}　<span class="tag ${t.state === 'live' ? 'live' : 'dim'}">${stateTxt}</span>${t.score ? `　<b class="sc" style="font-size:18px">${esc(t.score)}</b>` : ''}</div>
+    <div class="meta">${esc(t.league)}｜${esc(t.category || '')}　${esc(t.kickoff)}　<span class="tag ${t.state === 'live' ? 'live' : 'dim'}">${stateTxt}</span>${t.score ? `　<b class="sc" style="font-size:18px">${esc(t.score)}</b>` : ''}　<span class="od at" title="賠率/盤口最後更新：${esc(t.odds_at || '')}">🕒 賠率更新 ${esc(t.odds_at ? fmtAt(t.odds_at) : '—')}</span></div>
     <div class="lines">
       ${lb('尾盤（檢查基準）', t.close)}${lb('初盤', t.init)}${lb('開賽前4小時', t.h4)}
       ${lb('開賽前30分鐘', t.h30)}${lb('開賽前15分鐘', t.h15)}${lb('開賽前10分鐘', t.h10)}${lb('開賽前5分鐘', t.h5)}
