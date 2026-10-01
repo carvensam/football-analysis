@@ -4340,12 +4340,6 @@ if __name__ == '__main__':
     # （全量由電腦每日朝早推送，watchdog 直接探測喺雲端冇意義）。
     threading.Thread(target=_result_catchup_job, daemon=True).start()
     threading.Thread(target=_v2_sched_job, daemon=True).start()
-    if DISABLE_UPDATE:
-        print('[boot] 雲端代理模式：賽果補抓＋每 2 小時窗口更新經代理池自動行；'
-              '全量自動更新照舊閂（由電腦每日推送）', flush=True)
-    else:
-        threading.Thread(target=_data_host_watchdog, daemon=True).start()
-        threading.Timer(5, _boot_auto_update).start()
     def _boot_auto_update():
         try:
             import datetime as dt
@@ -4415,8 +4409,8 @@ if __name__ == '__main__':
             except Exception:
                 pass
     if DISABLE_UPDATE:
-        print('[boot] DISABLE_UPDATE=1：雲端唔直接爬數據（由電腦每日推送），'
-              '跳過更新守候同開機自動更新', flush=True)
+        print('[boot] 雲端代理模式：賽果補抓＋每 2 小時窗口更新經代理池自動行；'
+              '全量自動更新＋30 秒睇門狗照舊閂（全量由電腦每日推送）', flush=True)
     else:
         threading.Thread(target=_data_host_watchdog, daemon=True).start()
         threading.Timer(5, _boot_auto_update).start()
