@@ -49,6 +49,24 @@ from concurrent.futures import ThreadPoolExecutor
 _BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
                                  thread_name_prefix='build')
 
+# 全局掃描閘（2026-10-02 記憶體審計）：512MB/0.5C 實例同時間只行一個全庫掃描，
+# 其餘自動跳過等下個觸發——精選/V3/Check/FWGrid 四個掃描以前可以疊住行，
+# 並行嗰陣 CPU+RAM 雙峰值係 OOM 誘因之一
+_scan_gate = {'busy': False}
+
+
+def _scan_thread(fn, *args):
+    def run():
+        if _scan_gate['busy']:
+            print(f'[scan] {fn.__name__}{args} 跳過：另一個掃描進行中', flush=True)
+            return
+        _scan_gate['busy'] = True
+        try:
+            fn(*args)
+        finally:
+            _scan_gate['busy'] = False
+    threading.Thread(target=run, daemon=True).start()
+
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
@@ -307,10 +325,14 @@ def _update_worker():
 def do_update(auto=False):
     if DISABLE_UPDATE:
         return {'ok': False, 'disabled': True,
-                'error': '雲端唔做全量更新（太慢）——用「⚡ 即時更新全部」或窗口掣，'
+                'error': '雲端唔做全量更新（太重）——用「⚡ 即時更新全部」或窗口掣，'
                          '盤口賠率經代理池即時抓；賽果每 15 分鐘自動補'}
     if _update_state['running']:
         return {'ok': False, 'running': True, 'error': '更新進行中'}
+    # 跨工作互鎖（2026-10-02）：窗口／即時更新進行緊就唔好開全量
+    if _win_state['running'] or _fbatch_state['running']:
+        return {'ok': False, 'running': True,
+                'error': '另一個更新進行中，等佢完成先'}
     if (auto and _update_state['last_done']
             and time.time() - _update_state['last_done'] < UPDATE_THROTTLE_SEC):
         return {'ok': True, 'skipped': True}
@@ -385,6 +407,11 @@ def do_update_window(win):
         return {'ok': False, 'error': '未知窗口'}
     if _win_state['running']:
         return {'ok': False, 'running': True, 'error': '窗口更新進行中'}
+    # 跨工作互鎖：全量更新／即時更新進行緊都唔好開窗口爬——並行爬取會
+    # 同時搶代理池＋sqlite 寫入，512MB 實機同 0.5C CPU 都頂唔順（2026-10-02）
+    if _update_state['running'] or _fbatch_state['running']:
+        return {'ok': False, 'running': True,
+                'error': '另一個更新進行中，等佢完成先'}
     _win_state.update(running=True, window=win, error=None,
                       phase='準備中…', done=0, total=0)
     threading.Thread(target=_window_update_worker, daemon=True,
@@ -1239,11 +1266,11 @@ def _recompute_featured_after_update():
             pass
         print('[update] 重算精選…', flush=True)
         if not _feat_scan['running']:
-            threading.Thread(target=_featured_scan_job, daemon=True).start()
+            _scan_thread(_featured_scan_job)
         if not _v1_scan['running']:
             threading.Thread(target=_v1_scan_job, daemon=True).start()
         if not _v3_scan['running']:
-            threading.Thread(target=_v3_featured_scan_job, daemon=True).start()
+            _scan_thread(_v3_featured_scan_job)
     except Exception:
         import traceback
         traceback.print_exc()
@@ -2261,6 +2288,9 @@ def api_v2_item(mid, no):
         out = v2_engine.compute_item(conn, t, str(no))
         out.setdefault('ok', 'error' not in out)
         with _v2_item_cache_lock:
+            # 有上限快取（同 _v3_item_cache，2026-10-02）
+            if len(_v2_item_cache) > 2000:
+                _v2_item_cache.clear()
             _v2_item_cache[key] = (now, out)
         return out
     finally:
@@ -2413,6 +2443,10 @@ def api_v3_item(mid, no):
         out = v3_engine.compute_item_v3(conn, t, str(no))
         out.setdefault('ok', 'error' not in out)
         with _v3_item_cache_lock:
+            # 有上限快取：舊實作無界增長（服務開幾日就儲晒全部場次×45項），
+            # 爆滿就清一次重計（同 _check_combo_cache 一貫手法，2026-10-02）
+            if len(_v3_item_cache) > 2000:
+                _v3_item_cache.clear()
             _v3_item_cache[key] = (now, out)
         return out
     finally:
@@ -3864,7 +3898,7 @@ class Handler(BaseHTTPRequestHandler):
                     conn.commit()
                     conn.close()
                 if not _feat_scan['running']:
-                    threading.Thread(target=_featured_scan_job, daemon=True).start()
+                    _scan_thread(_featured_scan_job)
                 self._send(200, json.dumps({'started': True, 'running': True,
                                             'reset': bool(body.get('reset'))},
                                            ensure_ascii=False))
@@ -3874,7 +3908,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/check/scan':
             try:
                 if not _check_scan['running']:
-                    threading.Thread(target=_check_scan_job, daemon=True).start()
+                    _scan_thread(_check_scan_job)
                 self._send(200, json.dumps({'started': True, 'running': True},
                                            ensure_ascii=False))
             except Exception as e:
@@ -3927,8 +3961,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 if not _fw_grid_scan[g]['running']:
-                    threading.Thread(target=_fw_grid_scan_job, args=(g,),
-                                     daemon=True).start()
+                    _scan_thread(_fw_grid_scan_job, g)
                 self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
@@ -3984,7 +4017,7 @@ class Handler(BaseHTTPRequestHandler):
                     conn.commit()
                     conn.close()
                 if not _v3_scan['running']:
-                    threading.Thread(target=_v3_featured_scan_job, daemon=True).start()
+                    _scan_thread(_v3_featured_scan_job)
                 self._send(200, json.dumps({'started': True, 'running': True,
                                             'reset': bool(body.get('reset'))},
                                            ensure_ascii=False))
@@ -4231,13 +4264,13 @@ def _auto_scans():
         conn.close()
         if n_feat == 0 and not _feat_scan['running']:
             print('[auto] featured 空白，開始重掃精選', flush=True)
-            threading.Thread(target=_featured_scan_job, daemon=True).start()
+            _scan_thread(_featured_scan_job)
         if n_chk < 1000 and not _check_scan['running']:
             print('[auto] check_rows 不足，開始全庫回測', flush=True)
-            threading.Thread(target=_check_scan_job, daemon=True).start()
+            _scan_thread(_check_scan_job)
         if n_v3 == 0 and not _v3_scan['running']:
             print('[auto] v3_featured 空白，開始補掃精選W', flush=True)
-            threading.Thread(target=_v3_featured_scan_job, daemon=True).start()
+            _scan_thread(_v3_featured_scan_job)
     except Exception:
         pass
 
