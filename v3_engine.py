@@ -107,16 +107,19 @@ def load_v3_pool(conn, max_age=5400):
         _v3_pool['df'] = None
         import gc
         gc.collect()
-        df = v2.load_v2_pool(conn, max_age=max_age).copy()
+        # 唔 copy：直接喺 V2 共享池上加工（V2/V1 快取同一物件，欄位超集兼容）。
+        # 以前 .copy() + merge 會成表複製，令 V1+V2+V3 三份並存 ~400MB——
+        # 512MB 實機裝唔落（2026-10-02 Render 反覆 restart 嘅記憶體元兇）
+        df = v2.load_v2_pool(conn, max_age=max_age)
         test_year = os.environ.get('V3_TEST_YEAR')
         if test_year:
             before = len(df)
             df = df[df['kickoff'] >= f'{test_year}-01-01'].copy()
             print(f'[v3_pool] 測試模式：只計 {test_year} 年起開賽（{before}→{len(df)} 場）', flush=True)
         n = len(df)
-        # is_neutral 由 matches 補入
-        neu_df = pd.read_sql('SELECT id, is_neutral FROM matches', conn)
-        df = df.merge(neu_df, on='id', how='left')
+        # is_neutral 由 matches 補入（map 對位，避免 merge 全表複製）
+        neu_map = dict(conn.execute('SELECT id, is_neutral FROM matches'))
+        df['is_neutral'] = df['id'].map(neu_map)
         # 每場所屬聯賽 H：pool 用 req_name（全名），H_TABLE 用 name_tc（簡稱），要做映射
         lg_names = df['league'].fillna('').to_numpy()
         req2tc = dict(conn.execute('SELECT req_name, name_tc FROM competitions'))

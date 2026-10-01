@@ -83,16 +83,24 @@ def load_v2_pool(conn, max_age=5400):
         gc.collect()
         df, _ = se.load_pool(conn, max_age=max_age)
         df = df.copy()          # 唔好污染 V1 嘅快取
-        for pfx, label in EXTRA_LABELS.items():
-            ex = pd.read_sql(
-                'SELECT match_id, handicap, giver, home_odds, away_odds '
-                'FROM odds_asian WHERE label=? AND company_id=12', conn,
-                params=(label,))
-            ex = ex.rename(columns={'match_id': 'id', 'handicap': f'{pfx}_h',
-                                    'giver': f'{pfx}_g', 'home_odds': f'{pfx}_ho',
-                                    'away_odds': f'{pfx}_ao'})
-            df = df.merge(ex, on='id', how='left')
+        # V2 係 V1 欄位嘅超集：叫 V1 快取指向同一物件＋釋放基底——
+        # 三個池由「V1+V2+V3 並存」變成淨係闊表一份（512MB 實機生存策略）
+        se._pool_cache['df'] = df
+        se._pool_cache['ts'] = time.time()
         df['recent'] = (df['kickoff'] >= RECENT2Y).to_numpy()
+        # 四個時點（30m/15m/10m/5m）一次過撈，用 map 對位——merge 會成張複製
+        # df（80k×N 全表拷貝），map 只產生一條對齊欄；512MB 實機 OOM 對策
+        ex = pd.read_sql(
+            'SELECT match_id, label, handicap, giver, home_odds, away_odds '
+            'FROM odds_asian WHERE label IN (?,?,?,?) AND company_id=12',
+            conn, params=tuple(EXTRA_LABELS.values()))
+        for pfx, label in EXTRA_LABELS.items():
+            sub = ex[ex['label'] == label].set_index('match_id')
+            df[f'{pfx}_h'] = df['id'].map(sub['handicap'])
+            df[f'{pfx}_g'] = df['id'].map(sub['giver'])
+            df[f'{pfx}_ho'] = df['id'].map(sub['home_odds'])
+            df[f'{pfx}_ao'] = df['id'].map(sub['away_odds'])
+        del ex
         # 12 段上盤水位
         w = df['up_water'].to_numpy(dtype=float)
         z12 = np.full(len(df), -1, dtype=np.int8)
