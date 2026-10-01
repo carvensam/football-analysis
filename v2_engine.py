@@ -65,8 +65,10 @@ def zone12_of(w):
     return int((w - 0.65) * 20) + 1     # 0.65-0.69→1 … 1.10-1.14→10
 
 
-def load_v2_pool(conn, max_age=1800):
-    """V2 數據池＝V1 池 + 30m/15m/10m/5m 四個時點 + 近兩年 flag + 12 段水位"""
+def load_v2_pool(conn, max_age=5400):
+    """V2 數據池＝V1 池 + 30m/15m/10m/5m 四個時點 + 近兩年 flag + 12 段水位。
+    max_age 預設 90 分鐘（原本 30）——Render 512MB 實例少啲 reload 少啲記憶體尖峰；
+    數據有更新時 app.py 會 invalidate_pool() 強制即時重載，唔怕舊數。"""
     now = time.time()
     if _v2_pool['df'] is not None and now - _v2_pool['ts'] < max_age:
         return _v2_pool['df']
@@ -74,6 +76,11 @@ def load_v2_pool(conn, max_age=1800):
         now = time.time()
         if _v2_pool['df'] is not None and now - _v2_pool['ts'] < max_age:
             return _v2_pool['df']
+        # OOM 對策（2026-10-02 Render 反覆 restart 元兇）：執 lock 後先丟舊池
+        # 先再建新池——否則新池建立期間新舊並存，512MB 實例一載就爆
+        _v2_pool['df'] = None
+        import gc
+        gc.collect()
         df, _ = se.load_pool(conn, max_age=max_age)
         df = df.copy()          # 唔好污染 V1 嘅快取
         for pfx, label in EXTRA_LABELS.items():
@@ -98,6 +105,8 @@ def load_v2_pool(conn, max_age=1800):
         _v2_pool['df'] = df
         _v2_pool['ts'] = time.time()
         print(f'[v2_pool] {len(df)} 場', flush=True)
+        import gc
+        gc.collect()          # 盡快還返合併臨時記憶體
         return df
 
 

@@ -145,8 +145,11 @@ def _prev_convert(h, g, ho, ao, same):
     return h2, g2, ho2, ao2
 
 
-def load_pool(conn, max_age=1800):
-    """載入歷史數據池（約 7 萬場），結果記憶 30 分鐘；多執行緒同時呼叫只會建立一次"""
+def load_pool(conn, max_age=5400):
+    """載入歷史數據池（約 7 萬場），結果記憶 90 分鐘；多執行緒同時呼叫只會建立一次。
+    max_age 由 30 分鐘加長到 90：Render 512MB 實例少啲重載少啲記憶體尖峰
+    （2026-10-02 反覆 restart 嘅元兇之一）；數據更新時 app.py 會
+    _pool_cache['ts']=0 強制即時重載。重載前會先丟舊池，避免新舊並存爆 RAM。"""
     import time
     now = time.time()
     if _pool_cache['df'] is not None and now - _pool_cache['ts'] < max_age:
@@ -156,6 +159,11 @@ def load_pool(conn, max_age=1800):
         if _pool_cache['df'] is not None and now - _pool_cache['ts'] < max_age:
             return _pool_cache['df'], _pool_cache['prev_h2h']
         t0 = time.time()
+        # OOM 對策：先丟舊池再建新池（新舊並存嘅峰值係 512MB 實機嘅炸彈）
+        _pool_cache['df'] = None
+        _pool_cache['prev_h2h'] = None
+        import gc
+        gc.collect()
         df = pd.read_sql(POOL_SQL, conn)
         # 上/下/走 結果（讓球盤：上=讓球方贏；平手盤：上=主勝）
         # 主讓：hs-aws-h>0 上盤贏；客讓：aws-hs-h>0 上盤贏；平手：hs-aws>0 主勝
@@ -290,6 +298,8 @@ def load_pool(conn, max_age=1800):
         _pool_cache['pair_latest'] = pair_latest
         _pool_cache['ts'] = time.time()
         print(f'[load_pool] {len(df)} 場，耗時 {time.time()-t0:.1f}s')
+        import gc
+        gc.collect()          # 合併臨時 DataFrame 即刻還返
         return df, prev
 
 
