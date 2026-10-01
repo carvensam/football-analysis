@@ -293,12 +293,22 @@ _log_local = threading.local()
 def log(conn, level, msg):
     """寫 crawl_log——日誌係診斷用途，唔准阻塞爬蟲主流程：
     用獨立連線（busy timeout 1 秒），鎖緊/繁忙即刻丟棄（2026-10-01 實測：
-    用主連線寫日誌曾喺大庫繁忙時阻塞近 3 分鐘，令即時更新掣假死）。"""
+    用主連線寫日誌曾喺大庫繁忙時阻塞近 3 分鐘，令即時更新掣假死）。
+    DB 路徑：connect() 設嘅 _DB_PATH 為準；未設（冇行過 connect 嘅進程）
+    就由傳入連線 PRAGMA 推——唔好用 CWD 相對路徑，會喺錯目錄開空庫。"""
     ts = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    global _DB_PATH
+    try:
+        if not _DB_PATH and conn is not None:
+            row = conn.execute('PRAGMA database_list').fetchone()
+            if row and row[2]:
+                _DB_PATH = row[2]
+    except Exception:
+        pass
     try:
         c = getattr(_log_local, 'c', None)
         if c is None:
-            c = sqlite3.connect(_DB_PATH or 'football.db', timeout=1)
+            c = sqlite3.connect(_DB_PATH or ':memory:', timeout=1)
             _log_local.c = c
         c.execute('INSERT INTO crawl_log(ts,level,msg) VALUES (?,?,?)',
                   (ts, level, msg))

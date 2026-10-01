@@ -390,7 +390,6 @@ def do_update_window(win):
 
 def win_status():
     d = dict(_win_state)
-    d['ok'] = True
     d['window_name'] = WIN_SQL.get(d['window'], ('', ''))[1]
     return d
 
@@ -474,7 +473,6 @@ def do_fetch_batch(hours=0):
 
 def fbatch_status():
     d = dict(_fbatch_state)
-    d['ok'] = True
     return d
 
 
