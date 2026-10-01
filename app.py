@@ -46,7 +46,38 @@ from concurrent.futures import ThreadPoolExecutor
 # 精選／我的選擇等列表逐場運算（screen＋check）係 CPU 密集——
 # 單線程每場 5–8 秒，幾十場就超時（用戶投訴「精選無反應」嘅根因）。
 # 用執行緒池並行起唄（sqlite 每連線獨立、load_pool 有鎖，並行安全）。
-_BUILD_POOL = ThreadPoolExecutor(max_workers=min(6, os.cpu_count() or 4),
+def _total_ram_gb():
+    """實體記憶體總量（GB）——Render 512MB 實例同本機 16GB 要用唔同並行度"""
+    try:
+        if hasattr(os, 'sysconf'):
+            return (os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+                    ) / (1024 ** 3)
+    except (ValueError, OSError, AttributeError):
+        pass
+    try:
+        import ctypes
+
+        class _M(ctypes.Structure):
+            _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong),
+                        ('ullTotalPhys', ctypes.c_ulonglong),
+                        ('ullAvailPhys', ctypes.c_ulonglong)] + \
+                       [('x', ctypes.c_ulonglong)] * 8
+
+        m = _M()
+        m.dwLength = ctypes.sizeof(m)
+        if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(m)):
+            return m.ullTotalPhys / (1024 ** 3)
+    except Exception:
+        pass
+    return 8.0   # 探唔到就當中型機
+
+
+_RAM_GB = _total_ram_gb()
+# 低記憶體機（Render 512MB）：分析並行度壓到 1——6 個 worker 同時各自
+# 配置中間陣列，峰值會同共享池疊加爆 RAM（2026-10-02 實測 OOM 元兇）；
+# 本機 16GB 照舊最多 6 個
+_BUILD_WORKERS = 1 if _RAM_GB < 2.5 else min(6, (os.cpu_count() or 4))
+_BUILD_POOL = ThreadPoolExecutor(max_workers=_BUILD_WORKERS,
                                  thread_name_prefix='build')
 
 # 全局掃描閘（2026-10-02 記憶體審計）：512MB/0.5C 實例同時間只行一個全庫掃描，
