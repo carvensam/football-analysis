@@ -304,7 +304,8 @@ def _update_worker():
 def do_update(auto=False):
     if DISABLE_UPDATE:
         return {'ok': False, 'disabled': True,
-                'error': '雲端版唔直接爬數據——每日朝早由電腦自動推送新數據上嚟'}
+                'error': '雲端唔做全量更新（太慢）——用「⚡ 即時更新全部」或窗口掣，'
+                         '盤口賠率經代理池即時抓；賽果每 15 分鐘自動補'}
     if _update_state['running']:
         return {'ok': False, 'running': True, 'error': '更新進行中'}
     if (auto and _update_state['last_done']
@@ -455,10 +456,10 @@ def _fetch_batch_worker(hours):
 
 
 def do_fetch_batch(hours=0):
-    """人手撳『⚡ 即時更新全部』：可見場次全部重抓最新盤口賠率（後台線程）"""
-    if DISABLE_UPDATE:
-        return {'ok': False, 'disabled': True,
-                'error': '雲端版唔直接爬數據——每日朝早由電腦自動推送新數據上嚟'}
+    """人手撳『⚡ 即時更新全部』：可見場次全部重抓最新盤口賠率（後台線程）。
+    2026-10-02 起雲端都用到：titan007 封嘅係 IP 段（屋企＋datacenter），
+    代理池嘅公共代理任何來源都行得通——proxy_pool.json 隨映像焗入，
+    Fetcher 自動行代理通道，所以唔再按 DISABLE_UPDATE 拒絕。"""
     if _fbatch_state['running']:
         return {'ok': False, 'running': True, 'error': '即時更新進行中'}
     if _win_state['running'] or _update_state['running']:
@@ -4332,20 +4333,19 @@ if __name__ == '__main__':
     _seed_v3_featured_import()
     _auto_scans()
     threading.Thread(target=_warmup, daemon=True).start()
-    # 雲端（DISABLE_UPDATE=1）：以下三個都係「伺服器直連 titan007」嘅工作——
-    # 雲端 IP 被封死，行只會白撞逾時（日誌入面嘅 chrome-fetch WARN）兼浪費資源；
-    # 雲端賽果/盤口數據靠每日朝早由電腦推送，唔靠呢啲（2026-10-02 凌晨雲端
-    # OOM 重啟調查：0.5c/512MB 實例被無效爬取同重複全庫校驗壓垮）。
-    if not DISABLE_UPDATE:
-        threading.Thread(target=_result_catchup_job, daemon=True).start()
-        # V2 排程：每日 12 時起每 2 小時自動更新未來 24 小時盤口直至尾盤（伺服器端，手機閂咗都行）
-        threading.Thread(target=_v2_sched_job, daemon=True).start()
+    # 賽果補抓＋V2 定時窗口更新：兩邊都開——雲端行代理池通道（proxy_pool.json
+    # 隨映像焗入，titan007 封 IP 段封唔到公共代理），所以雲端數據而家會自動
+    # 保鮮（2026-10-02 用戶投訴「雲端各樣 update 都唔得」嘅根治）；
+    # 本機照舊直連優先。淨係「全量自動更新」同「30 秒睇門狗」雲端繼續閂
+    # （全量由電腦每日朝早推送，watchdog 直接探測喺雲端冇意義）。
+    threading.Thread(target=_result_catchup_job, daemon=True).start()
+    threading.Thread(target=_v2_sched_job, daemon=True).start()
+    if DISABLE_UPDATE:
+        print('[boot] 雲端代理模式：賽果補抓＋每 2 小時窗口更新經代理池自動行；'
+              '全量自動更新照舊閂（由電腦每日推送）', flush=True)
     else:
-        print('[boot] DISABLE_UPDATE=1：跳過賽果補抓＋V2 定時更新（雲端爬唔到，'
-              '數據靠每日推送）', flush=True)
-    # 開機自動更新：雲端每次重新部署會用返舊數據快照起機（數據過舊），
-    # 偵測到數據 stale 就喺背景自動更新（賽果＋新場次＋補爬缺少嘅盤口），無需人手撳；
-    # 本機數據新鮮就唔會白行一次
+        threading.Thread(target=_data_host_watchdog, daemon=True).start()
+        threading.Timer(5, _boot_auto_update).start()
     def _boot_auto_update():
         try:
             import datetime as dt

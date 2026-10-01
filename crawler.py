@@ -409,13 +409,13 @@ def data_host_probe(timeout=6):
         return r.status_code in (200, 404)   # 有回應（就算 404）都當主機活返
     except requests.RequestException:
         pass
-    # 直接死：照 Fetcher._via_proxy 邏輯行代理池，最多試 5 個
+    # 直接死：照 Fetcher._via_proxy 邏輯行代理池，最多試 8 個
     try:
         with open(_proxy_pool_path(), encoding='utf-8') as fp:
             pool = [p.strip() for p in json.load(fp).get('proxies', []) if p.strip()]
     except (OSError, ValueError):
         pool = []
-    for proxy in pool[:5]:
+    for proxy in pool[:8]:
         try:
             r = _chrome_get(probe_url, timeout=timeout,
                             proxies={'http': proxy, 'https': proxy})
