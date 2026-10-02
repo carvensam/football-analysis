@@ -366,9 +366,13 @@ const BetSlip = {
       const s = sides(v);
       const t = side === 'up' ? s.up : s.dn;
       const sel = (v === base && side === 'up') ? ' checked' : '';
+      /* 下盤用受讓方角度寫：主/客讓 → 「受讓」；平手維持「平手」（用戶 2026-10-02 指正） */
+      const lineTxt = side === 'down'
+        ? fmtLine(v).replace(/^主讓|^客讓/, '受讓')
+        : fmtLine(v);
       return `<label><input type="radio" name="betline" value="${v}|${side}"${sel}>` +
              `<span><b>${side === 'up' ? '上盤' : '下盤'}（${esc(t)}）</b><br>` +
-             `${esc(fmtLine(v))}</span></label>`;
+             `${esc(lineTxt)}</span></label>`;
     };
     $('#betLines').innerHTML =
       `<div class="bet-sec-t">上盤（讓球方；平手＝主隊）</div><div class="bet-lines">` +
@@ -391,7 +395,9 @@ const BetSlip = {
     const dm = ko.slice(8, 10) + '-' + ko.slice(5, 7);
     const amt = $('#betAmt').value.trim();
     const { v, side } = this.sel();
-    const core = `${dm} ${m.lg} ${m.h} vs ${m.a} ${fmtLine(v)} ` +
+    let lineTxt = fmtLine(v);
+    if (side === 'down') lineTxt = lineTxt.replace(/^主讓|^客讓/, '受讓');
+    const core = `${dm} ${m.lg} ${m.h} vs ${m.a} ${lineTxt} ` +
                  (side === 'down' ? '下盤' : '上盤');
     return withWater
       ? `${core} ${$('#betWater').value.trim()} ${amt}`
