@@ -2614,12 +2614,15 @@ def _v3_featured_scan_job():
                         and len(_v3_scan['near']) < 60:
                     # Any5／Any4 近合格：記低俾精選W 頁展示
                     info = conn.execute(
-                        'SELECT m.kickoff, ht.name_tc, at.name_tc, c.req_name '
+                        'SELECT m.kickoff, ht.name_tc, at.name_tc, c.req_name, '
+                        'oc.handicap, oc.giver '
                         'FROM matches m '
                         'JOIN teams ht ON ht.titan_id=m.home_id '
                         'JOIN teams at ON at.titan_id=m.away_id '
                         'JOIN seasons s ON s.id=m.season_id '
                         'JOIN competitions c ON c.titan_id=s.titan_id '
+                        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
+                        "AND oc.label='closing' AND oc.company_id=12 "
                         'WHERE m.id=?', (mid,)).fetchone()
                     if info:
                         # 每條件嘅方向/% 一併帶上，前端 Any5/Any4 先顯示到

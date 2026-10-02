@@ -737,6 +737,14 @@ function setV3UD(tg){
 }
 function _un(){ return V3UD ? V3UD.up : '上盤'; }
 function _dn(){ return V3UD ? V3UD.down : '下盤'; }
+/* 逐卡設定：清單頁一頁過渲染多場賽事時，每張卡渲染前用自己場次嘅資料覆寫
+   全域 V3UD（2026-10-02 精選W 曾用殘留舊隊名——波蘭場顯示蘇里南/危地馬拉嘅根因） */
+function _udSetByLine(line, home, away){
+  const g = !line ? null
+    : line.indexOf('主讓') === 0 ? 'home'
+    : line.indexOf('客讓') === 0 ? 'away' : 'none';
+  setV3UD({home, away, close: g ? {g} : null});
+}
 /* 方向對應嘅隊名：上盤→上盤隊、下盤→下盤隊（修正 2026-10-02：之前下盤都show上盤隊名） */
 function _dirTeam(d){ return d === 'up' ? _un() : _dn(); }
 function _udLegend(){
@@ -1154,6 +1162,7 @@ async function _fillHrBlocks(root){
   }
 }
 function _fwCard(p){
+  _udSetByLine(p.line, p.home, p.away);
   const dName = p.direction === 'up' ? '上盤' : '下盤';
   const ud = _fwUD(p);
   const res = p.state === 'scheduled' ? '<span style="color:var(--dim)">未開賽</span>'
@@ -1215,6 +1224,7 @@ async function loadFeaturedW(){
   const near = d.near || [];
   if (near.length) {
     const nearCard = n => {
+      _udSetByLine(n.line, n.home, n.away);
       const dirName = x => x === 'up' ? '上盤' : '下盤';
       const a5 = (n.any5 || []).map(x =>
         `<div>⚡ Any 5 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}(${esc(_dirTeam(x.dir))})</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, n.conds)}</div></div>`).join('');
@@ -1919,7 +1929,7 @@ let settingsLoaded = false;
 async function loadSettings(){
   if (settingsLoaded) return;
   try {
-    const r = await fetch('/static/settings.html?v=5.1.1');
+    const r = await fetch('/static/settings.html?v=5.1.2');
     $('#setBody').innerHTML = await r.text();
     settingsLoaded = true;
   } catch (e) {
