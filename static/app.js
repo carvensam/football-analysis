@@ -393,11 +393,12 @@ const BetSlip = {
     if (!m) return '';
     const ko = m.ko || '';
     const dm = ko.slice(8, 10) + '-' + ko.slice(5, 7);
-    const amt = $('#betAmt').value.trim();
+    const hhmm = ko.slice(11, 16);
+    const amt = '$' + $('#betAmt').value.trim();
     const { v, side } = this.sel();
     let lineTxt = fmtLine(v);
     if (side === 'down') lineTxt = lineTxt.replace(/^主讓|^客讓/, '受讓');
-    const core = `${dm} ${m.lg} ${m.h} vs ${m.a} ${lineTxt} ` +
+    const core = `${dm} ${hhmm} ${m.lg} ${m.h} vs ${m.a} ${lineTxt} ` +
                  (side === 'down' ? '下盤' : '上盤');
     return withWater
       ? `${core} ${$('#betWater').value.trim()} ${amt}`
