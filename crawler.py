@@ -409,21 +409,36 @@ def data_host_probe(timeout=6):
         return r.status_code in (200, 404)   # 有回應（就算 404）都當主機活返
     except requests.RequestException:
         pass
-    # 直接死：照 Fetcher._via_proxy 邏輯行代理池，最多試 8 個
+    # 直接死：照 Fetcher._via_proxy 邏輯行代理池。
+    # 2026-10-02 修正：舊版淨係試 pool[:8] 冇輪換——頭 8 個死咗（或封 datacenter
+    # IP）就誤報「中斷」，但實際爬取路徑（順序輪轉＋跳冷卻）係行得通嘅，
+    # 搞到 health 同 ⚡ 前置探測時不時假陰性。而家由池中游標輪換起點試 12 個，
+    # 5 秒短逾時——成功一個就當主機可用。
+    global _PROBE_CURSOR
     try:
         with open(_proxy_pool_path(), encoding='utf-8') as fp:
             pool = [p.strip() for p in json.load(fp).get('proxies', []) if p.strip()]
     except (OSError, ValueError):
         pool = []
-    for proxy in pool[:8]:
+    if not pool:
+        return False
+    n = len(pool)
+    tried = min(n, 12)
+    for i in range(tried):
+        proxy = pool[(_PROBE_CURSOR + i) % n]
         try:
-            r = _chrome_get(probe_url, timeout=timeout,
+            r = _chrome_get(probe_url, timeout=5,
                             proxies={'http': proxy, 'https': proxy})
             if r.status_code in (200, 404):
+                _PROBE_CURSOR = (_PROBE_CURSOR + i + 1) % n   # 下次由下一個起
                 return True
         except requests.RequestException:
             continue
+    _PROBE_CURSOR = (_PROBE_CURSOR + tried) % n
     return False
+
+
+_PROBE_CURSOR = 0   # 代理池探測游標（輪換起點，見 data_host_probe）
 
 
 class Fetcher:
