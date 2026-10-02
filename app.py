@@ -3173,11 +3173,19 @@ def _fwgrid_hr_load():
     return data
 
 
-def get_fwx_hr():
-    """精選W（六條件）歷史入選場嘅實際命中率：全庫＋分聯賽／杯賽。
-    走盤計入場數、命中計 0（同 _fwgrid_hr.json 口徑一致）。"""
+def get_fwx_hr(mid):
+    """精選W（六條件）歷史入選場嘅實際命中率：全庫＋分聯賽／杯賽，
+    另外新增「同今場尾盤盤口（讓球數＋讓球方）相同」嘅全庫／同聯賽口徑
+    （2026-10-02：舊版全庫數字對每場都一樣，用戶要求修正）。
+    走盤計入場數、命中計 0（同 _fwgrid_hr.json 口徑一致）。
+    回傳 (out, line_label)。"""
     conn = db()
     try:
+        cur = conn.execute(
+            "SELECT oc.handicap, oc.giver FROM odds_asian oc "
+            "WHERE oc.match_id=? AND oc.label='closing' AND oc.company_id=12",
+            (mid,)).fetchone()
+        cur_hc, cur_gv = (cur[0], cur[1]) if cur else (None, None)
         rows = conn.execute(
             'SELECT l.direction, m.home_score, m.away_score, '
             'l.handicap, l.giver, c.req_name '
@@ -3187,17 +3195,34 @@ def get_fwx_hr():
             'WHERE m.home_score IS NOT NULL').fetchall()
     finally:
         conn.close()
-    out = {'all': {'up': [0, 0], 'down': [0, 0]}, 'leagues': {}}
+
+    def bucket():
+        return {'up': [0, 0], 'down': [0, 0]}
+
+    def same_line(hc, gv):
+        if cur_hc is None or hc is None:
+            return False
+        return abs(hc - cur_hc) < 0.001 and (gv or 'none') == (cur_gv or 'none')
+
+    out = {'all': bucket(), 'line': bucket(),
+           'leagues': {}, 'line_leagues': {}}
     for d, hs, aws, hc, gv, lg in rows:
         r = pick_result(hc, gv, hs, aws)
         if r is None:
             continue
         hit = 1 if ((r == 'A') == (d == 'up')) else 0
-        for scope in (out['all'], out['leagues'].setdefault(
-                lg or '', {'up': [0, 0], 'down': [0, 0]})):
-            scope[d][0] += 1
-            scope[d][1] += hit
-    return out
+        scopes = [out['all']]
+        if same_line(hc, gv):
+            scopes.append(out['line'])
+        scopes.append(out['leagues'].setdefault(lg or '', bucket()))
+        if same_line(hc, gv):
+            scopes.append(out['line_leagues'].setdefault(lg or '', bucket()))
+        for sc in scopes:
+            sc[d][0] += 1
+            sc[d][1] += hit
+    label = screen_engine.fmt_line(cur_hc, cur_gv) \
+        if cur_hc is not None else None
+    return out, label
 
 
 def api_hitrate(kind, mid):
@@ -3217,8 +3242,9 @@ def api_hitrate(kind, mid):
         conn.close()
     if kind in ('fw7', 'fw8', 'fw12'):
         d = (_fwgrid_hr_load() or {}).get(kind[2:], {})
+        line_label = None
     elif kind == 'fwx':
-        d = get_fwx_hr()
+        d, line_label = get_fwx_hr(mid)
     else:
         return {'error': '未知類型：' + kind}
 
@@ -3227,9 +3253,11 @@ def api_hitrate(kind, mid):
         return {'up': list(scope.get('up', [0, 0])),
                 'down': list(scope.get('down', [0, 0]))}
 
-    return {'ok': True, 'kind': kind, 'league': lg,
+    return {'ok': True, 'kind': kind, 'league': lg, 'line_label': line_label,
             'all': pick(d.get('all')),
-            'league_stats': pick((d.get('leagues') or {}).get(lg))}
+            'line': pick(d.get('line')),
+            'league_stats': pick((d.get('leagues') or {}).get(lg)),
+            'line_league_stats': pick((d.get('line_leagues') or {}).get(lg))}
 
 
 # ============ 12BET 優先政策（用戶 2026-09-29 指示） ============

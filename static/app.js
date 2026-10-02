@@ -1155,9 +1155,15 @@ async function _fillHrBlocks(root){
     }
     const fmt = o => (o && o[0]) ? `${pct(o[1] / o[0])}（${o[0]}場）` : '—';
     const row = (lab, o) => `<div style="font-size:13px;line-height:1.7">${lab}　上盤 <b>${fmt(o.up)}</b>｜下盤 <b>${fmt(o.down)}</b></div>`;
+    /* fwx（精選W）：加「同今場尾盤盤口」口徑——舊版全庫數字對每場都一樣（2026-10-02 修正） */
+    const isFx = kind === 'fwx';
+    const fxLine = isFx && d.line && d.line.up && d.line.up[0] + d.line.down[0] > 0;
     el.innerHTML = `<div class="gaprow" style="margin-top:6px"><span class="lab">命中率</span>` +
-      `<span style="color:var(--dim);font-size:12px">呢套規則歷史入選場實際開出（走盤計場數、唔計命中）</span></div>` +
-      row('🌍 全資料庫', d.all) +
+      `<span style="color:var(--dim);font-size:12px">呢套規則歷史入選場實際開出（走盤計場數、唔計命中）${fxLine ? '；🎯＝尾盤盤口同今場一樣嘅入選場' : ''}</span></div>` +
+      (fxLine ? row(`🎯 全庫・同今場盤口（${esc(d.line_label || '')}）`, d.line) : '') +
+      (isFx && d.line_league_stats && d.line_league_stats.up[0] + d.line_league_stats.down[0] > 0
+        ? row(`🎯 同聯賽・同盤口${d.league ? '（' + esc(d.league) + '）' : ''}`, d.line_league_stats) : '') +
+      row('🌍 全資料庫（全部入選場）', d.all) +
       row(`🏆 同聯賽/杯${d.league ? '（' + esc(d.league) + '）' : ''}`, d.league_stats);
   }
 }
@@ -1929,7 +1935,7 @@ let settingsLoaded = false;
 async function loadSettings(){
   if (settingsLoaded) return;
   try {
-    const r = await fetch('/static/settings.html?v=5.1.2');
+    const r = await fetch('/static/settings.html?v=5.1.3');
     $('#setBody').innerHTML = await r.text();
     settingsLoaded = true;
   } catch (e) {
