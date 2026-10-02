@@ -357,8 +357,31 @@ const BetSlip = {
     $('#betLines').innerHTML = opts.map(v =>
       `<label><input type="radio" name="betline" value="${v}"${v === base ? ' checked' : ''}>` +
       `<span>${esc(fmtLine(v))}</span></label>`).join('');
+    this.renderSides();
+    if (!this._linesWired) {
+      this._linesWired = true;
+      $('#betLines').addEventListener('change', () => this.renderSides());
+    }
     $('#betModal').classList.add('on');
     setTimeout(() => { if (!$('#betAmt').value) $('#betAmt').focus(); }, 80);
+  },
+  /* 上/下盤選項：跟住已揀盤口方向標球隊（讓球方=上盤；平手：上盤=主隊） */
+  renderSides(){
+    if (!this.m) return;
+    const r = document.querySelector('input[name=betline]:checked');
+    const v = r ? +r.value : 0;
+    const giver = v < 0 ? 'home' : (v > 0 ? 'away' : null);
+    const up = giver === 'away' ? this.m.a : this.m.h;    // 平手當主=上盤
+    const dn = giver === 'away' ? this.m.h : this.m.a;
+    $('#betSides').innerHTML =
+      `<label><input type="radio" name="betside" value="up" checked>` +
+      `<span>上盤（${esc(up)}）</span></label>` +
+      `<label><input type="radio" name="betside" value="down">` +
+      `<span>下盤（${esc(dn)}）</span></label>`;
+  },
+  sideText(){
+    const r = document.querySelector('input[name=betside]:checked');
+    return r && r.value === 'down' ? '下盤' : '上盤';
   },
   lineText(){
     const r = document.querySelector('input[name=betline]:checked');
@@ -370,7 +393,7 @@ const BetSlip = {
     const ko = m.ko || '';
     const dm = ko.slice(8, 10) + '-' + ko.slice(5, 7);
     const amt = $('#betAmt').value.trim();
-    const core = `${dm} ${m.lg} ${m.h} vs ${m.a} ${this.lineText()}`;
+    const core = `${dm} ${m.lg} ${m.h} vs ${m.a} ${this.lineText()} ${this.sideText()}`;
     return withWater
       ? `${core} ${$('#betWater').value.trim()} ${amt}`
       : `${core}、${amt}`;
