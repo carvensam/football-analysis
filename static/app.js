@@ -344,7 +344,7 @@ const BetSlip = {
     $('#betMsg').textContent = '';
     $('#betAmt').value = localStorage.getItem('bet_amt') || '';
     $('#betWater').value = localStorage.getItem('bet_water') || '';
-    /* 攞該場尾盤做基準盤（冇就初盤），計出 ±0.25 三選項 */
+    /* 攞該場尾盤做基準盤（冇就初盤），生出 ±0.25 三個盤 × 上/下盤 共六選項 */
     try {
       const r = await jget('/api/v3/target?id=' + preset.id);
       const t = r && r.target;
@@ -354,38 +354,35 @@ const BetSlip = {
     const q = x => Math.round(x * 100) / 100;
     const base = q(this.baseV);
     const opts = [...new Set([q(base - 0.25), base, q(base + 0.25)])];
-    $('#betLines').innerHTML = opts.map(v =>
-      `<label><input type="radio" name="betline" value="${v}"${v === base ? ' checked' : ''}>` +
-      `<span>${esc(fmtLine(v))}</span></label>`).join('');
-    this.renderSides();
-    if (!this._linesWired) {
-      this._linesWired = true;
-      $('#betLines').addEventListener('change', () => this.renderSides());
-    }
+    const m = preset;
+    /* 每個盤：讓球方＝上盤；平手盤：上盤＝主隊（注明名稱） */
+    const sides = v => {
+      const giver = v < 0 ? 'home' : (v > 0 ? 'away' : null);
+      const up = giver === 'away' ? m.a : m.h;
+      const dn = giver === 'away' ? m.h : m.a;
+      return { up, dn };
+    };
+    const optHTML = (v, side) => {
+      const s = sides(v);
+      const t = side === 'up' ? s.up : s.dn;
+      const sel = (v === base && side === 'up') ? ' checked' : '';
+      return `<label><input type="radio" name="betline" value="${v}|${side}"${sel}>` +
+             `<span><b>${side === 'up' ? '上盤' : '下盤'}（${esc(t)}）</b><br>` +
+             `${esc(fmtLine(v))}</span></label>`;
+    };
+    $('#betLines').innerHTML =
+      `<div class="bet-sec-t">上盤（讓球方；平手＝主隊）</div><div class="bet-lines">` +
+      opts.map(v => optHTML(v, 'up')).join('') + `</div>` +
+      `<div class="bet-sec-t">下盤（受讓方；平手＝客隊）</div><div class="bet-lines">` +
+      opts.map(v => optHTML(v, 'down')).join('') + `</div>`;
     $('#betModal').classList.add('on');
     setTimeout(() => { if (!$('#betAmt').value) $('#betAmt').focus(); }, 80);
   },
-  /* 上/下盤選項：跟住已揀盤口方向標球隊（讓球方=上盤；平手：上盤=主隊） */
-  renderSides(){
-    if (!this.m) return;
+  sel(){
     const r = document.querySelector('input[name=betline]:checked');
-    const v = r ? +r.value : 0;
-    const giver = v < 0 ? 'home' : (v > 0 ? 'away' : null);
-    const up = giver === 'away' ? this.m.a : this.m.h;    // 平手當主=上盤
-    const dn = giver === 'away' ? this.m.h : this.m.a;
-    $('#betSides').innerHTML =
-      `<label><input type="radio" name="betside" value="up" checked>` +
-      `<span>上盤（${esc(up)}）</span></label>` +
-      `<label><input type="radio" name="betside" value="down">` +
-      `<span>下盤（${esc(dn)}）</span></label>`;
-  },
-  sideText(){
-    const r = document.querySelector('input[name=betside]:checked');
-    return r && r.value === 'down' ? '下盤' : '上盤';
-  },
-  lineText(){
-    const r = document.querySelector('input[name=betline]:checked');
-    return r ? fmtLine(+r.value) : '';
+    if (!r) return { v: 0, side: 'up' };
+    const [v, side] = r.value.split('|');
+    return { v: +v, side };
   },
   txt(withWater){
     const m = this.m;
@@ -393,7 +390,9 @@ const BetSlip = {
     const ko = m.ko || '';
     const dm = ko.slice(8, 10) + '-' + ko.slice(5, 7);
     const amt = $('#betAmt').value.trim();
-    const core = `${dm} ${m.lg} ${m.h} vs ${m.a} ${this.lineText()} ${this.sideText()}`;
+    const { v, side } = this.sel();
+    const core = `${dm} ${m.lg} ${m.h} vs ${m.a} ${fmtLine(v)} ` +
+                 (side === 'down' ? '下盤' : '上盤');
     return withWater
       ? `${core} ${$('#betWater').value.trim()} ${amt}`
       : `${core}、${amt}`;

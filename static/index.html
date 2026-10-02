@@ -188,6 +188,8 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
 .bet-lines input{display:none}
 .bet-lines input:checked + span{color:var(--gold2);font-weight:700}
 .bet-lines label:has(input:checked){border-color:var(--gold);background:#241d0a}
+.bet-lines label span{display:inline-block;width:100%;line-height:1.4}
+.bet-sec-t{width:100%;font-size:12px;color:var(--dim);margin:2px 0 4px}
 .bet-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}
 .bet-row b{min-width:44px;font-size:13px}
 .bet-row input{flex:1;background:var(--card);border:1px solid var(--line);border-radius:8px;color:var(--tx);padding:8px 10px;font-size:16px}
@@ -392,7 +394,6 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <h3>🎯 我想投注</h3>
     <div class="b-meta" id="betMeta"></div>
     <div class="bet-lines" id="betLines"></div>
-    <div class="bet-lines" id="betSides"></div>
     <div class="bet-row"><b>金額</b><input id="betAmt" type="text" inputmode="decimal" placeholder="輸入金額（必須）"></div>
     <div class="bet-row"><b>水位</b><input id="betWater" type="text" inputmode="decimal" placeholder="流程：入金額 → 撳「分享」→ 呢度入水位（如 0.85）→ 再撳「分享」"></div>
     <div class="bet-btns">
@@ -403,7 +404,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     </div>
   </div>
 </div>
-<script src="/static/phone_crawl.js?v=5.1.5"></script>
-<script src="/static/app.js?v=5.1.5"></script>
+<script src="/static/phone_crawl.js?v=5.1.6"></script>
+<script src="/static/app.js?v=5.1.6"></script>
 </body>
 </html>
