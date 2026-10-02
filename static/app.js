@@ -262,14 +262,19 @@ function renderAlertPanel(){
     box.innerHTML = '<div class="note">暫無符合 >78% 聯賽規則嘅未開賽賽事。</div>';
     return;
   }
-  box.innerHTML = lgAlerts.map(x =>
-    `<div class="mrow" data-mid="${x.id}" style="display:block;padding:8px 4px;border-bottom:1px solid #222a3a;cursor:pointer">
+  box.innerHTML = lgAlerts.map(x => {
+    const aud = x.giver === 'home' ? {up: x.home, down: x.away}
+      : x.giver === 'away' ? {up: x.away, down: x.home}
+      : {up: x.home, down: x.away};
+    const dteam = x.direction === 'up' ? aud.up : aud.down;
+    return `<div class="mrow" data-mid="${x.id}" style="display:block;padding:8px 4px;border-bottom:1px solid #222a3a;cursor:pointer">
       <div><b>${esc((x.kickoff || '').slice(5, 16))}</b>　${esc(x.league)}</div>
       <div>${esc(x.home)} <span class="r">vs</span> ${esc(x.away)}</div>
       <div class="sub">規則：${esc(x.rule)}</div>
-      <div>方向：<b class="${x.direction === 'up' ? 'r-up' : 'r-down'}">${x.direction === 'up' ? '上盤' : '下盤'}</b>
+      <div>方向：<b class="${x.direction === 'up' ? 'r-up' : 'r-down'}">${x.direction === 'up' ? '上盤' : '下盤'}（${esc(dteam)}）</b>
         <span style="color:var(--dim)">（歷史 ${pct(x.up_r)} 上・${x.n}場基數）</span></div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   [...box.querySelectorAll('.mrow')].forEach(r => r.onclick = () => {
     $('#alertPanel').style.display = 'none';
     openDetail(+r.dataset.mid);
@@ -551,7 +556,7 @@ function renderDetLgPred(mid){
   if (!pr) { box.innerHTML = ''; return; }
   const cls = pr.direction === 'up' ? 'r-up' : 'r-down';
   box.innerHTML = `<div class="gaprow" style="margin-top:8px"><span class="lab">🎯 聯賽規則</span>` +
-    `方向：<b class="${cls}">${pr.direction === 'up' ? '上盤' : '下盤'}</b>　` +
+    `方向：<b class="${cls}">${pr.direction === 'up' ? '上盤' : '下盤'}（${esc(_dirTeam(pr.direction))}）</b>　` +
     `<span style="color:var(--dim);font-size:12px">呢場符合 ${esc(pr.league || '')} 嘅 >78% 命中率規則${(pr.rules || []).length > 1 ? `（${pr.rules.length} 條，逐條獨立睇）` : ''}：</span></div>` +
     (pr.rules || []).map(r =>
       `<div class="note" style="margin:2px 0">・${esc(r.desc)}：${r.direction === 'up' ? '上' : '下'} ${Math.round(100 * (r.rate || 0))}%（${r.n}場基數）</div>`).join('');
@@ -559,8 +564,8 @@ function renderDetLgPred(mid){
 function _pickBar(mid, pos){
   return `<div class="tcard pk-bar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <b>我的選擇${pos === 'top' ? '（第1項之上）' : '（最後1項之下）'}：</b>
-    <button class="btn pk up" data-pk="up">上盤</button>
-    <button class="btn pk down" data-pk="down">下盤</button>
+    <button class="btn pk up" data-pk="up">上盤（${esc(_un())}）</button>
+    <button class="btn pk down" data-pk="down">下盤（${esc(_dn())}）</button>
     <span class="hint" id="pkMsg_${pos}"></span>
   </div>`;
 }
@@ -622,7 +627,7 @@ async function doPick(mid, choice, bar){
   const msg = bar ? bar.querySelector('.hint') : null;
   if (r.ok) {
     picksMap[mid] = choice;
-    if (msg) msg.textContent = `已記低：${choice === 'up' ? '上盤' : '下盤'}（永不刪除）`;
+    if (msg) msg.textContent = `已記低：${choice === 'up' ? '上盤' : '下盤'}（${esc(choice === 'up' ? _un() : _dn())}）（永不刪除）`;
     updatePkButtons(mid);
     refreshPicksMap();
   } else if (msg) {
@@ -643,17 +648,21 @@ async function loadPicksPage(){
     <span>勝出率 <b>${pct(s.win_rate)}</b>（贏÷(贏+輸)，走唔計）</span></div>`;
   const card = p => {
     const res = p.played ? (RES_TXT[p.result] || '<span style="color:var(--dim)">待結算</span>') : '<span style="color:var(--dim)">未開賽</span>';
+    const pud = p.line ? (p.line.indexOf('主讓') === 0 ? {up: p.home, down: p.away, push: false}
+      : p.line.indexOf('客讓') === 0 ? {up: p.away, down: p.home, push: false}
+      : {up: p.home, down: p.away, push: true}) : null;
     return `<div class="fcard" data-mid="${p.id}">
       <div class="f-top">
         <span class="f-time">${esc((p.kickoff || '').slice(5, 16))}　${esc(p.league)}</span>
         <span class="f-teams">${esc(rn(p.home, p.rank_home))} vs ${esc(rn(p.away, p.rank_away))}</span>
         ${p.score ? `<span class="f-score">${esc(p.score)}</span>` : ''}
-        <span class="tag ${p.choice}">${p.choice === 'up' ? '上盤' : '下盤'}</span>
+        <span class="tag ${p.choice}">${p.choice === 'up' ? '上盤' : '下盤'}＝${pud ? esc(pud[p.choice]) : '—'}</span>
         <span>${res}</span>
         <span class="f-btns">
           <button class="btn pk-repick">⇄ 照揑</button>
         </span>
       </div>
+      <div class="gaprow"><span class="lab">本場</span>上盤＝<b>${pud ? esc(pud.up) : '—'}</b>｜下盤＝<b>${pud ? esc(pud.down) : '—'}</b>${pud && pud.push ? '（平手盤：上盤＝平手主隊）' : ''}</div>
       <div class="gaprow"><span class="lab">揀時</span>${esc(p.pick_line || '—')} ${esc(p.pick_odds || '')}</div>
       <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
     </div>`;
@@ -728,6 +737,8 @@ function setV3UD(tg){
 }
 function _un(){ return V3UD ? V3UD.up : '上盤'; }
 function _dn(){ return V3UD ? V3UD.down : '下盤'; }
+/* 方向對應嘅隊名：上盤→上盤隊、下盤→下盤隊（修正 2026-10-02：之前下盤都show上盤隊名） */
+function _dirTeam(d){ return d === 'up' ? _un() : _dn(); }
 function _udLegend(){
   return `<div class="note" style="margin:2px 0 6px">本場：上盤＝<b>${esc(_un())}</b>｜下盤＝<b>${esc(_dn())}</b>${V3UD && V3UD.push ? '（今場平手盤：上盤＝平手主隊）' : ''}</div>`;
 }
@@ -976,7 +987,7 @@ async function initV3Section(mid) {
   const _c = curMatch && curMatch.close;
   const curZ = _c ? _zone12Idx(_c.g === 'away' ? _c.ao : _c.ho) : -1;
   sumEl.innerHTML = _udLegend() +
-    `<div style="font-size:15px;margin-bottom:4px">🏆 精選W 檢查（1A、1I、19同主客、19+互換、31、35 全部同方向≥50%）：${dirTxt ? `<b class="r-up">✅ 合格 → ${dirTxt}(${esc(_un())})</b>` : `<span style="color:var(--dim)">❌ 未合格${fw.fail_note ? '（' + esc(fw.fail_note) + '）' : ''}</span>`}</div>` +
+    `<div style="font-size:15px;margin-bottom:4px">🏆 精選W 檢查（1A、1I、19同主客、19+互換、31、35 全部同方向≥50%）：${dirTxt ? `<b class="r-up">✅ 合格 → ${dirTxt}(${esc(_dirTeam(fw.direction))})</b>` : `<span style="color:var(--dim)">❌ 未合格${fw.fail_note ? '（' + esc(fw.fail_note) + '）' : ''}</span>`}</div>` +
     (fw.lookback ? _fwLookbackHTML(fw.lookback, curZ) : '') +
     (s.twin ? _lb4HTML(s.twin, curZ, '🧬 孖生回查',
       '三節點盤口水位（初盤/開賽前4小時/尾盤，盤口100%＋水位±0.03）＋上賽盤口相同（可互換）＋主客入球差相同嘅歷史場次・四個口徑') : '') +
@@ -1206,9 +1217,9 @@ async function loadFeaturedW(){
     const nearCard = n => {
       const dirName = x => x === 'up' ? '上盤' : '下盤';
       const a5 = (n.any5 || []).map(x =>
-        `<div>⚡ Any 5 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, n.conds)}</div></div>`).join('');
+        `<div>⚡ Any 5 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}(${esc(_dirTeam(x.dir))})</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, n.conds)}</div></div>`).join('');
       const a4 = (n.any4 || []).map(x =>
-        `<div>🔸 Any 4 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, n.conds)}</div></div>`).join('');
+        `<div>🔸 Any 4 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}(${esc(_dirTeam(x.dir))})</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, n.conds)}</div></div>`).join('');
       const anyLb = _anyLbHTML(n.any_lb, -1);
       return `<div class="fcard" data-mid="${n.id}">
         <div class="f-top">
@@ -1450,6 +1461,11 @@ async function runFwCheckOne(g, mid){
   catch (e) { box.innerHTML = '<div class="err">檢驗失敗：' + esc(String(e)) + '</div>'; return; }
   if (d.error) { box.innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
   const r = d.report || {};
+  // 設定上下盤隊名（Check7/8/12 表格同方向標籤用）
+  const tm = homeData.upcoming.find(m => m.id === +mid)
+    || (homeData.played || []).find(m => m.id === +mid) || {};
+  setV3UD({home: tm.home, away: tm.away,
+           close: (tm.line && tm.line.line) ? {g: tm.line.line.indexOf('主讓') === 0 ? 'home' : tm.line.line.indexOf('客讓') === 0 ? 'away' : 'none'} : null});
   const sc = r.scenario || {};
   const st = d.scenario_stats;
   const dTxt = {deep: '深咗', shallow: '淺咗', same: '不變'};
@@ -1468,10 +1484,11 @@ async function runFwCheckOne(g, mid){
       `<div class="note">📊 呢個情境歷史開出：<b class="${winR >= 0.55 ? 'r-up' : ''}">${winDir} ${pct(winR)}</b>（${st.n} 場基數・走 ${st.push}）` +
       `${r.pass ? ' ✅已入選精選' + g : ''}</div>`;
   } else if (r.pass) {
-    scHtml = `<div class="note">✅ 合格入選精選${g}（方向：${r.direction === 'up' ? '上盤' : '下盤'}）；但呢場歸唔到 8 個情境（其中一個參照盤同今場相同／數據不足）。</div>`;
+    scHtml = `<div class="note">✅ 合格入選精選${g}（方向：${r.direction === 'up' ? '上盤' : '下盤'}（${esc(_dirTeam(r.direction))}））；但呢場歸唔到 8 個情境（其中一個參照盤同今場相同／數據不足）。</div>`;
   }
   box.innerHTML = `<div class="fcard"><div class="f-top">` +
     `<div class="teams">格組合檢驗：${gridCells.map(esc).join('、')}</div>` +
+    _udLegend() +
     `<div class="grid6">${cellsHtml}</div>${scHtml || ''}` +
     _fwgLegendHTML(gridCells) +
     (r.lb ? _lb4HTML(r.lb, -1, '相同情況回查',
@@ -1565,16 +1582,16 @@ async function runCheck(mid){
   let anyHtml = '';
   if (!fw.pass) {
     const a5 = (fw.any5 || []).map(x =>
-      `<div>⚡ Any 5 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, fw.conds)}</div></div>`).join('');
+      `<div>⚡ Any 5 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}(${esc(_dirTeam(x.dir))})</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, fw.conds)}</div></div>`).join('');
     const a4 = (fw.any4 || []).map(x =>
-      `<div>🔸 Any 4 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, fw.conds)}</div></div>`).join('');
+      `<div>🔸 Any 4 → <b class="${x.dir === 'up' ? 'r-up' : 'r-down'}">${dirName(x.dir)}(${esc(_dirTeam(x.dir))})</b>（${esc(x.which.join('、'))}）<div class="sub">${_anyDetail(x, fw.conds)}</div></div>`).join('');
     anyHtml = (a5 || a4)
       ? `<div class="gaprow"><span class="lab">近合格</span>${a5}${a4}</div>` +
         _anyLbHTML(fw.any_lb, curZ2) : '';
   }
   let h = `<div class="tcard"><h2 style="font-size:16px;color:var(--gold2)">✓ Check 下先（同精選W 六條件＋淺深分析）</h2>
     ${_udLegend()}
-    <div style="font-size:15px;margin-bottom:6px">方向：${dirTxt ? `<b class="r-up">✅ 六條件一致 → ${dirTxt}(${esc(_un())})</b>` : `<span style="color:var(--dim)">❌ 未一致${fw.fail_note ? '（' + esc(fw.fail_note) + '）' : ''}</span>`}</div>
+    <div style="font-size:15px;margin-bottom:6px">方向：${dirTxt ? `<b class="r-up">✅ 六條件一致 → ${dirTxt}(${esc(_dirTeam(fw.direction))})</b>` : `<span style="color:var(--dim)">❌ 未一致${fw.fail_note ? '（' + esc(fw.fail_note) + '）' : ''}</span>`}</div>
     ${anyHtml}
     <div class="grid6">${(fw.conds || []).map((c, i) => `<div class="gi"><div class="t">條件${i + 1}</div><div class="v">${_fwCondCell(c)}<div class="sub">${esc(c.note || '')}</div></div></div>`).join('')}</div>
     ${_fwLegendHTML()}
@@ -1670,10 +1687,11 @@ async function loadFeatlog(){
       : p.result === 'W' ? '<b class="r-up">✅ 命中</b>'
       : p.result === 'L' ? '<b class="r-down">❌ 未中</b>'
       : p.result === 'P' ? '<b>➖ 走</b>' : '<span style="color:var(--dim)">待結算</span>';
+    const ud = _fwUD(p);
     return `<div class="mrow" data-mid="${p.id}">
       <span class="ko">${esc((p.kickoff || '').slice(5, 16))}</span>
       <span class="lg">${esc(p.league)}</span>
-      <span class="tm">${esc(p.home)} <span class="r">vs</span> ${esc(p.away)}</span>
+      <span class="tm">${esc(p.home)} <span class="r">vs</span> ${esc(p.away)}　<span class="r">上盤＝${esc(ud.up)}｜下盤＝${esc(ud.down)}</span></span>
       ${p.score ? `<span class="sc">${esc(p.score)}</span>` : ''}
       <span class="tag ${p.direction}">${p.direction === 'up' ? '上盤' : '下盤'}</span>
       <span>${res}</span>

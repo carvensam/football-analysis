@@ -3141,6 +3141,7 @@ def get_lg_alerts(mark=False):
                     'id': mid, 'kickoff': ko, 'home': h, 'away': a,
                     'league': lg, 'rule': rule.get('desc', ''),
                     'direction': rule.get('direction'),
+                    'giver': cg,
                     'up_r': rule.get('up_r'), 'n': rule.get('n')})
                 break   # 每場報一次就夠
     new = [x for x in alerts if x['id'] not in seen]
