@@ -323,6 +323,90 @@ function fmtLine(v){
   }
   return (giver === 'home' ? '主讓' : '客讓') + name;
 }
+/* ---------- 🎯 我想投注（分享單，2026-10-02） ----------
+ * 任何賽事顯示位撳「🎯投注」→ 揀該場盤口±0.25 → 入金額 → 撳「分享」→
+ * 入水位 → 再撳「分享」出完整文字。文字格式：
+ *   日-月 聯賽/杯賽名 主隊 vs 客隊 選擇盤口 水位 金額
+ */
+const BetSlip = {
+  m: null, baseV: 0,
+  btn(m, label){
+    const d = esc(JSON.stringify({id: m.id, ko: m.kickoff || '',
+                                  lg: m.league || '', h: m.home || '',
+                                  a: m.away || ''}));
+    return `<button class="bet-betbtn" data-bet="${d}">${label || '🎯投注'}</button>`;
+  },
+  async open(preset){
+    this.m = preset;
+    this.baseV = 0;
+    $('#betMeta').textContent =
+      `${(preset.ko || '').slice(5, 16)}　${preset.lg}　${preset.h} vs ${preset.a}`;
+    $('#betMsg').textContent = '';
+    $('#betAmt').value = localStorage.getItem('bet_amt') || '';
+    $('#betWater').value = localStorage.getItem('bet_water') || '';
+    /* 攞該場尾盤做基準盤（冇就初盤），計出 ±0.25 三選項 */
+    try {
+      const r = await jget('/api/v3/target?id=' + preset.id);
+      const t = r && r.target;
+      const c = t && (t.close || t.init);
+      if (c && typeof c.v === 'number') this.baseV = c.v;
+    } catch (e) {}
+    const q = x => Math.round(x * 100) / 100;
+    const base = q(this.baseV);
+    const opts = [...new Set([q(base - 0.25), base, q(base + 0.25)])];
+    $('#betLines').innerHTML = opts.map(v =>
+      `<label><input type="radio" name="betline" value="${v}"${v === base ? ' checked' : ''}>` +
+      `<span>${esc(fmtLine(v))}</span></label>`).join('');
+    $('#betModal').classList.add('on');
+    setTimeout(() => { if (!$('#betAmt').value) $('#betAmt').focus(); }, 80);
+  },
+  lineText(){
+    const r = document.querySelector('input[name=betline]:checked');
+    return r ? fmtLine(+r.value) : '';
+  },
+  txt(withWater){
+    const m = this.m;
+    if (!m) return '';
+    const ko = m.ko || '';
+    const dm = ko.slice(8, 10) + '-' + ko.slice(5, 7);
+    const amt = $('#betAmt').value.trim();
+    const core = `${dm} ${m.lg} ${m.h} vs ${m.a} ${this.lineText()}`;
+    return withWater
+      ? `${core} ${$('#betWater').value.trim()} ${amt}`
+      : `${core}、${amt}`;
+  },
+  close(){ $('#betModal').classList.remove('on'); },
+};
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-bet]');
+  if (!b) return;
+  ev.stopPropagation();
+  try { BetSlip.open(JSON.parse(b.dataset.bet)); } catch (e) {}
+});
+$('#betClose').onclick = () => BetSlip.close();
+$('#betModal').addEventListener('click', ev => {
+  if (ev.target.id === 'betModal') BetSlip.close();
+});
+$('#betShareNoW').onclick = () => {
+  if (!$('#betAmt').value.trim()) { toast('請先輸入金額'); $('#betAmt').focus(); return; }
+  shareText(BetSlip.txt(false));
+  BetSlip.close();
+};
+$('#betShare').onclick = () => {
+  if (!$('#betAmt').value.trim()) { toast('請先輸入金額'); $('#betAmt').focus(); return; }
+  localStorage.setItem('bet_amt', $('#betAmt').value.trim());
+  const w = $('#betWater').value.trim();
+  if (!w) {   /* 第一段：提示輸入水位，再撳一次先真分享 */
+    toast('請輸入水位（如 0.85），再撳一次「分享」');
+    $('#betWater').focus();
+    $('#betMsg').textContent = '等緊水位…';
+    return;
+  }
+  localStorage.setItem('bet_water', w);
+  $('#betMsg').textContent = '';
+  shareText(BetSlip.txt(true));
+  BetSlip.close();
+};
 function _mrow(m, playedSec){
   const pc = window.PhoneCrawl ? PhoneCrawl.lineFor(m.id) : null;
   const pcMark = pc ? (pc.agree === true ? ' <span style="color:var(--up);font-size:10px">✓同本機</span>'
@@ -343,7 +427,7 @@ function _mrow(m, playedSec){
     <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
     <span class="lg">${esc(m.league)}</span>
     <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}</span>
-    ${_stateTag(m.state)}${sc}${line}${od}${at}${rfb}</div>`;
+    ${_stateTag(m.state)}${sc}${line}${od}${at}${rfb}${BetSlip.btn(m)}</div>`;
 }
 /* 聯賽預測：主頁球隊旁展示方向（lgPred = /api/lgpred 結果） */
 let lgPred = {};
@@ -535,14 +619,18 @@ async function openDetail(mid){
       ${lb('尾盤（檢查基準）', t.close)}${lb('初盤', t.init)}${lb('開賽前4小時', t.h4)}
       ${lb('開賽前30分鐘', t.h30)}${lb('開賽前15分鐘', t.h15)}${lb('開賽前10分鐘', t.h10)}${lb('開賽前5分鐘', t.h5)}
     </div>
-    <div id="detLgPred"></div></div>
+    <div id="detLgPred"></div>${BetSlip.btn(t, '🎯 我想投注')}</div>
     ${_pickBar(t.id, 'top')}
     <div class="tcard" id="v3sec">
       <h2 style="color:var(--gold2)">⚽ V3 場次分析（45 項）</h2>
       <div id="v3Sum" class="note">精選W 檢查載入中…</div>
       <div id="v3Items"><div class="note">項目清單載入中…</div></div>
     </div>
-    ${_pickBar(t.id, 'bottom')}`;
+    ${_pickBar(t.id, 'bottom')}
+    <div class="tcard" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      ${BetSlip.btn(t, '🎯 我想投注')}
+      <span class="hint">揀該場盤口±0.25｜入金額｜撳分享→入水位→再撳分享出文字</span>
+    </div>`;
   $('#detBody').innerHTML = h;
   wirePickBars(t.id);
   initV3Section(t.id);
@@ -1187,7 +1275,7 @@ function _fwCard(p){
       <span>${res}</span>
       <span class="f-btns">
         <button class="btn ft-refresh">⟳ 重新整理</button>
-        <button class="btn ft-share">⇗ 分享</button>
+        <button class="btn ft-share">⇗ 分享</button>${BetSlip.btn(p)}
       </span>
     </div>
     <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
@@ -1789,7 +1877,7 @@ function _v1Card(p, z){
       <span>${res}</span>
       <span class="f-btns">
         <button class="btn ft-refresh">⟳ 重新整理</button>
-        <button class="btn ft-share">⇗ 分享</button>
+        <button class="btn ft-share">⇗ 分享</button>${BetSlip.btn(p)}
       </span>
     </div>
     <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>

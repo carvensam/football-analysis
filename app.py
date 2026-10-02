@@ -2402,7 +2402,9 @@ def api_v3_target(mid):
             if not T or T.get('h') is None:
                 return None
             return {'line': screen_engine.fmt_line(T['h'], T.get('g')),
-                    'ho': T.get('ho'), 'ao': T.get('ao'), 'g': T.get('g')}
+                    'ho': T.get('ho'), 'ao': T.get('ao'), 'g': T.get('g'),
+                    'v': (-T['h'] if T.get('g') == 'home'
+                          else (0.0 if not T.get('g') else T['h']))}
 
         def crown_box(label):
             # 易胜博(12) 未開盤 → Crown(3) 後備，標明來源（顯示用；V3 分析照舊用 12）
@@ -2413,7 +2415,9 @@ def api_v3_target(mid):
             if not r or r[0] is None:
                 return None
             return {'line': screen_engine.fmt_line(r[0], r[1]),
-                    'ho': r[2], 'ao': r[3], 'g': r[1], 'src': 'crown'}
+                    'ho': r[2], 'ao': r[3], 'g': r[1], 'src': 'crown',
+                    'v': (-r[0] if r[1] == 'home'
+                          else (0.0 if not r[1] else r[0]))}
 
         boxes = {}
         for _lb, _key in (('closing', 'close'), ('initial', 'init'),
