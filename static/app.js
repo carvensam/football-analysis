@@ -1919,7 +1919,7 @@ let settingsLoaded = false;
 async function loadSettings(){
   if (settingsLoaded) return;
   try {
-    const r = await fetch('/static/settings.html');
+    const r = await fetch('/static/settings.html?v=5.1.1');
     $('#setBody').innerHTML = await r.text();
     settingsLoaded = true;
   } catch (e) {
