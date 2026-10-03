@@ -369,6 +369,16 @@ function _stateTag(st){
   if (st === 'finished') return '<span class="tag dim">完場</span>';
   return '';
 }
+/* 半場賽果＋首隊入球 標籤（2026-10-02：所有已完結場次顯示） */
+function _htftTag(m){
+  let s = '';
+  if (m.ht) s += ` <span class="tag dim" title="半場賽果">半${esc(m.ht)}</span>`;
+  if (m.first_goal) {
+    const g = m.first_goal === 'home' ? (m.home || '主') : (m.away || '客');
+    s += ` <span class="tag" style="color:var(--gold2);border-color:#6b5510" title="第一隊入球">首球:${esc(String(g).slice(0, 6))}</span>`;
+  }
+  return s;
+}
 function fmtAt(s){
   // 'YYYY-MM-DD HH:MM:SS' → 今日顯示 HH:MM；隔日顯示 MM-DD HH:MM
   if (!s) return '';
@@ -522,7 +532,7 @@ function _mrow(m, playedSec){
     ? `<span class="od at" title="手機直爬最後更新：${esc(pc.at)}（裝置 ${esc(window.PhoneCrawl.device)}）">📱 ${esc(pc.at.slice(11, 16))}</span>`
     : (m.odds_at ? `<span class="od at" title="賠率/盤口最後更新：${esc(m.odds_at)}">🕒 ${esc(fmtAt(m.odds_at))}</span>` : '');
   const rfb = (playedSec && m.score) ? '' : `<button class="rfb" data-fb="${m.id}" data-ko="${esc(m.kickoff || '')}" title="即時更新呢場最新賠率同盤口">⟳</button>`;
-  const sc = m.score ? `<span class="sc">${esc(m.score)}</span>` : '';
+  const sc = m.score ? `<span class="sc">${esc(m.score)}</span>${_htftTag(m)}` : (m.ht ? _htftTag(m) : '');
   const pr = (!playedSec && lgPred[m.id]) ? _lgPredBadge(m, lgPred[m.id]) : '';
   return `<div class="mrow" data-mid="${m.id}">
     <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
@@ -715,7 +725,7 @@ async function openDetail(mid){
   const stateTxt = t.state === 'finished' ? '已完場' : t.state === 'live' ? '進行中' : '未開賽';
   let h = `<div class="tcard">
     <h2>${esc(rn(t.home, t.rank_home))} <span style="color:var(--dim)">vs</span> ${esc(rn(t.away, t.rank_away))}</h2>
-    <div class="meta">${esc(t.league)}｜${esc(t.category || '')}　${esc(t.kickoff)}　<span class="tag ${t.state === 'live' ? 'live' : 'dim'}">${stateTxt}</span>${t.score ? `　<b class="sc" style="font-size:18px">${esc(t.score)}</b>` : ''}　<span class="od at" title="賠率/盤口最後更新：${esc(t.odds_at || '')}">🕒 賠率更新 ${esc(t.odds_at ? fmtAt(t.odds_at) : '—')}</span></div>
+    <div class="meta">${esc(t.league)}｜${esc(t.category || '')}　${esc(t.kickoff)}　<span class="tag ${t.state === 'live' ? 'live' : 'dim'}">${stateTxt}</span>${t.score ? `　<b class="sc" style="font-size:18px">${esc(t.score)}</b>${_htftTag(t)}` : ''}　<span class="od at" title="賠率/盤口最後更新：${esc(t.odds_at || '')}">🕒 賠率更新 ${esc(t.odds_at ? fmtAt(t.odds_at) : '—')}</span></div>
     <div class="lines">
       ${lb('尾盤（檢查基準）', t.close)}${lb('初盤', t.init)}${lb('開賽前4小時', t.h4)}
       ${lb('開賽前30分鐘', t.h30)}${lb('開賽前15分鐘', t.h15)}${lb('開賽前10分鐘', t.h10)}${lb('開賽前5分鐘', t.h5)}
@@ -844,7 +854,7 @@ async function loadPicksPage(){
       <div class="f-top">
         <span class="f-time">${esc((p.kickoff || '').slice(5, 16))}　${esc(p.league)}</span>
         <span class="f-teams">${esc(rn(p.home, p.rank_home))} vs ${esc(rn(p.away, p.rank_away))}</span>
-        ${p.score ? `<span class="f-score">${esc(p.score)}</span>` : ''}
+        ${p.score ? `<span class="f-score">${esc(p.score)}${p.ht ? `<span style="color:var(--dim);font-weight:400">（半${esc(p.ht)}）</span>` : ''}${p.first_goal ? ` <span style="color:var(--gold2)">首球${p.first_goal === 'home' ? '主' : '客'}</span>` : ''}</span>` : (p.ht ? `<span class="f-score" style="color:var(--dim)">半${esc(p.ht)}</span>` : '')}
         <span class="tag ${p.choice}">${p.choice === 'up' ? '上盤' : '下盤'}＝${pud ? esc(pud[p.choice]) : '—'}</span>
         <span>${res}</span>
         <span class="f-btns">
@@ -1371,7 +1381,7 @@ function _fwCard(p){
     <div class="f-top">
       <span class="f-time">${esc((p.kickoff || '').slice(5, 16))}　${esc(p.league)}</span>
       <span class="f-teams">${esc(rn(p.home, p.rank_home))} vs ${esc(rn(p.away, p.rank_away))}</span>
-      ${p.score ? `<span class="f-score">${esc(p.score)}</span>` : ''}
+      ${p.score ? `<span class="f-score">${esc(p.score)}${p.ht ? `<span style="color:var(--dim);font-weight:400">（半${esc(p.ht)}）</span>` : ''}${p.first_goal ? ` <span style="color:var(--gold2)">首球${p.first_goal === 'home' ? '主' : '客'}</span>` : ''}</span>` : (p.ht ? `<span class="f-score" style="color:var(--dim)">半${esc(p.ht)}</span>` : '')}
       <span class="tag ${p.direction}">${dName}</span>
       <span>${res}</span>
       <span class="f-btns">
@@ -1972,7 +1982,7 @@ function _v1Card(p, z){
     <div class="f-top">
       <span class="f-time">${esc((p.kickoff || '').slice(5, 16))}　${esc(p.league)}</span>
       <span class="f-teams">${esc(rn(p.home, p.rank_home))} vs ${esc(rn(p.away, p.rank_away))}</span>
-      ${p.score ? `<span class="f-score">${esc(p.score)}</span>` : ''}
+      ${p.score ? `<span class="f-score">${esc(p.score)}${p.ht ? `<span style="color:var(--dim);font-weight:400">（半${esc(p.ht)}）</span>` : ''}${p.first_goal ? ` <span style="color:var(--gold2)">首球${p.first_goal === 'home' ? '主' : '客'}</span>` : ''}</span>` : (p.ht ? `<span class="f-score" style="color:var(--dim)">半${esc(p.ht)}</span>` : '')}
       <span class="tag ${p.direction}">${dName}</span>
       ${lts.length ? `<span class="tag lt">字頭 ${lts.join(' ')}</span>` : ''}
       <span>${res}</span>

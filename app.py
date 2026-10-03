@@ -201,7 +201,9 @@ def played():
     conn = db()
     rows = conn.execute(
         "SELECT m.id, c.req_name, m.kickoff, ht.name_tc, at.name_tc, "
-        "m.home_score, m.away_score, "
+        "m.home_score, m.away_score, m.half_home, m.half_away, "
+        "(SELECT g.side FROM match_goals g WHERE g.match_id=m.id "
+        "ORDER BY g.seq LIMIT 1) AS fg, "
         "oc.handicap, oc.giver, oc.home_odds, oc.away_odds, "
         "(SELECT MAX(oa2.fetched_at) FROM odds_asian oa2 WHERE oa2.match_id=m.id) "
         "FROM matches m JOIN seasons s ON s.id=m.season_id "
@@ -214,14 +216,19 @@ def played():
         "AND m.kickoff >= datetime('now','+8 hours','-120 hours') "
         "ORDER BY m.kickoff DESC LIMIT 1200", ()).fetchall()
     out = []
-    for mid, lg, ko, h, a, hs, aws, hc, gv, ho, ao, odds_at in rows:
+    for mid, lg, ko, h, a, hs, aws, hh, ha, fg, hc, gv, ho, ao, odds_at in rows:
         line = None
         if hc is not None:
             line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao,
                     'v': (-hc if gv == 'home' else (0.0 if not gv else hc))}
-        out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
-                    'score': None if hs is None else f'{hs}-{aws}', 'line': line,
-                    'odds_at': odds_at})
+        rec = {'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
+               'score': None if hs is None else f'{hs}-{aws}', 'line': line,
+               'odds_at': odds_at}
+        if hh is not None:
+            rec['ht'] = f'{hh}-{ha}'
+        if hs is not None and fg in ('home', 'away'):
+            rec['first_goal'] = fg
+        out.append(rec)
     conn.close()
     return out
 
@@ -1313,8 +1320,8 @@ def _recompute_featured_after_update():
 
 def _build_featured_rec(row, tbl, now):
     """精選單場卡片：基本資料＋自動結算（未結算嘅以入選方向計 贏/輸/走）＋brief＋check＋letters"""
-    (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, letters, hr_,
-     ar_) = row
+    (mid, d, res, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv, ho, ao,
+     letters, hr_, ar_) = row
     rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
            'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
            'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
@@ -1338,6 +1345,10 @@ def _build_featured_rec(row, tbl, now):
             c2.close()
         rec['score'] = f'{hs}-{aws}'
         rec['result'] = res
+    if hh is not None:
+        rec['ht'] = f'{hh}-{ha}'
+    if fg in ('home', 'away'):
+        rec['first_goal'] = fg
     rec['brief'] = _screen_brief(mid)
     rec['check'] = _check_combo_for(mid, d)     # 中咗 Check 下先邊條組合
     return rec
@@ -1351,7 +1362,9 @@ def get_featured_full(z=False):
     now = time.strftime('%Y-%m-%d %H:%M:%S')
     pending_rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
-        'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
+        'm.home_score, m.away_score, m.half_home, m.half_away, '
+        '(SELECT g.side FROM match_goals g WHERE g.match_id=m.id '
+        "ORDER BY g.seq LIMIT 1) AS fg, ht.name_tc, at.name_tc, c.req_name, "
         'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, f.letters, '
         'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
         f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
@@ -1369,7 +1382,9 @@ def get_featured_full(z=False):
         'WHERE m.kickoff >= ? ORDER BY m.kickoff', (now,)).fetchall()
     played_rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
-        'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
+        'm.home_score, m.away_score, m.half_home, m.half_away, '
+        '(SELECT g.side FROM match_goals g WHERE g.match_id=m.id '
+        "ORDER BY g.seq LIMIT 1) AS fg, ht.name_tc, at.name_tc, c.req_name, "
         'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, f.letters, '
         'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
         f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
@@ -1495,7 +1510,9 @@ def get_v1_featured_full(z=False):
     now = time.strftime('%Y-%m-%d %H:%M:%S')
     base = (
         'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
-        'm.home_score, m.away_score, ht.name_tc, at.name_tc, c.req_name, '
+        'm.home_score, m.away_score, m.half_home, m.half_away, '
+        '(SELECT g.side FROM match_goals g WHERE g.match_id=m.id '
+        "ORDER BY g.seq LIMIT 1) AS fg, ht.name_tc, at.name_tc, c.req_name, "
         'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, NULL, '
         'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
         f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
@@ -1521,8 +1538,8 @@ def get_v1_featured_full(z=False):
             return _build_featured_rec(row, tbl, now)
         except Exception:
             traceback.print_exc()
-            (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, _letters,
-             hr_, ar_) = row
+            (mid, d, res, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv,
+             ho, ao, _letters, hr_, ar_) = row
             return {'id': mid, 'direction': d, 'added_at': added,
                     'kickoff': ko, 'home': h, 'away': a, 'league': lg,
                     'rank_home': hr_, 'rank_away': ar_,
@@ -2439,11 +2456,14 @@ def api_v3_target(mid):
                              "AND scope='total' AND grp=''",
                              (t['season_id'], t['away_id'])).fetchone()
             ar = r[0] if r else None
-        sc = conn.execute('SELECT home_score, away_score FROM matches WHERE id=?',
-                          (mid,)).fetchone()
+        sc = conn.execute('SELECT home_score, away_score, half_home, half_away '
+                          'FROM matches WHERE id=?', (mid,)).fetchone()
         odds_at = conn.execute(
             'SELECT MAX(fetched_at) FROM odds_asian WHERE match_id=?',
             (mid,)).fetchone()[0]
+        fg = conn.execute(
+            'SELECT side FROM match_goals WHERE match_id=? ORDER BY seq LIMIT 1',
+            (mid,)).fetchone()
         score = None
         state = 'scheduled'
         if sc and sc[0] is not None:
@@ -2451,16 +2471,20 @@ def api_v3_target(mid):
             state = 'finished'
         elif t['kickoff'] <= v3_engine.hk_now_str():
             state = 'live'
-        return {'ok': True,
-                'target': {'id': t['id'], 'home': t['home'], 'away': t['away'],
-                           'rank_home': hr, 'rank_away': ar,
-                           'league': t.get('league'), 'category': t.get('category'),
-                           'kickoff': t['kickoff'], 'state': state, 'score': score,
-                           'odds_at': odds_at,
-                           'close': boxes['close'], 'init': boxes['init'],
-                           'h4': boxes['h4'], 'h30': boxes['h30'],
-                           'h15': boxes['h15'], 'h10': boxes['h10'],
-                           'h5': boxes['h5']}}
+        tgt = {'id': t['id'], 'home': t['home'], 'away': t['away'],
+               'rank_home': hr, 'rank_away': ar,
+               'league': t.get('league'), 'category': t.get('category'),
+               'kickoff': t['kickoff'], 'state': state, 'score': score,
+               'odds_at': odds_at,
+               'close': boxes['close'], 'init': boxes['init'],
+               'h4': boxes['h4'], 'h30': boxes['h30'],
+               'h15': boxes['h15'], 'h10': boxes['h10'],
+               'h5': boxes['h5']}
+        if sc and sc[2] is not None:
+            tgt['ht'] = f'{sc[2]}-{sc[3]}'
+        if sc and sc[0] is not None and fg and fg[0] in ('home', 'away'):
+            tgt['first_goal'] = fg[0]
+        return {'ok': True, 'target': tgt}
     finally:
         conn.close()
 
@@ -2694,8 +2718,8 @@ def do_v3_featured_refresh(mid):
 
 def _build_v3_rec(row, now):
     """精選W 單場卡片：基本資料＋狀態＋自動結算（以入選方向計 贏/輸/走）＋conds/gap30"""
-    (mid, d, res, detail, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, hr_,
-     ar_) = row
+    (mid, d, res, detail, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv,
+     ho, ao, hr_, ar_) = row
     rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
            'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
            'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
@@ -2726,6 +2750,10 @@ def _build_v3_rec(row, now):
             c2.close()
         rec['score'] = f'{hs}-{aws}'
         rec['result'] = res
+    if hh is not None:
+        rec['ht'] = f'{hh}-{ha}'
+    if fg in ('home', 'away'):
+        rec['first_goal'] = fg
     return rec
 
 
@@ -2737,7 +2765,9 @@ def get_v3_featured_full():
     now = v3_engine.hk_now_str()
     rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.detail, f.added_at, '
-        'm.kickoff, m.home_score, m.away_score, ht.name_tc, at.name_tc, '
+        'm.kickoff, m.home_score, m.away_score, m.half_home, m.half_away, '
+        '(SELECT g.side FROM match_goals g WHERE g.match_id=m.id '
+        'ORDER BY g.seq LIMIT 1) AS fg, ht.name_tc, at.name_tc, '
         'c.req_name, oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
         'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
         'FROM v3_featured f JOIN matches m ON m.id=f.match_id '
@@ -2901,7 +2931,8 @@ def _fw_grid_scan_job(g):
 
 def _build_fw_grid_rec(row, now, g):
     """精選7/8/12 單場卡片（結構同 _build_v3_rec）。"""
-    (mid, d, res, detail, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao) = row
+    (mid, d, res, detail, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv,
+     ho, ao) = row
     rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
            'home': h, 'away': a, 'league': lg, 'grid': g,
            'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
@@ -2929,6 +2960,10 @@ def _build_fw_grid_rec(row, now, g):
             c2.close()
         rec['score'] = f'{hs}-{aws}'
         rec['result'] = res
+    if hh is not None:
+        rec['ht'] = f'{hh}-{ha}'
+    if fg in ('home', 'away'):
+        rec['first_goal'] = fg
     return rec
 
 
@@ -2944,7 +2979,9 @@ def get_fw_grid_full(g):
     now = v3_engine.hk_now_str()
     rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.detail, f.added_at, '
-        'm.kickoff, m.home_score, m.away_score, ht.name_tc, at.name_tc, '
+        'm.kickoff, m.home_score, m.away_score, m.half_home, m.half_away, '
+        '(SELECT g.side FROM match_goals g WHERE g.match_id=m.id '
+        'ORDER BY g.seq LIMIT 1) AS fg, ht.name_tc, at.name_tc, '
         'c.req_name, oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
         'FROM fw_grid_featured f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
