@@ -223,6 +223,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <button class="tab" data-pg="fwck8">✓ Check8</button>
     <button class="tab" data-pg="fw12">🎯 精選12 <span id="fw12Cnt"></span></button>
     <button class="tab" data-pg="fwck12">✓ Check12</button>
+    <button class="tab" data-pg="htft">⚡ 半全場</button>
     <button class="tab" data-pg="review">📋 事後回查</button>
     <button class="tab" data-pg="picks">我的選擇 <span id="pkCnt"></span></button>
     <button class="tab" data-pg="featlog">📜 過往紀錄</button>
@@ -330,6 +331,11 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   </section>
 
   <!-- 事後回查 -->
+  <section class="pg" id="pg-htft">
+    <div class="day-h">⚡ 半全場逆轉統計（按精選各組合翻查歷史）</div>
+    <div class="note">① 半場主勝→全場和｜② 半場主勝→全場客｜③ 半場客勝→全場和｜④ 半場客勝→全場主。任何一項＝半場領先一方最終唔贏（被追和或逆轉）嘅合計率。組合＝方向＋原盤／互換（g14／g17）；樣本 &lt;3 嘅組合唔顯示。</div>
+    <div id="htftBody"><div class="note">載入中…</div></div>
+  </section>
   <section class="pg" id="pg-review">
     <div id="rvStats"></div>
     <div id="rvList"><div class="note">載入中…</div></div>
@@ -404,7 +410,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     </div>
   </div>
 </div>
-<script src="/static/phone_crawl.js?v=5.1.8"></script>
-<script src="/static/app.js?v=5.1.8"></script>
+<script src="/static/phone_crawl.js?v=5.1.9"></script>
+<script src="/static/app.js?v=5.1.9"></script>
 </body>
 </html>

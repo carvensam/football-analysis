@@ -3333,10 +3333,72 @@ def line12_daily_retry(conn, crawler, fetcher, batch=150):
 _health_cache = {'ts': 0.0, 'data_host_ok': None}
 
 
+# ============ ⚡ 半全場逆轉統計（2026-10-02 用戶要求嘅獨立頁） ============
+# 按精選組合（check_rows 歷史庫）翻查：四種「半場領先一方最終唔贏」嘅出現率
+# ①半場主勝→全場和 ②半場主勝→全場客 ③半場客勝→全場和 ④半場客勝→全場主，
+# 加「四項任何一項」合計率。組合鍵＝方向＋g14（同主客原盤）＋g17（計埋互換）。
+_HTFT_CACHE = {'ts': 0.0, 'data': None}
+_HTFT_CACHE_TTL = 600
+
+
+def api_htft():
+    now = time.time()
+    if _HTFT_CACHE['data'] is not None \
+            and now - _HTFT_CACHE['ts'] < _HTFT_CACHE_TTL:
+        return _HTFT_CACHE['data']
+    conn = db()
+    rows = conn.execute(
+        'SELECT c.direction, c.g14, c.g17, m.half_home, m.half_away, '
+        'm.home_score, m.away_score FROM check_rows c '
+        'JOIN matches m ON m.id = c.match_id '
+        'WHERE m.home_score IS NOT NULL AND m.half_home IS NOT NULL').fetchall()
+    conn.close()
+    agg = {}
+    tot = {'n': 0, 'c': [0, 0, 0, 0]}
+    for d, g14, g17, hh, ha, hs, aws in rows:
+        cat = 0
+        if hh > ha:                     # 半場主勝
+            if hs == aws:
+                cat = 1                 # 全場和
+            elif aws > hs:
+                cat = 2                 # 全場客
+        elif ha > hh:                   # 半場客勝
+            if hs == aws:
+                cat = 3                 # 全場和
+            elif hs > aws:
+                cat = 4                 # 全場主
+        key = (d or '?', g14 or '-', g17 or '-')
+        a = agg.setdefault(key, {'n': 0, 'c': [0, 0, 0, 0]})
+        a['n'] += 1
+        tot['n'] += 1
+        if cat:
+            a['c'][cat - 1] += 1
+            tot['c'][cat - 1] += 1
+
+    def pack(a):
+        n = a['n']
+        return {'n': n,
+                'p': [round(x / n, 4) for x in a['c']],
+                'p_any': round(sum(a['c']) / n, 4)}
+
+    out = []
+    for (d, g14, g17), a in agg.items():
+        if a['n'] < 3:                  # 樣本太少冇參考價值
+            continue
+        r = pack(a)
+        r.update({'direction': d, 'g14': g14, 'g17': g17})
+        out.append(r)
+    out.sort(key=lambda r: -r['n'])
+    data = {'ok': True, 'total': pack(tot), 'rows': out[:300],
+            'updated': time.strftime('%Y-%m-%d %H:%M:%S')}
+    _HTFT_CACHE['data'] = data
+    _HTFT_CACHE['ts'] = now
+    return data
+
+
 def api_health():
     """連線狀態：伺服器就緒、數據主機（titan007）狀態、最後成功更新時間。
     data_host 探測結果快取 60 秒——前端 30 秒輪詢一次，唔會增加主機負擔。"""
-    now = time.time()
     if now - _health_cache['ts'] > 60:
         try:
             import crawler as _cr
@@ -3621,6 +3683,14 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/picks':
             try:
                 self._send(200, json.dumps(get_picks(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/htft':
+            try:
+                self._send(200, json.dumps(api_htft(), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()

@@ -205,6 +205,7 @@ function goto(pg){
     fw12: () => loadFwGrid('12'),
     fwck12: () => loadFwCheck('12'),
     review: () => loadReview(),
+    htft: () => loadHtft(),
     picks: () => loadPicksPage(),
     featlog: () => loadFeatlog(),
     v1: () => loadV1(),
@@ -217,6 +218,29 @@ $('#tabs').addEventListener('click', e => {
   if (b && b.dataset.pg) goto(b.dataset.pg);
 });
 
+/* ---------- ⚡ 半全場逆轉統計（獨立頁） ---------- */
+async function loadHtft(){
+  const box = $('#htftBody');
+  box.innerHTML = '<div class="note">載入中…</div>';
+  let d;
+  try { d = await jget('/api/htft'); }
+  catch (e) { box.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  const t = d.total || {n: 0, p: [0, 0, 0, 0], p_any: 0};
+  let h = '<table class="ck-table"><tr><th>組合（原盤／互換）</th><th>方向</th><th>n</th>' +
+    '<th>①半主全和</th><th>②半主全客</th><th>③半客全和</th><th>④半客全主</th><th>任何一項</th></tr>';
+  h += `<tr class="hl"><td><b>⭐ 全部精選</b></td><td>—</td><td><b>${t.n}</b></td>` +
+    t.p.map(x => `<td>${pct(x)}</td>`).join('') +
+    `<td><b style="color:var(--gold2)">${pct(t.p_any)}</b></td></tr>`;
+  for (const r of d.rows || []) {
+    h += `<tr><td>${esc(r.g14)}／${esc(r.g17)}</td>` +
+      `<td>${r.direction === 'up' ? '<span class="r-up">上</span>' : '<span class="r-down">下</span>'}</td>` +
+      `<td>${r.n}</td>` + r.p.map(x => `<td>${pct(x)}</td>`).join('') +
+      `<td><b>${pct(r.p_any)}</b></td></tr>`;
+  }
+  h += '</table>';
+  h += `<div class="note">更新於 ${esc(d.updated || '')}｜資料源：check_rows 精選組合歷史庫（完場且有半場賽果嘅場次）</div>`;
+  box.innerHTML = h;
+}
 /* ---------- 主頁 ---------- */
 let homeData = {upcoming: [], played: []};
 async function loadHome(){
