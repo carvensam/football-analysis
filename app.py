@@ -3574,6 +3574,7 @@ def api_htftboard():
 def api_health():
     """連線狀態：伺服器就緒、數據主機（titan007）狀態、最後成功更新時間。
     data_host 探測結果快取 60 秒——前端 30 秒輪詢一次，唔會增加主機負擔。"""
+    now = time.time()
     if now - _health_cache['ts'] > 60:
         try:
             import crawler as _cr
