@@ -3396,6 +3396,144 @@ def api_htft():
     return data
 
 
+# ============ ⚡ 半全場版面：即將開賽／進行中／已完結 ＋ 歷史同類比例 ============
+# 「同類」定義＝同聯賽（req_name）＋同尾盤（讓球,讓球方）；比例＝四種半場領先被
+# 逆轉／追和嘅歷史出現率；進行中場次另附「同半場領先」嘅全場走勢（守和/被追和/被逆轉）。
+_HTFTB_CACHE = {'ts': 0.0, 'data': None}
+
+
+def _htft_cat(hh, ha, hs, aws):
+    if hh > ha:
+        if hs == aws:
+            return 1            # 半主全和
+        if aws > hs:
+            return 2            # 半主全客
+    elif ha > hh:
+        if hs == aws:
+            return 3            # 半客全和
+        if hs > aws:
+            return 4            # 半客全主
+    return 0
+
+
+def api_htftboard():
+    now = time.time()
+    if _HTFTB_CACHE['data'] is not None \
+            and now - _HTFTB_CACHE['ts'] < 300:
+        return _HTFTB_CACHE['data']
+    conn = db()
+    try:
+        # 1) 全歷史同類統計（一次掃描）
+        rows = conn.execute(
+            'SELECT c.req_name, o.handicap, o.giver, m.half_home, m.half_away, '
+            'm.home_score, m.away_score FROM matches m '
+            "JOIN odds_asian o ON o.match_id=m.id AND o.label='closing' "
+            'AND o.company_id=12 '
+            'JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'WHERE m.home_score IS NOT NULL AND m.half_home IS NOT NULL '
+            'AND o.handicap IS NOT NULL').fetchall()
+        classes = {}
+        for lg, h, g, hh, ha, hs, aws in rows:
+            key = (lg, h, g or '')
+            a = classes.setdefault(
+                key, {'n': 0, 'c': [0, 0, 0, 0], 'htH': [0, 0, 0], 'htA': [0, 0, 0]})
+            cat = _htft_cat(hh, ha, hs, aws)
+            a['n'] += 1
+            if cat:
+                a['c'][cat - 1] += 1
+            if hh > ha:         # 半場主領先：全場 主勝/和/客勝
+                a['htH'][0 if hs > aws else (1 if hs == aws else 2)] += 1
+            elif ha > hh:       # 半場客領先：全場 客勝/和/主勝
+                a['htA'][0 if aws > hs else (1 if hs == aws else 2)] += 1
+
+        def pack(a):
+            n = a['n']
+            return {'n': n,
+                    'p': [round(x / n, 4) for x in a['c']],
+                    'p_any': round(sum(a['c']) / n, 4)}
+
+        # 2) 三個區域嘅場次
+        hk = "datetime('now','+8 hours')"
+        base_sql = (
+            'SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc, '
+            'm.half_home, m.half_away, m.home_score, m.away_score, '
+            'o.handicap, o.giver FROM matches m '
+            'JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'JOIN teams ht ON ht.titan_id=m.home_id '
+            'JOIN teams at ON at.titan_id=m.away_id '
+            "JOIN odds_asian o ON o.match_id=m.id AND o.label='closing' "
+            'AND o.company_id=12 AND o.handicap IS NOT NULL ')
+        upcoming = conn.execute(
+            base_sql + f'WHERE m.home_score IS NULL AND m.kickoff >= {hk} '
+            'ORDER BY m.kickoff LIMIT 24').fetchall()
+        live = conn.execute(
+            base_sql + 'WHERE m.home_score IS NULL '
+            f"AND m.kickoff < {hk} "
+            "AND m.kickoff >= datetime('now','+8 hours','-3 hours') "
+            'ORDER BY m.kickoff DESC LIMIT 24').fetchall()
+        finished = conn.execute(
+            base_sql + 'WHERE m.home_score IS NOT NULL '
+            "AND m.kickoff >= datetime('now','+8 hours','-48 hours') "
+            'ORDER BY m.kickoff DESC LIMIT 24').fetchall()
+
+        def match_rec(r):
+            (mid, ko, lg, h, a, hh, ha, hs, aws, hc, gv) = r
+            key = (lg, hc, gv or '')
+            st = classes.get(key)
+            rec = {'id': mid, 'ko': ko, 'lg': lg, 'home': h, 'away': a,
+                   'line': screen_engine.fmt_line(hc, gv),
+                   'n': st['n'] if st else 0}
+            if st:
+                pk = pack(st)
+                rec['p'], rec['p_any'] = pk['p'], pk['p_any']
+                if hh is not None and hs is None:   # 進行中：同半場領先走勢
+                    side = 'htH' if hh > ha else ('htA' if ha > hh else None)
+                    if side:
+                        t = st[side]
+                        tot = sum(t)
+                        if tot:
+                            rec['live_p'] = [round(x / tot, 4) for x in t]
+            if hh is not None:
+                rec['ht'] = f'{hh}-{ha}'
+            if hs is not None:
+                rec['ft'] = f'{hs}-{aws}'
+                rec['cat'] = _htft_cat(hh, ha, hs, aws)
+            # 3) 同類例子場次（最新 4 場）
+            if st:
+                ex = conn.execute(
+                    'SELECT m.kickoff, ht.name_tc, at.name_tc, '
+                    'm.half_home, m.half_away, m.home_score, m.away_score '
+                    'FROM matches m '
+                    'JOIN seasons s ON s.id=m.season_id '
+                    'JOIN competitions c ON c.titan_id=s.titan_id '
+                    'JOIN teams ht ON ht.titan_id=m.home_id '
+                    'JOIN teams at ON at.titan_id=m.away_id '
+                    "JOIN odds_asian o ON o.match_id=m.id AND o.label='closing' "
+                    'AND o.company_id=12 '
+                    'WHERE c.req_name=? AND o.handicap=? AND o.giver IS ? '
+                    'AND m.home_score IS NOT NULL AND m.half_home IS NOT NULL '
+                    'ORDER BY m.kickoff DESC LIMIT 4',
+                    (lg, hc, gv)).fetchall()
+                rec['ex'] = [{'ko': e[0][5:16], 't': f'{e[1]} vs {e[2]}',
+                              'ht': f'{e[3]}-{e[4]}', 'ft': f'{e[5]}-{e[6]}',
+                              'cat': _htft_cat(e[3], e[4], e[5], e[6])}
+                             for e in ex]
+            return rec
+
+        data = {'ok': True,
+                'upcoming': [match_rec(r) for r in upcoming],
+                'live': [match_rec(r) for r in live],
+                'finished': [match_rec(r) for r in finished],
+                'updated': time.strftime('%Y-%m-%d %H:%M:%S')}
+    finally:
+        conn.close()
+    _HTFTB_CACHE['data'] = data
+    _HTFTB_CACHE['ts'] = now
+    return data
+
+
 def api_health():
     """連線狀態：伺服器就緒、數據主機（titan007）狀態、最後成功更新時間。
     data_host 探測結果快取 60 秒——前端 30 秒輪詢一次，唔會增加主機負擔。"""
@@ -3691,6 +3829,14 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/htft':
             try:
                 self._send(200, json.dumps(api_htft(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/htftboard':
+            try:
+                self._send(200, json.dumps(api_htftboard(), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()

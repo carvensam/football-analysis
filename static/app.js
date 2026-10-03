@@ -219,14 +219,62 @@ $('#tabs').addEventListener('click', e => {
 });
 
 /* ---------- ⚡ 半全場逆轉統計（獨立頁） ---------- */
+const HTFT_CAT = ['—', '①半主全和', '②半主全客', '③半客全和', '④半客全主'];
+function _htftStatsRow(r){
+  if (!r.n) return '<span class="note">同類歷史樣本不足</span>';
+  const pc = v => pct(v);
+  return `<span title="①半場主勝→全場和 ②半主→全客 ③半客→全和 ④半客→全主">` +
+    `同類(n=${r.n})：①${pc(r.p[0])} ②${pc(r.p[1])} ③${pc(r.p[2])} ④${pc(r.p[3])}｜` +
+    `<b style="color:var(--gold2)">任何一項 ${pc(r.p_any)}</b></span>`;
+}
+function _htftMatchCard(r){
+  let h = `<details class="htft-card"><summary>` +
+    `<span class="ko">${esc((r.ko || '').slice(5, 16))}</span> ` +
+    `<span class="lg">${esc(r.lg)}</span> ` +
+    `<b>${esc(r.home)} <span style="color:var(--dim)">vs</span> ${esc(r.away)}</b> ` +
+    `<span class="tag dim">${esc(r.line)}</span> `;
+  if (r.ht) h += `<span class="sc">半場 ${esc(r.ht)}</span> `;
+  if (r.ft) h += `<span class="sc">全場 ${esc(r.ft)}</span> `;
+  if (r.cat) h += `<span class="tag" style="color:var(--gold2);border-color:#6b5510">${HTFT_CAT[r.cat]}</span>`;
+  else if (r.ft) h += `<span class="tag dim">唔屬四項</span>`;
+  h += `<br><span class="sub">${_htftStatsRow(r)}</span>`;
+  if (r.live_p){
+    const lead = (r.ht || '').split('-');
+    const homeLead = +lead[0] > +lead[1];
+    h += `<br><span class="sub" style="color:var(--up)">同類同半場${homeLead ? '主' : '客'}領先走勢：` +
+         `${homeLead ? '主勝' : '客勝'} ${pct(r.live_p[0])}｜和 ${pct(r.live_p[1])}｜` +
+         `${homeLead ? '被逆轉（客勝）' : '被逆轉（主勝）'} ${pct(r.live_p[2])}</span>`;
+  }
+  h += `</summary>`;
+  if (r.ex && r.ex.length){
+    h += `<div class="body"><table class="ck-table"><tr><th>日期</th><th>場次</th><th>半場</th><th>全場</th><th>類別</th></tr>` +
+      r.ex.map(e => `<tr><td>${esc(e.ko)}</td><td>${esc(e.t)}</td><td>${esc(e.ht)}</td><td>${esc(e.ft)}</td>` +
+        `<td>${e.cat ? HTFT_CAT[e.cat] : '—'}</td></tr>`).join('') + `</table></div>`;
+  } else {
+    h += `<div class="body"><div class="note">冇同類歷史場次</div></div>`;
+  }
+  h += `</details>`;
+  return h;
+}
 async function loadHtft(){
   const box = $('#htftBody');
   box.innerHTML = '<div class="note">載入中…</div>';
-  let d;
-  try { d = await jget('/api/htft'); }
-  catch (e) { box.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  let b, d;
+  try {
+    b = await jget('/api/htftboard');
+    d = await jget('/api/htft');
+  } catch (e) { box.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  let h = '';
+  h += `<div class="day-h">🔴 進行中（${(b.live || []).length} 場）</div>`;
+  h += (b.live || []).map(_htftMatchCard).join('') || '<div class="note">而家冇進行中場次。</div>';
+  h += `<div class="day-h">⏰ 即將開賽（未來48小時・${(b.upcoming || []).length} 場）</div>`;
+  h += (b.upcoming || []).map(_htftMatchCard).join('') || '<div class="note">冇即將開賽場次。</div>';
+  h += `<div class="day-h">✅ 已完結（最近48小時・${(b.finished || []).length} 場）</div>`;
+  h += (b.finished || []).map(_htftMatchCard).join('') || '<div class="note">冇已完結場次。</div>';
+  /* 組合統計表（原有） */
   const t = d.total || {n: 0, p: [0, 0, 0, 0], p_any: 0};
-  let h = '<table class="ck-table"><tr><th>組合（原盤／互換）</th><th>方向</th><th>n</th>' +
+  h += `<div class="day-h">📊 精選組合歷史統計（check_rows 全庫）</div>`;
+  h += '<table class="ck-table"><tr><th>組合（原盤／互換）</th><th>方向</th><th>n</th>' +
     '<th>①半主全和</th><th>②半主全客</th><th>③半客全和</th><th>④半客全主</th><th>任何一項</th></tr>';
   h += `<tr class="hl"><td><b>⭐ 全部精選</b></td><td>—</td><td><b>${t.n}</b></td>` +
     t.p.map(x => `<td>${pct(x)}</td>`).join('') +
@@ -238,7 +286,7 @@ async function loadHtft(){
       `<td><b>${pct(r.p_any)}</b></td></tr>`;
   }
   h += '</table>';
-  h += `<div class="note">更新於 ${esc(d.updated || '')}｜資料源：check_rows 精選組合歷史庫（完場且有半場賽果嘅場次）</div>`;
+  h += `<div class="note">更新於 ${esc(b.updated || '')}｜同類＝同聯賽＋同尾盤（讓球/讓球方）；例子場次＝同類最近 4 場。資料每 5 分鐘自動更新（撳返個分頁即刷新）。</div>`;
   box.innerHTML = h;
 }
 /* ---------- 主頁 ---------- */
