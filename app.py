@@ -4444,6 +4444,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         u = urlparse(self.path)
+        # 2026-10-05：路由比對統一去尾斜線——APK／書籤用 /haobao/（trailing
+        # slash）會跌穿去 404，就算新映像部署成功好波頁都開唔到。
+        # 直接改寫 u.path，後面成條 dispatch 鏈自動用 stripped 版
+        if u.path != '/' and u.path.endswith('/'):
+            u = u._replace(path=u.path.rstrip('/'))
         if u.path == '/' or u.path == '/index.html':
             with open(os.path.join(STATIC_DIR, 'index.html'), 'rb') as f:
                 self._send(200, f.read(), 'text/html; charset=utf-8')
@@ -4831,6 +4836,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         u = urlparse(self.path)
+        if u.path != '/' and u.path.endswith('/'):
+            u = u._replace(path=u.path.rstrip('/'))
         if u.path == '/api/fetch':
             n = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(n) or b'{}')
@@ -5391,11 +5398,18 @@ if __name__ == '__main__':
         print('如要重開，請先用工作管理員結束舊嘅 python/app.py 進程。')
         sys.exit(1)
     print(f'篩查 APP v{SERVER_VERSION}：http://localhost:{port}')
-    _migrate_db()
-    init_picks()
-    _seed_check_rows()
-    _seed_v3_featured_import()
-    _auto_scans()
+    # 2026-10-05：初始化全部 async 化——Render 健康檢查喺 container 起後
+    # 很短時間內就要 /api/ready 有反應，blocking boot（init_picks 撞鎖重試
+    # 最壞 200 秒＋seed import）曾經搞到每次部署 health check 逾時 rollback。
+    # 而家 serve_forever 前只做 bind；下列步驟喺背景線程順序執行，
+    # 期間 /api/ready 回 ready=False（前端本來就有 loading 機制等佢）。
+    def _boot_init():
+        _migrate_db()
+        init_picks()
+        _seed_check_rows()
+        _seed_v3_featured_import()
+        _auto_scans()
+    threading.Thread(target=_boot_init, daemon=True).start()
     threading.Thread(target=_warmup, daemon=True).start()
     # 賽果補抓＋V2 定時窗口更新：兩邊都開——雲端行代理池通道（proxy_pool.json
     # 隨映像焗入，titan007 封 IP 段封唔到公共代理），所以雲端數據而家會自動
