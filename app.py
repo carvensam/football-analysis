@@ -192,6 +192,11 @@ def upcoming(hours=48):
                     'has_odds': bool(has), 'line': line, 'odds_at': odds_at,
                     'rank_home': hr_, 'rank_away': ar_,
                     'fetched_ago': int(time.time() - _last_fetch[mid]) if mid in _last_fetch else None})
+    # 同賽事盤口規則：每場附上/下盤%預測（2026-10-05 用戶指示）
+    try:
+        _attach_oupred(out)
+    except Exception:
+        pass
     conn.close()
     return out
 
@@ -740,6 +745,19 @@ def do_featured_refresh(mid):
 # ============ 我的選擇（上/下盤 記錄 + 勝出率統計） ============
 
 def init_picks():
+    # 用戶爬蟲全速行緊時 DB 長期鎖住：成個 init 包重試（最多 10 次×20 秒），
+    # 唔會再一撞 locked 就殺死 server 啟動（2026-10-05 修正）
+    for attempt in range(10):
+        try:
+            _init_picks_once()
+            return
+        except sqlite3.OperationalError:
+            if attempt == 9:
+                raise
+            time.sleep(20)
+
+
+def _init_picks_once():
     conn = db()
     conn.execute('''CREATE TABLE IF NOT EXISTS user_picks(
         match_id INTEGER PRIMARY KEY, choice TEXT NOT NULL, created REAL)''')
@@ -3873,6 +3891,544 @@ def api_lgpred():
         conn.close()
 
 
+# ============ 同賽事盤口規則（用戶 2026-10-05：主頁每場預測上下盤%） ============
+# 我設計嘅規則「同賽事盤口模型」——三因子 logit 合成：
+#  F1 同賽事・聯賽獨立盤口因子（權重45%）：該聯賽「同讓球方＋同盤口線」歷史上盤率，
+#     k=30 收縮→該聯賽整體上盤率（k=60 收縮→全庫整體）——每個聯賽/杯賽獨立一張表
+#  F2 同賽事・聯賽水位帶因子（20%）：該聯賽「同盤口＋上盤水位帶(±0.05)」上盤率，
+#     k=15 收縮→F1
+#  F3 球隊近况因子（35%）：match_derived 主隊主場/全部＋客隊客場/全部 近20場贏盤率
+#     → 期望上盤率 = (主贏盤率 + 1−客贏盤率)/2，k=8 收縮→50%
+#  z = 0.45·logit(F1) + 0.20·logit(F2) + 0.35·logit(F3)，P(上盤) = σ(z)
+_oupred_cache = {'ts': 0, 'cur': None, 'prior26': None, 'prior10': None,
+                 'bt': None, 'hist': None}
+OUPRED_TTL = 3600
+
+
+def _lg_shrink(up, n, prior_up, prior_n, k):
+    return (up + k * prior_up) / (n + k)
+
+
+def _build_ou_tables(conn, before=None):
+    """建 聯賽×盤口／水位帶 上盤率表。before 只計該時刻前完場（out-of-sample 回查用）。"""
+    sql = (
+        "SELECT c.req_name, oc.handicap, oc.giver, oc.home_odds, oc.away_odds, "
+        "m.home_score, m.away_score FROM matches m "
+        "JOIN seasons s ON s.id=m.season_id "
+        "JOIN competitions c ON c.titan_id=s.titan_id "
+        "JOIN odds_asian oc ON oc.match_id=m.id AND oc.label='closing' "
+        "AND oc.company_id=12 "
+        "WHERE m.home_score IS NOT NULL AND oc.handicap IS NOT NULL")
+    args = ()
+    if before:
+        sql += " AND m.kickoff < ?"
+        args = (before,)
+    lg_tot = {}
+    line_tab = {}
+    water_tab = {}
+    a_tot = [0, 0]
+    for lg, hc, gv, ho, ao, hs, aws in conn.execute(sql, args):
+        r = pick_result(hc, gv, hs, aws)
+        if r is None:
+            continue
+        up = 1 if r == 'A' else 0
+        key = '%s|%.2f' % (gv or 'none', float(hc))
+        t = lg_tot.setdefault(lg, [0, 0]); t[0] += up; t[1] += 1
+        a_tot[0] += up; a_tot[1] += 1
+        lt = line_tab.setdefault((lg, key), [0, 0]); lt[0] += up; lt[1] += 1
+        uw = None
+        if gv == 'home':
+            uw = ho
+        elif gv == 'away':
+            uw = ao
+        elif ho is not None and ao is not None:
+            uw = min(ho, ao)
+        if uw is not None:
+            band = round(float(uw) / 0.05)
+            wt = water_tab.setdefault((lg, key, band), [0, 0])
+            wt[0] += up; wt[1] += 1
+    lg_tot['__ALL__'] = a_tot
+    return {'lg': lg_tot, 'line': line_tab, 'water': water_tab}
+
+
+def _oupred_tables(force=False):
+    now = time.time()
+    if not force and _oupred_cache['cur'] is not None and \
+            now - _oupred_cache['ts'] < OUPRED_TTL:
+        return _oupred_cache
+    conn = db()
+    try:
+        cur = _build_ou_tables(conn)
+        prior26 = _build_ou_tables(conn, '2026-01-01 00:00')
+        prior10 = _build_ou_tables(conn, '2026-10-01 00:00')
+        _oupred_cache.update(ts=now, cur=cur, prior26=prior26, prior10=prior10,
+                             bt=None, hist=None)
+    finally:
+        conn.close()
+    return _oupred_cache
+
+
+def _logit(p):
+    p = min(max(p, 0.02), 0.98)
+    import math
+    return math.log(p / (1 - p))
+
+
+def _sigmoid(z):
+    import math
+    return 1.0 / (1.0 + math.exp(-z))
+
+
+def _oupred_one(tab, lg, hc, gv, ho, ao, drv):
+    """單場預測。drv = match_derived row（可 None）。回傳 dict 或 None。"""
+    if hc is None:
+        return None
+    key = '%s|%.2f' % (gv or 'none', float(hc))
+    lg_tab = tab['lg']
+    all_up, all_n = lg_tab.get('__ALL__', [0, 0])
+    all_r = all_up / all_n if all_n else 0.5
+    lu, ln_ = lg_tab.get(lg, [0, 0])
+    lg_r = _lg_shrink(lu, ln_, all_r, 0, 60)
+    u1, n1 = tab['line'].get((lg, key), [0, 0])
+    f1 = _lg_shrink(u1, n1, lg_r, 0, 30)
+    uw = None
+    if gv == 'home':
+        uw = ho
+    elif gv == 'away':
+        uw = ao
+    elif ho is not None and ao is not None:
+        uw = min(ho, ao)
+    f2 = f1
+    n2 = 0
+    if uw is not None:
+        band = round(float(uw) / 0.05)
+        u2, n2 = tab['water'].get((lg, key, band), [0, 0])
+        f2 = _lg_shrink(u2, n2, f1, 0, 15)
+    # F3 球隊近况
+    f3 = 0.5
+    n3 = 0
+    if drv:
+        hw = [x for x in (drv[0], drv[1]) if x is not None]
+        aw = [x for x in (drv[2], drv[3]) if x is not None]
+        if hw and aw:
+            hwr = sum(hw) / len(hw)
+            awr = sum(aw) / len(aw)
+            f3 = _lg_shrink((hwr + 1 - awr) / 2, (len(hw) + len(aw)) * 10, 0.5, 0, 8)
+            n3 = len(hw) + len(aw)
+    z = 0.45 * _logit(f1) + 0.20 * _logit(f2) + 0.35 * _logit(f3)
+    p = _sigmoid(z)
+    return {'up_r': round(p * 100, 1), 'down_r': round((1 - p) * 100, 1),
+            'dir': 'up' if p >= 0.5 else 'down',
+            'f': [round(f1 * 100, 1), round(f2 * 100, 1), round(f3 * 100, 1)],
+            'n_line': n1, 'n_water': n2, 'n_team': n3}
+
+
+def _oupred_derived_map(conn, mids):
+    """match_derived 批量讀：主主場/主全部/客客場/客全部 近20場贏盤率。"""
+    if not mids:
+        return {}
+    rows = conn.execute(
+        'SELECT match_id, home_hw_winrate_home, home_hw_winrate_all, '
+        'away_hw_winrate_away, away_hw_winrate_all FROM match_derived '
+        'WHERE match_id IN (%s)' % ','.join('?' * len(mids)), mids).fetchall()
+    return {r[0]: r[1:] for r in rows}
+
+
+def _attach_oupred(out):
+    """upcoming() 用：每場附上/下盤%預測（current 表＋球隊因子）。"""
+    tab = _oupred_tables()['cur']
+    ids = [r['id'] for r in out]
+    conn = db()
+    try:
+        drv = _oupred_derived_map(conn, ids)
+    finally:
+        conn.close()
+    for rec in out:
+        ln = rec.get('line')
+        if not ln:
+            continue
+        try:
+            v = ln.get('v')
+            gv = ln.get('giver') or 'none'
+            hc = abs(float(v)) if v is not None else None
+            pr = _oupred_one(tab, rec['league'], hc, gv, ln.get('ho'),
+                             ln.get('ao'), drv.get(rec['id']))
+            if pr:
+                rec['oupred'] = pr
+        except Exception:
+            pass
+
+
+def _oupred_backtest():
+    """回查資料庫命中%：用 2026 前嘅表，對 2026 年完場場次逐場預測再對賽果。"""
+    c = _oupred_tables()
+    if c['bt'] is not None:
+        return c['bt']
+    conn = db()
+    try:
+        rows = conn.execute(
+            "SELECT m.id, c.req_name, oc.handicap, oc.giver, oc.home_odds, "
+            "oc.away_odds, m.home_score, m.away_score, "
+            "d.home_hw_winrate_home, d.home_hw_winrate_all, "
+            "d.away_hw_winrate_away, d.away_hw_winrate_all "
+            "FROM matches m JOIN seasons s ON s.id=m.season_id "
+            "JOIN competitions c ON c.titan_id=s.titan_id "
+            "JOIN odds_asian oc ON oc.match_id=m.id AND oc.label='closing' "
+            "AND oc.company_id=12 "
+            "LEFT JOIN match_derived d ON d.match_id=m.id "
+            "WHERE m.home_score IS NOT NULL AND m.kickoff >= '2026-01-01' "
+            "AND oc.handicap IS NOT NULL").fetchall()
+        tab = c['prior26']
+        hits = 0; tot = 0; up_hits = 0; up_tot = 0; dn_hits = 0; dn_tot = 0
+        per_lg = {}
+        for (mid, lg, hc, gv, ho, ao, hs, aws, h1, h2, a1, a2) in rows:
+            pr = _oupred_one(tab, lg, hc, gv, ho, ao, (h1, h2, a1, a2))
+            if not pr:
+                continue
+            r = pick_result(hc, gv, hs, aws)
+            if r in (None, 'P'):
+                continue
+            hit = (r == 'A') == (pr['dir'] == 'up')
+            tot += 1; hits += 1 if hit else 0
+            if pr['dir'] == 'up':
+                up_tot += 1; up_hits += 1 if hit else 0
+            else:
+                dn_tot += 1; dn_hits += 1 if hit else 0
+            L = per_lg.setdefault(lg, [0, 0])
+            L[0] += 1 if hit else 0; L[1] += 1
+        bt = {'n': tot,
+              'hit_r': round(hits / tot * 100, 1) if tot else None,
+              'up': {'n': up_tot,
+                     'hit_r': round(up_hits / up_tot * 100, 1) if up_tot else None},
+              'down': {'n': dn_tot,
+                       'hit_r': round(dn_hits / dn_tot * 100, 1) if dn_tot else None},
+              'per_league': sorted(
+                  ({'league': k, 'n': v[1],
+                    'hit_r': round(v[0] / v[1] * 100, 1)} for k, v in per_lg.items()
+                   if v[1] >= 30), key=lambda x: -x['n'])[:20]}
+        c['bt'] = bt
+        return bt
+    finally:
+        conn.close()
+
+
+def _oupred_history():
+    """2026-10-01 起完場場次：規則預測（10月前嘅表，out-of-sample）vs 實際賽果。"""
+    c = _oupred_tables()
+    if c['hist'] is not None:
+        return c['hist']
+    conn = db()
+    try:
+        rows = conn.execute(
+            "SELECT m.id, c.req_name, m.kickoff, ht.name_tc, at.name_tc, "
+            "oc.handicap, oc.giver, oc.home_odds, oc.away_odds, "
+            "m.home_score, m.away_score, "
+            "d.home_hw_winrate_home, d.home_hw_winrate_all, "
+            "d.away_hw_winrate_away, d.away_hw_winrate_all "
+            "FROM matches m JOIN seasons s ON s.id=m.season_id "
+            "JOIN competitions c ON c.titan_id=s.titan_id "
+            "JOIN teams ht ON ht.titan_id=m.home_id "
+            "JOIN teams at ON at.titan_id=m.away_id "
+            "JOIN odds_asian oc ON oc.match_id=m.id AND oc.label='closing' "
+            "AND oc.company_id=12 "
+            "LEFT JOIN match_derived d ON d.match_id=m.id "
+            "WHERE m.home_score IS NOT NULL AND m.kickoff >= '2026-10-01' "
+            "AND oc.handicap IS NOT NULL "
+            "ORDER BY m.kickoff DESC LIMIT 500").fetchall()
+        tab = c['prior10']
+        out = []
+        hits = 0; tot = 0
+        for (mid, lg, ko, h, a, hc, gv, ho, ao, hs, aws,
+             h1, h2, a1, a2) in rows:
+            pr = _oupred_one(tab, lg, hc, gv, ho, ao, (h1, h2, a1, a2))
+            if not pr:
+                continue
+            r = pick_result(hc, gv, hs, aws)
+            if r is None:
+                continue
+            hit = None
+            if r != 'P':
+                hit = ((r == 'A') == (pr['dir'] == 'up'))
+                tot += 1; hits += 1 if hit else 0
+            out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h,
+                        'away': a, 'score': '%d-%d' % (hs, aws),
+                        'pred_up': pr['up_r'], 'pred_dir': pr['dir'],
+                        'actual': r, 'hit': hit})
+        hist = {'rows': out,
+                'stats': {'n': tot,
+                          'hits': hits,
+                          'hit_r': round(hits / tot * 100, 1) if tot else None}}
+        c['hist'] = hist
+        return hist
+    finally:
+        conn.close()
+
+
+def api_oupred_panel():
+    """規則說明＋回查命中%＋每聯賽獨立因子（n 最大嘅 15 個聯賽嘅盤口因子示例）。"""
+    bt = _oupred_backtest()
+    tab = _oupred_tables()['cur']
+    lines = []
+    for (lg, key), (up, n) in tab['line'].items():
+        if n >= 50:
+            lines.append({'league': lg, 'key': key, 'n': n,
+                          'up_r': round(up / n * 100, 1)})
+    lines.sort(key=lambda x: -x['n'])
+    return {'rule': {
+                'name': '同賽事盤口模型',
+                'factors': [
+                    {'name': '同賽事・聯賽獨立盤口因子', 'w': 45,
+                     'desc': '該聯賽同讓球方＋同盤口線嘅歷史上盤率'
+                             '（k=30 收縮→聯賽整體→全庫；每聯賽/杯賽獨立）'},
+                    {'name': '同賽事・聯賽水位帶因子', 'w': 20,
+                     'desc': '該聯賽同盤口＋上盤水位帶(±0.05)上盤率'
+                             '（k=15 收縮→盤口因子）'},
+                    {'name': '球隊近况因子', 'w': 35,
+                     'desc': '主隊主場/全部＋客隊客場/全部近20場贏盤率'
+                             '（match_derived，k=8 收縮→50%）'}],
+                'formula': 'z = 0.45·logit(F1) + 0.20·logit(F2) + 0.35·logit(F3)，'
+                           'P(上盤) = σ(z)；≥50% 指上盤，否則指下盤'},
+            'backtest': bt,
+            'league_factors': lines[:15]}
+
+
+# ============ 精選系列每小時自動紀錄（用戶 2026-10-05） ============
+# 無論有無人手撳掃描：伺服器每小時自動行 W/7/8/12 掃描，將「合資格或曾合資格」
+# 嘅賽事寫入獨立表 feat_hourly（永久保留，唔影響大資料庫賽事紀錄）。
+# 曾合資格但尾盤重算唔再合 → final_eligible=0，標記「最後不合資格」。
+_feat_hourly = {'running': False, 'last': None, 'error': None,
+                'stop': False, 'runs': 0}
+
+
+def _fh_conn():
+    """feat_hourly 專用連線：busy timeout 120 秒（用戶爬蟲/定時更新長事務搶鎖）"""
+    return sqlite3.connect(DB_PATH, timeout=120)
+
+
+def _feat_hourly_log(conn, ts):
+    """將「合資格或曾合資格」場次寫入 feat_hourly（核心記錄邏輯）。"""
+    conn.execute('''CREATE TABLE IF NOT EXISTS feat_hourly(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL, kind TEXT NOT NULL, match_id INTEGER NOT NULL,
+        eligible INTEGER NOT NULL, direction TEXT, detail TEXT,
+        kickoff TEXT, league TEXT, home TEXT, away TEXT,
+        final_eligible INTEGER, result TEXT, settled INTEGER DEFAULT 0,
+        UNIQUE(ts, kind, match_id))''')
+    kinds = (('W', 'v3_featured', None), ('7', 'fw_grid_featured', '7'),
+             ('8', 'fw_grid_featured', '8'), ('12', 'fw_grid_featured', '12'))
+    logged = 0
+    for kind, table, g in kinds:
+        if g:
+            now_elig = dict(conn.execute(
+                'SELECT match_id, direction FROM %s WHERE grid=?' % table,
+                (g,)).fetchall())
+        else:
+            now_elig = dict(conn.execute(
+                'SELECT match_id, direction FROM %s' % table).fetchall())
+        prev = {r[0] for r in conn.execute(
+            'SELECT DISTINCT match_id FROM feat_hourly '
+            'WHERE kind=? AND eligible=1', (kind,))}
+        union = set(now_elig) | prev
+        if not union:
+            continue
+        mids = sorted(union)
+        info = dict((r[0], r[1:]) for r in conn.execute(
+            'SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc '
+            'FROM matches m JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'JOIN teams ht ON ht.titan_id=m.home_id '
+            'JOIN teams at ON at.titan_id=m.away_id '
+            'WHERE m.id IN (%s)' % ','.join('?' * len(mids)), mids))
+        for mid in mids:
+            ko, lg, h, a = info.get(mid, ('', '', '', ''))
+            conn.execute(
+                'INSERT INTO feat_hourly(ts,kind,match_id,'
+                'eligible,direction,kickoff,league,home,away) '
+                'VALUES(?,?,?,?,?,?,?,?,?) '
+                'ON CONFLICT(ts,kind,match_id) DO UPDATE SET '
+                'eligible=excluded.eligible, direction=excluded.direction',
+                (ts, kind, mid, 1 if mid in now_elig else 0,
+                 now_elig.get(mid), ko, lg, h, a))
+            logged += 1
+    return logged
+
+
+def _feat_hourly_settle(conn):
+    """結算已完場未結算：賽果 W/L/P＋尾盤重算最後資格。"""
+    pend = conn.execute(
+        'SELECT f.id, f.match_id, f.kind, f.direction FROM feat_hourly f '
+        'JOIN matches m ON m.id=f.match_id '
+        'WHERE f.settled=0 AND m.home_score IS NOT NULL').fetchall()
+    if not pend:
+        return 0
+    import v3_engine
+    import fw_grid_engine
+    v3_engine.load_v3_pool(conn)
+    cache = {}
+    for fid, mid, kind, d in pend:
+        r = conn.execute(
+            "SELECT oc.handicap, oc.giver, m.home_score, m.away_score "
+            "FROM matches m LEFT JOIN odds_asian oc ON oc.match_id=m.id "
+            "AND oc.label='closing' AND oc.company_id=12 "
+            'WHERE m.id=?', (mid,)).fetchone()
+        res = None
+        final_elig = None
+        if r and r[2] is not None:
+            pr = pick_result(r[0], r[1], r[2], r[3])
+            if pr == 'P':
+                res = 'P'
+            elif pr:
+                res = 'W' if (pr == 'A') == (d == 'up') else 'L'
+            if mid not in cache:
+                t = screen_engine.get_target(conn, mid)
+                if t:
+                    if kind == 'W':
+                        cache[mid] = bool(
+                            v3_engine.featured_w(conn, t).get('pass'))
+                    else:
+                        cache[mid] = bool(fw_grid_engine.grid_report(
+                            conn, t, kind).get('pass'))
+                else:
+                    cache[mid] = None
+            final_elig = cache[mid]
+        conn.execute(
+            'UPDATE feat_hourly SET settled=1, result=?, '
+            'final_eligible=? WHERE id=?', (res, final_elig, fid))
+    return len(pend)
+
+
+def _feat_hourly_tick():
+    if _feat_hourly['running']:
+        return
+    _feat_hourly['running'] = True
+    try:
+        ts = time.strftime('%Y-%m-%d %H:%M')
+        # 1) 先記錄（保證一定有紀錄，掃描幾慢都唔會空窗）
+        # 用戶爬蟲＋定時更新長事務成日鎖 DB：成段 retry 最多 20 次×8 秒
+        for attempt in range(20):
+            conn = None
+            try:
+                conn = _fh_conn()
+                _feat_hourly_log(conn, ts)
+                _feat_hourly_settle(conn)
+                conn.commit()
+                conn.close()
+                break
+            except sqlite3.OperationalError:
+                if conn:
+                    try:
+                        conn.rollback()
+                        conn.close()
+                    except Exception:
+                        pass
+                if attempt == 19:
+                    raise
+                time.sleep(8)
+        # 2) 行四個掃描更新合資格狀態（reuse 現有掃描工作；已 running 會自動跳過）
+        try:
+            _v3_featured_scan_job()
+        except Exception:
+            traceback.print_exc()
+        for g in ('7', '8', '12'):
+            try:
+                _fw_grid_scan_job(g)
+            except Exception:
+                traceback.print_exc()
+        # 3) 掃描完再記一次（今輪有新合資格場次即時入帳）＋結算
+        for attempt in range(20):
+            conn = None
+            try:
+                conn = _fh_conn()
+                _feat_hourly_log(conn, ts)
+                _feat_hourly_settle(conn)
+                conn.commit()
+                conn.close()
+                break
+            except sqlite3.OperationalError:
+                if conn:
+                    try:
+                        conn.rollback()
+                        conn.close()
+                    except Exception:
+                        pass
+                if attempt == 19:
+                    raise
+                time.sleep(8)
+        _feat_hourly['last'] = ts
+        _feat_hourly['runs'] = _feat_hourly.get('runs', 0) + 1
+        _feat_hourly['error'] = None
+    except Exception as e:
+        traceback.print_exc()
+        _feat_hourly['error'] = str(e)
+    finally:
+        _feat_hourly['running'] = False
+
+
+def _feat_hourly_loop():
+    time.sleep(180)   # 等伺服器起好、數據池熱身先
+    while not _feat_hourly['stop']:
+        try:
+            _feat_hourly_tick()
+        except Exception:
+            traceback.print_exc()
+        time.sleep(3600)
+
+
+def get_feat_hourly():
+    """每小時紀錄頁：逐 kind 統計＋逐場資格時間線。"""
+    conn = db()
+    conn.execute('''CREATE TABLE IF NOT EXISTS feat_hourly(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts TEXT NOT NULL, kind TEXT NOT NULL, match_id INTEGER NOT NULL,
+        eligible INTEGER NOT NULL, direction TEXT, detail TEXT,
+        kickoff TEXT, league TEXT, home TEXT, away TEXT,
+        final_eligible INTEGER, result TEXT, settled INTEGER DEFAULT 0,
+        UNIQUE(ts, kind, match_id))''')
+    kinds = ('W', '7', '8', '12')
+    out = {}
+    for kind in kinds:
+        rows = conn.execute(
+            'SELECT f.match_id, f.kickoff, f.league, f.home, f.away, '
+            'f.direction, f.eligible, f.ts, f.result, f.final_eligible, '
+            'f.settled FROM feat_hourly f WHERE f.kind=? '
+            'ORDER BY f.match_id, f.ts', (kind,)).fetchall()
+        matches = {}
+        for (mid, ko, lg, h, a, d, elig, ts, res, fin, st) in rows:
+            M = matches.setdefault(mid, {'id': mid, 'kickoff': ko,
+                                         'league': lg, 'home': h, 'away': a,
+                                         'direction': d, 'hist': []})
+            M['hist'].append({'ts': ts, 'elig': elig})
+            if res is not None:
+                M['result'] = res
+            if fin is not None:
+                M['final_eligible'] = fin
+            M['settled'] = st
+        recs = list(matches.values())
+        for M in recs:
+            M['ever'] = any(x['elig'] for x in M['hist'])
+            M['now_elig'] = bool(M['hist'] and M['hist'][-1]['elig'])
+            M['snaps'] = len(M['hist'])
+        played = [M for M in recs if M.get('result')]
+        wins = sum(1 for M in played if M['result'] == 'W')
+        losses = sum(1 for M in played if M['result'] == 'L')
+        pushes = sum(1 for M in played if M['result'] == 'P')
+        dropped = [M for M in recs if M.get('final_eligible') == 0]
+        out[kind] = {
+            'name': '精選W' if kind == 'W' else '精選' + kind,
+            'stats': {'tracked': len(recs),
+                      'now_eligible': sum(1 for M in recs if M['now_elig']),
+                      'ever_eligible': sum(1 for M in recs if M['ever']),
+                      'dropped_final': len(dropped),
+                      'played': len(played), 'wins': wins, 'losses': losses,
+                      'pushes': pushes,
+                      'hit_r': round(wins / (wins + losses) * 100, 1)
+                      if (wins + losses) else None},
+            'matches': sorted(recs, key=lambda M: M['kickoff'], reverse=True)}
+    st = {k: _feat_hourly.get(k) for k in ('running', 'last', 'error', 'runs')}
+    conn.close()
+    return {'kinds': out, 'scan': st}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -3942,6 +4498,27 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback
                 traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/oupred/panel':
+            try:
+                self._send(200, json.dumps(api_oupred_panel(), ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/oupred/history':
+            try:
+                self._send(200, json.dumps(_oupred_history(), ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/feathourly':
+            try:
+                self._send(200, json.dumps(get_feat_hourly(), ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/worklog':
@@ -4901,4 +5478,6 @@ if __name__ == '__main__':
     else:
         threading.Thread(target=_data_host_watchdog, daemon=True).start()
         threading.Timer(5, _boot_auto_update).start()
+    # 精選系列每小時自動紀錄（2026-10-05）：本地＋雲端都開，唯讀 DB＋重用掃描
+    threading.Thread(target=_feat_hourly_loop, daemon=True).start()
     httpd.serve_forever()

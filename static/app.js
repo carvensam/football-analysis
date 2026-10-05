@@ -208,6 +208,8 @@ function goto(pg){
     htft: () => loadHtft(),
     picks: () => loadPicksPage(),
     featlog: () => loadFeatlog(),
+    oupred: () => loadOupred(),
+    feathourly: () => loadFeatHourly(),
     v1: () => loadV1(),
     settings: () => loadSettings(),
     home: () => loadHome()}[pg] || (() => {}))();
@@ -534,11 +536,22 @@ function _mrow(m, playedSec){
   const rfb = (playedSec && m.score) ? '' : `<button class="rfb" data-fb="${m.id}" data-ko="${esc(m.kickoff || '')}" title="即時更新呢場最新賠率同盤口">⟳</button>`;
   const sc = m.score ? `<span class="sc">${esc(m.score)}</span>${_htftTag(m)}` : (m.ht ? _htftTag(m) : '');
   const pr = (!playedSec && lgPred[m.id]) ? _lgPredBadge(m, lgPred[m.id]) : '';
+  const oup = (!playedSec && m.oupred) ? _oupredBadge(m, m.oupred) : '';
   return `<div class="mrow" data-mid="${m.id}">
     <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
     <span class="lg">${esc(m.league)}</span>
-    <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}</span>
+    <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}</span>
     ${_stateTag(m.state)}${sc}${line}${od}${at}${rfb}${BetSlip.btn(m)}</div>`;
+}
+/* 同賽事盤口模型：主頁球隊旁展示上/下盤%（oupred = upcoming() 每場自帶） */
+function _oupredBadge(m, p){
+  const cls = p.dir === 'up' ? 'r-up' : 'r-down';
+  const val = p.dir === 'up' ? p.up_r : p.down_r;
+  const title = `同賽事盤口模型：上${p.up_r}%／下${p.down_r}%（≥50%指嗰邊）\n` +
+    `F1 同賽事・聯賽獨立盤口 ${p.f[0]}%（n=${p.n_line}）\n` +
+    `F2 同賽事・聯賽水位帶 ${p.f[1]}%（n=${p.n_water}）\n` +
+    `F3 球隊近况 ${p.f[2]}%（近20場贏盤率）`;
+  return ` <span class="tag oupred ${cls}" title="${esc(title)}">📐${p.dir === 'up' ? '上' : '下'}${val}%</span>`;
 }
 /* 聯賽預測：主頁球隊旁展示方向（lgPred = /api/lgpred 結果） */
 let lgPred = {};
@@ -2190,3 +2203,99 @@ async function shareText(txt){
     }, 120000);
   }
 })();
+
+/* ---------- 📐 同賽事盤口規則頁（2026-10-05） ---------- */
+async function loadOupred(){
+  $('#opPanel').innerHTML = '<div class="note">載入中…</div>';
+  $('#opHist').innerHTML = '';
+  try {
+    const [panel, hist] = await Promise.all([
+      jget('/api/oupred/panel'), jget('/api/oupred/history')]);
+    let h = `<div class="tcard"><h2>📐 ${esc(panel.rule.name)}</h2>
+      <div class="meta">${esc(panel.rule.formula)}</div>`;
+    h += '<table class="ck-table"><tr><th>因子</th><th>權重</th><th>說明</th></tr>';
+    for (const f of panel.rule.factors)
+      h += `<tr><td style="text-align:left">${esc(f.name)}</td><td>${f.w}%</td><td style="text-align:left">${esc(f.desc)}</td></tr>`;
+    h += '</table>';
+    const bt = panel.backtest || {};
+    h += `<div class="statbar">回查資料庫（2026 年完場・out-of-sample）：
+      <span>總命中率 <b>${bt.hit_r != null ? bt.hit_r + '%' : '—'}（n=${bt.n || 0}）</b></span>
+      <span>指上 <b>${bt.up && bt.up.hit_r != null ? bt.up.hit_r + '%' : '—'}（n=${bt.up ? bt.up.n : 0}）</b></span>
+      <span>指下 <b>${bt.down && bt.down.hit_r != null ? bt.down.hit_r + '%' : '—'}（n=${bt.down ? bt.down.n : 0}）</b></span>
+    </div>`;
+    if (bt.per_league && bt.per_league.length) {
+      h += '<details><summary>逐聯賽回查命中率（n≥30，前 20）<span class="sub"></span></summary><div class="body"><table class="ck-table"><tr><th>聯賽</th><th>n</th><th>命中率</th></tr>';
+      for (const L of bt.per_league)
+        h += `<tr><td style="text-align:left">${esc(L.league)}</td><td>${L.n}</td><td class="${L.hit_r >= 50 ? 'r-up' : 'r-down'}">${L.hit_r}%</td></tr>`;
+      h += '</table></div></details>';
+    }
+    if (panel.league_factors && panel.league_factors.length) {
+      h += '<details><summary>每聯賽獨立盤口因子示例（n 最大 15 條）</summary><div class="body"><table class="ck-table"><tr><th>聯賽</th><th>盤口</th><th>n</th><th>上盤率</th></tr>';
+      for (const L of panel.league_factors)
+        h += `<tr><td style="text-align:left">${esc(L.league)}</td><td>${esc(L.key)}</td><td>${L.n}</td><td class="${L.up_r >= 50 ? 'r-up' : 'r-down'}">${L.up_r}%</td></tr>`;
+      h += '</table></div></details>';
+    }
+    h += '</div>';
+    $('#opPanel').innerHTML = h;
+    // 歷史紀錄（10月1日起）
+    const st = hist.stats || {};
+    let hh = `<div class="statbar">歷史紀錄（2026-10-01 起，out-of-sample 預測 vs 實際）：
+      <span>場數 <b>${st.n || 0}</b></span><span>命中 <b>${st.hits || 0}</b></span>
+      <span>命中率 <b>${st.hit_r != null ? st.hit_r + '%' : '—'}</b></span></div>`;
+    hh += '<table class="ck-table"><tr><th>時間</th><th>聯賽</th><th>主隊 vs 客隊</th><th>比分</th><th>預測</th><th>實際</th><th>結果</th></tr>';
+    for (const r of hist.rows || []) {
+      const cls = r.hit === true ? 'r-up' : (r.hit === false ? 'r-down' : '');
+      const mark = r.hit === true ? '✓中' : (r.hit === false ? '✗錯' : '走盤');
+      hh += `<tr><td>${esc((r.kickoff || '').slice(5, 16))}</td><td>${esc(r.league)}</td>
+        <td style="text-align:left">${esc(r.home)} vs ${esc(r.away)}</td>
+        <td>${esc(r.score)}</td><td>${r.pred_dir === 'up' ? '上' : '下'}${r.pred_up}%</td>
+        <td>${r.actual === 'A' ? '上贏' : (r.actual === 'B' ? '下贏' : '走')}</td>
+        <td class="${cls}">${mark}</td></tr>`;
+    }
+    hh += '</table>';
+    $('#opHist').innerHTML = hh;
+  } catch (e) {
+    $('#opPanel').innerHTML = '<div class="err">載入失敗：' + esc(e) + '</div>';
+  }
+}
+
+/* ---------- ⏰ 精選系列每小時紀錄頁（2026-10-05） ---------- */
+async function loadFeatHourly(){
+  $('#fhBody').innerHTML = '<div class="note">載入中…</div>';
+  try {
+    const d = await jget('/api/feathourly');
+    let h = '';
+    const scan = d.scan || {};
+    h += `<div class="statbar">每小時自動紀錄：上次 <b>${esc(scan.last || '未行過')}</b>
+      ｜已行 <b>${scan.runs || 0}</b> 次${scan.running ? '｜⏳ 行緊' : ''}
+      ${scan.error ? '｜<span class="err">錯誤：' + esc(scan.error) + '</span>' : ''}
+      <button class="btn" style="margin-left:auto" onclick="loadFeatHourly()">⟳ 重新整理</button></div>`;
+    for (const kind of ['W', '7', '8', '12']) {
+      const K = d.kinds[kind];
+      if (!K) continue;
+      const s = K.stats;
+      h += `<div class="day-h">★ ${esc(K.name)}：追蹤中 ${s.tracked}｜而家合資格 ${s.now_eligible}｜曾合資格 ${s.ever_eligible}｜最後不合資格 ${s.dropped_final}｜已賽 ${s.played}（W${s.wins}/L${s.losses}/P${s.pushes}）${s.hit_r != null ? '｜命中率 <b style="color:var(--gold2)">' + s.hit_r + '%</b>' : ''}</div>`;
+      for (const M of K.matches) {
+        const badges = M.hist.map(x => x.elig
+          ? '<span style="color:var(--up)">✓</span>'
+          : '<span style="color:var(--down)">✗</span>').join(' ');
+        let tags = '';
+        if (M.now_elig) tags += '<span class="tag up">合資格</span> ';
+        if (M.final_eligible === 0) tags += '<span class="tag down" title="曾合資格，但尾盤重算唔再合資格">最後不合資格</span> ';
+        if (M.result === 'W') tags += '<span class="tag up">中</span>';
+        else if (M.result === 'L') tags += '<span class="tag down">錯</span>';
+        else if (M.result === 'P') tags += '<span class="tag dim">走</span>';
+        h += `<div class="fcard"><div class="f-top">
+          <span class="f-time">${esc((M.kickoff || '').slice(5, 16))}</span>
+          <span class="lg" style="color:var(--gold2);font-size:12px">${esc(M.league)}</span>
+          <span class="f-teams">${esc(M.home)} vs ${esc(M.away)}</span>
+          ${M.direction ? '<span class="tag dim">' + (M.direction === 'up' ? '上' : '下') + '</span>' : ''}
+          ${tags}<span class="hint">每小時資格：${badges}（${M.snaps} 次）</span></div></div>`;
+      }
+      if (!K.matches.length) h += '<div class="note">暫未有紀錄（每小時自動掃描後出現）。</div>';
+    }
+    $('#fhBody').innerHTML = h;
+  } catch (e) {
+    $('#fhBody').innerHTML = '<div class="err">載入失敗：' + esc(e) + '</div>';
+  }
+}
