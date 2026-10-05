@@ -210,6 +210,10 @@ function goto(pg){
     featlog: () => loadFeatlog(),
     oupred: () => loadOupred(),
     feathourly: () => loadFeatHourly(),
+    haobao: () => {
+      const f = $('#hbFrame');
+      if (f && !f.src) f.src = '/haobao/';
+    },
     v1: () => loadV1(),
     settings: () => loadSettings(),
     home: () => loadHome()}[pg] || (() => {}))();
