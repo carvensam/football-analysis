@@ -3301,6 +3301,99 @@ def api_hitrate(kind, mid):
             'line_league_stats': pick((d.get('line_leagues') or {}).get(lg))}
 
 
+# ============ 好波（2026-10-05）：大小球＋半全場 ============
+_hb_ctx = {'ctx': None, 'ts': 0}
+HB_CTX_TTL = 3600
+
+
+def _hb_context():
+    import haobao_engine
+    now = time.time()
+    if _hb_ctx['ctx'] is not None and now - _hb_ctx['ts'] < HB_CTX_TTL:
+        return _hb_ctx['ctx']
+    conn = db()
+    try:
+        ctx = haobao_engine.HB(conn)
+    finally:
+        conn.close()
+    _hb_ctx['ctx'] = ctx
+    _hb_ctx['ts'] = now
+    return ctx
+
+
+def api_hb_list(hours=72):
+    """好波主頁：即將開賽場次＋12BET 尾盤大小線／亞盤＋初盤大小線。"""
+    import v3_engine
+    conn = db()
+    cap = "AND m.kickoff <= datetime('now','+8 hours', ?) " if hours else ""
+    args = (f'+{hours} hours',) if hours else ()
+    rows = conn.execute(
+        "SELECT m.id, c.req_name, m.kickoff, ht.name_tc, at.name_tc, "
+        "m.round_label, oc.total_line, oc.over_odds, oc.under_odds, "
+        "oi.total_line, oi.over_odds, oi.under_odds, "
+        "oa.handicap, oa.giver, oa.home_odds, oa.away_odds "
+        "FROM matches m JOIN seasons s ON s.id=m.season_id "
+        "JOIN competitions c ON c.titan_id=s.titan_id "
+        "JOIN teams ht ON ht.titan_id=m.home_id "
+        "JOIN teams at ON at.titan_id=m.away_id "
+        "LEFT JOIN odds_ou oc ON oc.match_id=m.id AND oc.company_id=12 "
+        "AND oc.label='closing' "
+        "LEFT JOIN odds_ou oi ON oi.match_id=m.id AND oi.company_id=12 "
+        "AND oi.label='initial' "
+        "LEFT JOIN odds_asian oa ON oa.match_id=m.id AND oa.company_id=12 "
+        "AND oa.label='closing' "
+        "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','+8 hours') "
+        + cap + "ORDER BY m.kickoff", args).fetchall()
+    conn.close()
+    now = v3_engine.hk_now_str()
+    out = []
+    for (mid, lg, ko, h, a, rd, ln, oo, uo, iln, ioo, iuo,
+         ahc, agv, aho, aao) in rows:
+        out.append({'id': mid, 'league': lg, 'kickoff': ko,
+                    'home': h, 'away': a, 'round': rd,
+                    'ou_line': ln, 'ou_over': oo, 'ou_under': uo,
+                    'init_line': iln, 'init_over': ioo,
+                    'ah_line': screen_engine.fmt_line(ahc, agv) if ahc is not None else None,
+                    'ah_odds': f'主{aho}/客{aao}' if aho is not None else None,
+                    'state': 'live' if ko <= now else 'scheduled'})
+    return {'matches': out, 'now': now}
+
+
+def api_hb_predict(mid):
+    """好波單場預測：大小球＋半全場＋上下盤×大小球關係＋因子明細。"""
+    conn = db()
+    try:
+        r = conn.execute(
+            "SELECT m.home_id, m.away_id, m.home_score, m.away_score, "
+            "m.half_home, m.half_away, c.req_name, m.round_label, "
+            "oc.total_line, oc.over_odds, oc.under_odds, "
+            "oi.total_line, oi.over_odds, oa.handicap, oa.giver "
+            "FROM matches m JOIN seasons s ON s.id=m.season_id "
+            "JOIN competitions c ON c.titan_id=s.titan_id "
+            "LEFT JOIN odds_ou oc ON oc.match_id=m.id AND oc.company_id=12 "
+            "AND oc.label='closing' "
+            "LEFT JOIN odds_ou oi ON oi.match_id=m.id AND oi.company_id=12 "
+            "AND oi.label='initial' "
+            "LEFT JOIN odds_asian oa ON oa.match_id=m.id AND oa.company_id=12 "
+            "AND oa.label='closing' WHERE m.id=?", (mid,)).fetchone()
+    finally:
+        conn.close()
+    if not r:
+        return {'error': '找不到賽事'}
+    (hid, aid, hs, aws, hhs, haws, lg, rd, ln, oo, uo, iln, ioo,
+     ahc, agv) = r
+    ctx = _hb_context()
+    res = ctx.predict(hid, aid, lg, rd, ou_line=ln, ou_over=oo,
+                      ou_under=uo, oi_line=iln, oi_over=ioo)
+    res['match'] = {'id': mid, 'league': lg, 'home_id': hid, 'away_id': aid,
+                    'score': f'{hs}-{aws}' if hs is not None else None,
+                    'half': f'{hhs}-{haws}' if hhs is not None else None,
+                    'round': rd,
+                    'ah_line': screen_engine.fmt_line(ahc, agv)
+                    if ahc is not None else None}
+    return res
+
+
 # ============ 12BET 優先政策（用戶 2026-09-29 指示） ============
 # 預測工具一切以易胜博(12)盤口及水位為準；12 未開盤 → Crown(3) 暫代顯示，
 # 同時記入 line12_track：完場後／每日用 12BET 再試直至成功；
@@ -3819,6 +3912,32 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/health':
             try:
                 self._send(200, json.dumps(api_health(), ensure_ascii=False,
+                                           default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/haobao':
+            with open(os.path.join(STATIC_DIR, 'hb.html'), 'rb') as f:
+                self._send(200, f.read(), 'text/html; charset=utf-8')
+            return
+        if u.path == '/api/hb/list':
+            try:
+                q = parse_qs(u.query)
+                hours = int(q.get('hours', ['72'])[0])
+                self._send(200, json.dumps(api_hb_list(hours), ensure_ascii=False,
+                                           default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/hb/predict':
+            try:
+                q = parse_qs(u.query)
+                mid = int(q.get('id', ['0'])[0])
+                self._send(200, json.dumps(api_hb_predict(mid), ensure_ascii=False,
                                            default=_jdefault))
             except Exception as e:
                 import traceback
