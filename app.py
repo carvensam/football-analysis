@@ -1387,22 +1387,30 @@ def _build_featured_rec(row, tbl, now):
     return rec
 
 
-_featured_full_cache = {'ts': 0.0, 'z': None, 'data': None, 'lock': threading.Lock()}
+_featured_full_cache = {'ts': 0.0, 'z': None, 'data': None,
+                       'lock': threading.Lock(), 'build_lock': threading.Lock()}
 _FEATURED_FULL_TTL = 60
 
 
 def get_featured_full(z=False):
     """精選全量（60 秒 TTL 快取——2026-10-06 記憶體審計：連環請求會反覆
-    起 109 場卡片 build，係 OOM 誘因之一；自動結算副作用延遲 ≤60 秒可接受）。"""
+    起 109 場卡片 build，係 OOM 誘因之一；自動結算副作用延遲 ≤60 秒可接受）。
+    build_lock 防快取擊穿：並發請求只起一個 build，其餘等完讀快取。"""
     with _featured_full_cache['lock']:
         if (_featured_full_cache['data'] is not None
                 and _featured_full_cache['z'] == z
                 and time.time() - _featured_full_cache['ts'] < _FEATURED_FULL_TTL):
             return _featured_full_cache['data']
-    data = _get_featured_full_impl(z)
-    with _featured_full_cache['lock']:
-        _featured_full_cache.update(ts=time.time(), z=z, data=data)
-    return data
+    with _featured_full_cache['build_lock']:
+        with _featured_full_cache['lock']:
+            if (_featured_full_cache['data'] is not None
+                    and _featured_full_cache['z'] == z
+                    and time.time() - _featured_full_cache['ts'] < _FEATURED_FULL_TTL):
+                return _featured_full_cache['data']
+        data = _get_featured_full_impl(z)
+        with _featured_full_cache['lock']:
+            _featured_full_cache.update(ts=time.time(), z=z, data=data)
+        return data
 
 
 def _get_featured_full_impl(z=False):
@@ -1553,20 +1561,28 @@ def _v1_scan_job():
         _v1_scan['running'] = False
 
 
-_v1_featured_full_cache = {'ts': 0.0, 'z': None, 'data': None, 'lock': threading.Lock()}
+_v1_featured_full_cache = {'ts': 0.0, 'z': None, 'data': None,
+                           'lock': threading.Lock(), 'build_lock': threading.Lock()}
 
 
 def get_v1_featured_full(z=False):
-    """V1 精選全量（60 秒 TTL 快取，理由同 get_featured_full——記憶體審計 2026-10-06）。"""
+    """V1 精選全量（60 秒 TTL 快取＋build_lock 防擊穿，理由同 get_featured_full
+    ——記憶體審計 2026-10-06）。"""
     with _v1_featured_full_cache['lock']:
         if (_v1_featured_full_cache['data'] is not None
                 and _v1_featured_full_cache['z'] == z
                 and time.time() - _v1_featured_full_cache['ts'] < _FEATURED_FULL_TTL):
             return _v1_featured_full_cache['data']
-    data = _get_v1_featured_full_impl(z)
-    with _v1_featured_full_cache['lock']:
-        _v1_featured_full_cache.update(ts=time.time(), z=z, data=data)
-    return data
+    with _v1_featured_full_cache['build_lock']:
+        with _v1_featured_full_cache['lock']:
+            if (_v1_featured_full_cache['data'] is not None
+                    and _v1_featured_full_cache['z'] == z
+                    and time.time() - _v1_featured_full_cache['ts'] < _FEATURED_FULL_TTL):
+                return _v1_featured_full_cache['data']
+        data = _get_v1_featured_full_impl(z)
+        with _v1_featured_full_cache['lock']:
+            _v1_featured_full_cache.update(ts=time.time(), z=z, data=data)
+        return data
 
 
 def _get_v1_featured_full_impl(z=False):
@@ -5931,8 +5947,26 @@ if __name__ == '__main__':
         except Exception:
             pass
         try:
-            # 常駐池物件（V1 池／好波池／半全場快取）移入永久代：gc 唔再逐次掃，
-            # 減少 GC CPU 尖峰同記憶體碎片化（2026-10-06 記憶體審計）
+            # V2/V3 共享池（~128MB）預熱：2026-10-06 部署後實測，冷池第一擊喺
+            # 0.5C 要build幾分鐘，Render proxy 60 秒逾時全程 502——預熱後用戶
+            # 永遠唔會捱冷 build（load_v3_pool 內部共用 V2 池，一個 call 暖晒）
+            conn = db()
+            try:
+                import v3_engine
+                v3_engine.load_v3_pool(conn)
+            finally:
+                conn.close()
+        except Exception:
+            pass
+        try:
+            # 精選兩張 full 表預熱（順便填 60 秒快取＋完成自動結算）
+            get_featured_full()
+            get_v1_featured_full()
+        except Exception:
+            pass
+        try:
+            # 常駐池物件（V1 池／V2/V3 池／好波池／半全場快取）移入永久代：
+            # gc 唔再逐次掃，減少 GC CPU 尖峰同記憶體碎片化（2026-10-06 記憶體審計）
             import gc
             gc.collect()
             gc.freeze()
