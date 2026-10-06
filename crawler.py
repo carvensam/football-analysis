@@ -287,15 +287,41 @@ def db_connect(cfg):
 
 
 _DB_PATH = None          # connect() 設定；log() 獨立短逾時連線用
-_log_local = threading.local()
+_log_buf = []            # 緩衝批量寫：手機直爬 bursts 時逐請求 commit 會拖垮 0.5C
+_log_buf_lock = threading.Lock()
+_log_flusher_on = False
+
+
+def _log_flush_loop():
+    c = None
+    while True:
+        time.sleep(5)
+        try:
+            if c is None:
+                c = sqlite3.connect(_DB_PATH or ':memory:', timeout=5)
+            with _log_buf_lock:
+                batch = _log_buf[:]
+                _log_buf[:] = []
+            if batch:
+                c.executemany('INSERT INTO crawl_log(ts,level,msg) VALUES (?,?,?)',
+                              batch)
+                c.commit()
+        except sqlite3.Error:
+            try:
+                c.close()
+            except Exception:
+                pass
+            c = None
+        except Exception:
+            pass
 
 
 def log(conn, level, msg):
-    """寫 crawl_log——日誌係診斷用途，唔准阻塞爬蟲主流程：
-    用獨立連線（busy timeout 1 秒），鎖緊/繁忙即刻丟棄（2026-10-01 實測：
-    用主連線寫日誌曾喺大庫繁忙時阻塞近 3 分鐘，令即時更新掣假死）。
-    DB 路徑：connect() 設嘅 _DB_PATH 為準；未設（冇行過 connect 嘅進程）
-    就由傳入連線 PRAGMA 推——唔好用 CWD 相對路徑，會喺錯目錄開空庫。"""
+    """寫 crawl_log——日誌係診斷用途，唔准阻塞主流程：
+    記憶體緩衝＋單一 flusher 每 5 秒批量寫（2026-10-06：手機直爬 burst 期間
+    逐請求開連線+commit，喺 0.5C 實機 I/O starve 到 Render health check
+    超時不斷 restart）。緩衋上限 500 條防爆記憶體；stdout 照印即時睇。
+    DB 路徑：connect() 設嘅 _DB_PATH 為準；未設就由傳入連線 PRAGMA 推。"""
     ts = dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     global _DB_PATH
     try:
@@ -305,22 +331,14 @@ def log(conn, level, msg):
                 _DB_PATH = row[2]
     except Exception:
         pass
-    try:
-        c = getattr(_log_local, 'c', None)
-        if c is None:
-            c = sqlite3.connect(_DB_PATH or ':memory:', timeout=1)
-            _log_local.c = c
-        c.execute('INSERT INTO crawl_log(ts,level,msg) VALUES (?,?,?)',
-                  (ts, level, msg))
-        c.commit()
-    except sqlite3.Error:
-        try:
-            _log_local.c.close()
-        except Exception:
-            pass
-        _log_local.c = None     # 連線壞咗（繁忙/鎖），下次開過
-    except Exception:
-        pass
+    global _log_flusher_on
+    if not _log_flusher_on:
+        _log_flusher_on = True
+        threading.Thread(target=_log_flush_loop, daemon=True).start()
+    with _log_buf_lock:
+        _log_buf.append((ts, level, str(msg)[:400]))
+        if len(_log_buf) > 500:
+            del _log_buf[:-500]
     try:
         print(f'[{ts}] {level}: {msg}', flush=True)
     except Exception:
