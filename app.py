@@ -5286,10 +5286,13 @@ def _result_catchup_once():
     return fixed
 
 
+_CATCHUP_INTERVAL = 1800 if DISABLE_UPDATE else 900   # 雲端 0.5C 節流（2026-10-06）
+
+
 def _result_catchup_job():
-    """每 15 分鐘巡一次。賽果更新後，精選自動結算／我的選擇勝負讀取時自動跟上。"""
+    """每 15 分鐘巡一次（雲端 30 分鐘）。賽果更新後，精選自動結算／我的選擇勝負讀取時自動跟上。"""
     while True:
-        time.sleep(15 * 60)
+        time.sleep(_CATCHUP_INTERVAL)
         if _result_catchup['running']:
             continue
         _result_catchup['running'] = True
@@ -5461,13 +5464,16 @@ if __name__ == '__main__':
         except Exception:
             pass
     threading.Timer(30, _preheat_all).start()
-    # 賽果補抓＋V2 定時窗口更新：兩邊都開——雲端行代理池通道（proxy_pool.json
-    # 隨映像焗入，titan007 封 IP 段封唔到公共代理），所以雲端數據而家會自動
-    # 保鮮（2026-10-02 用戶投訴「雲端各樣 update 都唔得」嘅根治）；
-    # 本機照舊直連優先。淨係「全量自動更新」同「30 秒睇門狗」雲端繼續閂
-    # （全量由電腦每日朝早推送，watchdog 直接探測喺雲端冇意義）。
+    # 賽果補抓：兩邊都開（雲端行代理池通道）。雲端節流 30 分鐘一次——
+    # 0.5C 實機 15 分鐘節奏會同請求搶 CPU，health check 超時反覆 restart
+    # （2026-10-06 Render 事件證實）。V2 每 2 小時窗口更新雲端唔開：70 場代理爬
+    # 喺 0.5C 要成個鐘，CPU 長期飽和；盤口保鮮靠每日推送＋用戶 ⚡（實測 47 秒）。
     threading.Thread(target=_result_catchup_job, daemon=True).start()
-    threading.Thread(target=_v2_sched_job, daemon=True).start()
+    if not DISABLE_UPDATE:
+        threading.Thread(target=_v2_sched_job, daemon=True).start()
+    else:
+        print('[boot] 雲端代理模式：賽果補抓 30 分鐘一次；'
+              'V2 定時窗口更新唔開（0.5C 搶資源）；全量自動更新照舊閂', flush=True)
     def _boot_auto_update():
         try:
             import datetime as dt
