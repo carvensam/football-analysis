@@ -5,7 +5,7 @@
 
 重點（用戶指示）：唔係場場預測，係搵「高%場次」——所以每項計完會表態
 （邊一邊夠高%），全項計完做票數共識；得共識夠強先俾 lean，否則「觀望」。
-精選門檻：單邊票數 ≥10 且最高單項 ≥65% 先封「精選」。
+精選門檻：單邊票數 ≥7 且最高單項 ≥62% 先封「精選」（2026-10-06 校準）。
 
 兩段指定走勢：初盤→開賽前4小時、初盤→尾盤（線＋大球水位各計）。
 指定 scope：同聯／全庫／同主客／主客互調；h2h：上次尾盤 vs 今次初盤／尾盤；
@@ -372,14 +372,11 @@ class HBItems:
         pick = None
         if votes['大'] >= 7 or votes['細'] >= 7:
             side = '大' if votes['大'] >= votes['細'] else '細'
+            # 62% 門檻：攞唔到 62% 就唔封精選（2026-10-06 校準規格）
             if best[side] >= 0.62:
                 pick = {'side': side, 'best': round(best[side] * 100, 1),
                         'votes': votes[side],
                         'title': f'精選：{votes[side]} 項指向{side}｜最高單項 {best[side]*100:.1f}%'}
-            side = max(best, key=lambda k: best[k])
-            pick = {'side': side, 'best': round(best[side] * 100, 1),
-                    'votes': votes[side],
-                    'title': f'精選：{votes[side]} 項指向{side}｜最高單項 {best[side]*100:.1f}%'}
         # 最強單項（畀用戶一眼睇到呢場最硬嘅訊號；細樣本照實標）
         strongest = None
         for it in items:
