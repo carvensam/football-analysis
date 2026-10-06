@@ -90,11 +90,11 @@ def _p_table(conn):
 _p_table.cache = None
 
 
-def load_v3_pool(conn, max_age=5400):
+def load_v3_pool(conn, max_age=14400):
     """V3 池＝V2 池＋每時點『對調後』(h,g,ho,ao)。
     對調：s新=2H−s舊（中立場 −s舊），水位鏡像；H 由聯賽名 H_TABLE／全庫平均。
     測試模式：環境變數 V3_TEST_YEAR=2026 → 只保留該年 1 月 1 日起開賽嘅場次。
-    max_age 預設 90 分鐘：減少 512MB 實例嘅重載尖峰（同 load_v2_pool 註解）。"""
+    max_age 預設 4 小時（2026-10-06 由 90 分鐘加長；同 load_v2_pool 註解）。"""
     import os
     now = time.time()
     if _v3_pool['df'] is not None and now - _v3_pool['ts'] < max_age:

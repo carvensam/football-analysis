@@ -65,10 +65,11 @@ def zone12_of(w):
     return int((w - 0.65) * 20) + 1     # 0.65-0.69→1 … 1.10-1.14→10
 
 
-def load_v2_pool(conn, max_age=5400):
+def load_v2_pool(conn, max_age=14400):
     """V2 數據池＝V1 池 + 30m/15m/10m/5m 四個時點 + 近兩年 flag + 12 段水位。
-    max_age 預設 90 分鐘（原本 30）——Render 512MB 實例少啲 reload 少啲記憶體尖峰；
-    數據有更新時 app.py 會 invalidate_pool() 強制即時重載，唔怕舊數。"""
+    max_age 預設 4 小時（2026-10-06 由 90 分鐘加長——512MB 雲端每 90 分鐘一次
+    重載尖峰係 OOM 剩餘風險；雲端池數據每日部署先變，本地更新後
+    invalidate_pool() 會強制即時重載，唔怕舊數）。"""
     now = time.time()
     if _v2_pool['df'] is not None and now - _v2_pool['ts'] < max_age:
         return _v2_pool['df']
