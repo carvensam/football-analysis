@@ -297,21 +297,29 @@ def _log_flush_loop():
     while True:
         time.sleep(5)
         try:
+            if not _DB_PATH:
+                continue                       # 路徑未明，下個周期先再試
             if c is None:
-                c = sqlite3.connect(_DB_PATH or ':memory:', timeout=5)
+                c = sqlite3.connect(_DB_PATH, timeout=5)
             with _log_buf_lock:
                 batch = _log_buf[:]
                 _log_buf[:] = []
             if batch:
-                c.executemany('INSERT INTO crawl_log(ts,level,msg) VALUES (?,?,?)',
-                              batch)
-                c.commit()
-        except sqlite3.Error:
-            try:
-                c.close()
-            except Exception:
-                pass
-            c = None
+                try:
+                    c.executemany('INSERT INTO crawl_log(ts,level,msg) VALUES (?,?,?)',
+                                  batch)
+                    c.commit()
+                except sqlite3.Error:
+                    # 寫唔到（繁忙/鎖）：批留返喺緩衝頭，下個周期再試，唔准無聲丟
+                    try:
+                        c.close()
+                    except Exception:
+                        pass
+                    c = None
+                    with _log_buf_lock:
+                        _log_buf[:0] = batch
+                        if len(_log_buf) > 500:
+                            del _log_buf[:-500]
         except Exception:
             pass
 
