@@ -107,10 +107,27 @@
     var lean = row.querySelector('[data-lean]');
     if (!lean) return;
     var ou = d.ou || {};
+    if (ou.pick) {
+      lean.textContent = '⭐精選' + ou.pick.side + ' ' + ou.pick.best + '%';
+      lean.className = 'lean big';
+      lean.style.borderColor = 'var(--gold)';
+      lean.style.color = 'var(--gold2)';
+      return;
+    }
     if (ou.lean) {
+      var br = (ou.best_rates || {})[ou.lean];
       lean.textContent = (ou.lean === '大' ? '大球' : '細球') +
-        (ou.over_r != null ? ' ' + (ou.lean === '大' ? ou.over_r : ou.under_r) + '%' : '');
+        (br != null ? ' ' + br + '%' : '') +
+        (ou.n_voted != null ? '｜' + ou.n_voted + '項' : '');
       lean.className = 'lean ' + (ou.lean === '大' ? 'big' : 'small');
+    } else if (ou.strongest && ou.strongest.rate >= 0.58 && ou.line != null) {
+      lean.textContent = '最強訊號' + ou.strongest.side + ' ' +
+        Math.round(ou.strongest.rate * 100) + '%（n=' + ou.strongest.n + '）';
+      lean.className = 'lean';
+      lean.style.color = 'var(--gold2)';
+    } else if (ou.line != null) {
+      lean.textContent = '觀望（共識不足）';
+      lean.className = 'lean';
     } else {
       lean.textContent = '未開盤';
       lean.className = 'lean';
@@ -158,24 +175,6 @@
         }).join('｜');
         h += gi('最可能波膽', sc);
       }
-      /* 學習模型＋莊家訊號（2026-10-06） */
-      if (ou.model_over != null) {
-        h += gi('🧠 學習模型', '<span class="pct-over">' + ou.model_over + '% 大</span>' +
-                '<br><small>' + esc(ou.model_src || '') + '｜逐聯賽權重自動回測修正</small>');
-      }
-      if (ou.bookmaker_signal && ou.bookmaker_signal.move_txt) {
-        var bs = ou.bookmaker_signal;
-        var bt = esc(bs.move_txt);
-        if (bs.w_txt) bt += '<br><small>學習權重：' + esc(bs.w_txt) +
-                             (bs.w_line_move != null ? '（' + bs.w_line_move + '）' : '') + '</small>';
-        h += gi('🏦 莊家訊號', bt);
-      }
-      if (ou.rules && ou.rules.length) {
-        var rt = ou.rules.map(function (r) {
-          return '<div>・' + esc(r.desc) + ' <b>' + r.hit_rate + '%</b><small>（n=' + r.n + '）</small></div>';
-        }).join('');
-        h += gi('📏 適用規則', rt);
-      }
     } else {
       h += gi('尾盤線', '未開大小球盤');
       h += gi('場均入球 λ', ou.lambda != null ? ou.lambda : '—');
@@ -206,6 +205,26 @@
       }
       h += '<div class="note">初盤 ' + (ou.init_line != null ? ou.init_line + ' 球' : '—') +
            ' → 尾盤 ' + ou.line + ' 球：' + mvTxt + '</div>';
+    }
+
+    /* 49 項分析（2026-10-06 重做：FootballAnalysis 概念做大細） */
+    if (ou.items && ou.items.length) {
+      var votedN = ou.n_voted || 0;
+      var cons = (ou.lean ? ('共識：<b class="' + (ou.lean === '大' ? 'pct-over' : 'pct-under') + '">' + ou.lean + '</b>｜票數 大' + (ou.votes && ou.votes['大'] || 0) + '：細' + (ou.votes && ou.votes['細'] || 0)) : '共識：觀望（唔夠強唔硬估）');
+      if (ou.pick) cons += '｜<b style="color:var(--gold2)">⭐精選' + ou.pick.side + '（最高單項 ' + ou.pick.best + '%）</b>';
+      var rows = ou.items.map(function (it) {
+        var r = it.rates;
+        var cls = it.side === '大' ? 'pct-over' : (it.side === '細' ? 'pct-under' : '');
+        return '<tr><td>' + it.no + '</td><td style="text-align:left">' + esc(it.title) + '</td>' +
+          '<td>' + (r ? r.n : '—') + '</td>' +
+          '<td>' + (r ? (r.over_r * 100).toFixed(1) + '%' : '—') + '</td>' +
+          '<td>' + (r ? (r.under_r * 100).toFixed(1) + '%' : '—') + '</td>' +
+          '<td>' + (r ? (r.push_r * 100).toFixed(1) + '%' : '—') + '</td>' +
+          '<td class="' + cls + '">' + (it.side || '') + '</td></tr>';
+      }).join('');
+      h += '<details style="margin:8px 0"><summary class="sec-h" style="cursor:pointer">🔬 49 項分析（' + votedN + ' 項表態｜' + cons + '）</summary>' +
+        '<table class="t"><thead><tr><th>#</th><th>項目</th><th>n</th><th>大</th><th>細</th><th>走</th><th>表態</th></tr></thead><tbody>' +
+        rows + '</tbody></table></details>';
     }
 
     /* 半全場 9 格 */

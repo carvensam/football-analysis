@@ -3377,88 +3377,37 @@ def api_hb_list(hours=72):
     return {'matches': out, 'now': now}
 
 
-def api_hb_models():
-    """好波學習模型狀態：逐聯賽驗證命中率（唯讀，雲端都開到）。"""
-    import hb_learn
-    conn = db()
-    try:
-        rep = hb_learn.model_report(conn)
-    finally:
-        conn.close()
-    return rep
-
-
-_hb_retrain_state = {'running': False, 'last': None, 'report': None,
-                     'error': None}
-
-
-def _hb_retrain_worker():
-    if _hb_retrain_state['running']:
-        return
-    _hb_retrain_state['running'] = True
-    try:
-        import hb_learn
-        ctx = _hb_context()          # 重用緩存池（13MB）
-        conn = db()
-        try:
-            rep = hb_learn.retrain(conn, ctx.df, ctx.lg, ctx.stages,
-                                   ctx.teams)
-        finally:
-            conn.close()
-        _hb_retrain_state['report'] = rep
-        _hb_retrain_state['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
-        _hb_retrain_state['error'] = None
-        _hb_ctx['ctx'] = None        # 下次 predict 重建（讀新模型）
-        _hb_ctx['ts'] = 0
-    except Exception:
-        import traceback
-        traceback.print_exc()
-        _hb_retrain_state['error'] = traceback.format_exc(limit=3)
-    finally:
-        _hb_retrain_state['running'] = False
-
-
-def _hb_retrain_loop():
-    """每日 05:45 自動重訓（本機）：趕及 06:17 推送將新權重焗入雲端映像。"""
-    import datetime as dt
-    while True:
-        try:
-            now = dt.datetime.now()
-            target = now.replace(hour=5, minute=45, second=0, microsecond=0)
-            if now >= target:
-                target += dt.timedelta(days=1)
-            time.sleep(max((target - now).total_seconds(), 60))
-            _hb_retrain_worker()
-        except Exception:
-            time.sleep(3600)
-
-
 def api_hb_predict(mid):
-    """好波單場預測：大小球＋半全場＋上下盤×大小球關係＋因子明細。"""
+    """好波單場：大小球 49 項分析＋共識＋精選＋半全場＋關係。"""
     conn = db()
     try:
         r = conn.execute(
             "SELECT m.home_id, m.away_id, m.home_score, m.away_score, "
             "m.half_home, m.half_away, c.req_name, m.round_label, "
             "oc.total_line, oc.over_odds, oc.under_odds, "
-            "oi.total_line, oi.over_odds, oa.handicap, oa.giver "
+            "oi.total_line, oi.over_odds, oi.under_odds, "
+            "o4.total_line, o4.over_odds, o4.under_odds, "
+            "oa.handicap, oa.giver "
             "FROM matches m JOIN seasons s ON s.id=m.season_id "
             "JOIN competitions c ON c.titan_id=s.titan_id "
             "LEFT JOIN odds_ou oc ON oc.match_id=m.id AND oc.company_id=12 "
             "AND oc.label='closing' "
             "LEFT JOIN odds_ou oi ON oi.match_id=m.id AND oi.company_id=12 "
             "AND oi.label='initial' "
+            "LEFT JOIN odds_ou o4 ON o4.match_id=m.id AND o4.company_id=12 "
+            "AND o4.label='pre_4h' "
             "LEFT JOIN odds_asian oa ON oa.match_id=m.id AND oa.company_id=12 "
             "AND oa.label='closing' WHERE m.id=?", (mid,)).fetchone()
     finally:
         conn.close()
     if not r:
         return {'error': '找不到賽事'}
-    (hid, aid, hs, aws, hhs, haws, lg, rd, ln, oo, uo, iln, ioo,
-     ahc, agv) = r
+    (hid, aid, hs, aws, hhs, haws, lg, rd, ln, oo, uo, iln, ioo, iuo,
+     l4, o4o, o4u, ahc, agv) = r
     ctx = _hb_context()
     res = ctx.predict(hid, aid, lg, rd, ou_line=ln, ou_over=oo,
-                      ou_under=uo, oi_line=iln, oi_over=ioo, ah_hc=ahc)
+                      ou_under=uo, oi_line=iln, oi_over=ioo, oi_under=iuo,
+                      ah_hc=ahc, o4_line=l4, o4_over=o4o, o4_under=o4u)
     res['match'] = {'id': mid, 'league': lg, 'home_id': hid, 'away_id': aid,
                     'score': f'{hs}-{aws}' if hs is not None else None,
                     'half': f'{hhs}-{haws}' if hhs is not None else None,
@@ -4571,14 +4520,6 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(STATIC_DIR, 'hb.html'), 'rb') as f:
                 self._send(200, f.read(), 'text/html; charset=utf-8')
             return
-        if u.path == '/api/hb/models':
-            try:
-                self._send(200, json.dumps(api_hb_models(), ensure_ascii=False))
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
-            return
         if u.path == '/api/hb/list':
             try:
                 q = parse_qs(u.query)
@@ -4589,11 +4530,6 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
-            return
-        if u.path == '/api/hb/retrain-status':
-            self._send(200, json.dumps({k: v for k, v in
-                                        _hb_retrain_state.items()},
-                                       ensure_ascii=False))
             return
         if u.path == '/api/hb/predict':
             try:
@@ -4994,26 +4930,404 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
-        if u.path == '/api/hb/retrain':
-            if DISABLE_UPDATE:
-                self._send(200, json.dumps(
-                    {'ok': False, 'error': '雲端唔做訓練（0.5C 搶資源）——'
-                                           '本機每日 05:45 自動重訓＋推送'}, ensure_ascii=False))
-                return
+        if u.path == '/api/hb/predict':
             try:
-                if _hb_retrain_state['running']:
-                    self._send(200, json.dumps(
-                        {'ok': False, 'running': True}, ensure_ascii=False))
+                q = parse_qs(u.query)
+                mid = int(q.get('id', ['0'])[0])
+                self._send(200, json.dumps(api_hb_predict(mid), ensure_ascii=False,
+                                           default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/oupred/panel':
+            try:
+                self._send(200, json.dumps(api_oupred_panel(), ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/oupred/history':
+            try:
+                self._send(200, json.dumps(_oupred_history(), ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/feathourly':
+            try:
+                self._send(200, json.dumps(get_feat_hourly(), ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/worklog':
+            try:
+                q = parse_qs(u.query)
+                limit = int(q.get('limit', ['30'])[0])
+                self._send(200, json.dumps(api_worklog(limit), ensure_ascii=False,
+                                           default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/upcoming':
+            q = parse_qs(u.query)
+            hours = int(q.get('hours', ['48'])[0])
+            self._send(200, json.dumps(
+                {'upcoming': upcoming(hours), 'played': played()},
+                ensure_ascii=False))
+            return
+        if u.path == '/api/screen':
+            q = parse_qs(u.query)
+            mid = int(q.get('id', ['0'])[0])
+            sel = None
+            if q.get('sel'):
+                sel = [x.strip() for x in q['sel'][0].split(',') if x.strip()] or None
+            try:
+                self._send(200, json.dumps(do_screen(mid, sel), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/picks':
+            try:
+                self._send(200, json.dumps(get_picks(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/htft':
+            try:
+                self._send(200, json.dumps(api_htft(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/htftboard':
+            try:
+                self._send(200, json.dumps(api_htftboard(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/update-status':
+            try:
+                self._send(200, json.dumps(update_status(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/update-window-status':
+            self._send(200, json.dumps(win_status(), ensure_ascii=False))
+            return
+        if u.path == '/api/fetch-batch-status':
+            self._send(200, json.dumps(fbatch_status(), ensure_ascii=False))
+            return
+        if u.path == '/api/picks/full':
+            try:
+                self._send(200, json.dumps(get_picks_full(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/featured/full':
+            try:
+                qs = parse_qs(u.query)
+                z = qs.get('z', [''])[0] in ('1', 'true')
+                self._send(200, json.dumps(get_featured_full(z=z), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/featured/scan-status':
+            self._send(200, json.dumps(_feat_scan, ensure_ascii=False))
+            return
+        if u.path == '/api/v1/featured/full':
+            try:
+                qs = parse_qs(u.query)
+                z = qs.get('z', [''])[0] in ('1', 'true')
+                self._send(200, json.dumps(get_v1_featured_full(z=z), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v1/featured/scan-status':
+            self._send(200, json.dumps(_v1_scan, ensure_ascii=False))
+            return
+        if u.path == '/api/check/full':
+            try:
+                self._send(200, json.dumps(get_check(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/check/scan-status':
+            self._send(200, json.dumps(_check_scan, ensure_ascii=False))
+            return
+        if u.path == '/api/results':
+            try:
+                qs = parse_qs(u.query)
+                limit = int(qs.get('limit', ['1000'])[0])
+                league = qs.get('league', [''])[0] or None
+                hc = qs.get('hc', [''])[0]
+                hc = float(hc) if hc not in ('', None) else None
+                gv = qs.get('gv', [''])[0] or None
+                scope = qs.get('scope', ['featured'])[0]
+                self._send(200, json.dumps(
+                    get_results(limit, league, hc, gv, scope), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/featlog':
+            try:
+                qs = parse_qs(u.query)
+                z = qs.get('z', [''])[0] in ('1', 'true')
+                self._send(200, json.dumps(get_featlog(z=z), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v2/summary':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                self._send(200, json.dumps(api_v2_summary(mid), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v2/item':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                no = qs.get('no', [''])[0]
+                self._send(200, json.dumps(api_v2_item(mid, no), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v2/check':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                self._send(200, json.dumps(api_v2_check(mid), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/list':
+            try:
+                q = parse_qs(u.query)
+                hours = int(q.get('hours', ['48'])[0])
+                self._send(200, json.dumps(api_v3_list(hours), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/target':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                self._send(200, json.dumps(api_v3_target(mid), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/summary':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                self._send(200, json.dumps(api_v3_summary(mid), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/item':
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                no = qs.get('no', [''])[0]
+                self._send(200, json.dumps(api_v3_item(mid, no), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/featured/full':
+            try:
+                self._send(200, json.dumps(get_v3_featured_full(), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/featured/scan-status':
+            self._send(200, json.dumps(_v3_scan, ensure_ascii=False))
+            return
+        if u.path == '/api/v3/featlog':
+            try:
+                self._send(200, json.dumps(get_v3_featlog(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/fwgrid/full':
+            try:
+                q = parse_qs(u.query)
+                g = q.get('g', ['7'])[0]
+                if g not in ('7', '8', '12'):
+                    self._send(400, json.dumps({'error': 'g 只可以係 7/8/12'}))
                     return
-                threading.Thread(target=_hb_retrain_worker,
-                                 daemon=True).start()
-                self._send(200, json.dumps({'ok': True, 'started': True},
+                self._send(200, json.dumps(get_fw_grid_full(g), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/fwgrid/scan-status':
+            q = parse_qs(u.query)
+            g = q.get('g', ['7'])[0]
+            self._send(200, json.dumps(_fw_grid_scan.get(g, {}), ensure_ascii=False))
+            return
+        if u.path == '/api/fwcheck/full':
+            try:
+                q = parse_qs(u.query)
+                g = q.get('g', ['7'])[0]
+                if g not in ('7', '8', '12'):
+                    self._send(400, json.dumps({'error': 'g 只可以係 7/8/12'}))
+                    return
+                self._send(200, json.dumps(get_fwcheck_full(g), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/fwcheck/target':
+            try:
+                q = parse_qs(u.query)
+                g = q.get('g', ['7'])[0]
+                mid = int(q.get('id', ['0'])[0])
+                if g not in ('7', '8', '12'):
+                    self._send(400, json.dumps({'error': 'g 只可以係 7/8/12'}))
+                    return
+                self._send(200, json.dumps(api_fwcheck_target(mid, g),
+                                           ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/lgpred':
+            try:
+                self._send(200, json.dumps(api_lgpred(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/hitrate':
+            try:
+                q = parse_qs(u.query)
+                kind = (q.get('kind') or [''])[0]
+                mid = int((q.get('id') or ['0'])[0] or 0)
+                self._send(200, json.dumps(api_hitrate(kind, mid),
+                                           ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/lgalerts':
+            try:
+                q = parse_qs(u.query)
+                mark = (q.get('mark') or [''])[0] in ('1', 'true')
+                self._send(200, json.dumps(get_lg_alerts(mark=mark),
+                                           ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        self._send(404, '{}')
+
+    def do_POST(self):
+        u = urlparse(self.path)
+        if u.path != '/' and u.path.endswith('/'):
+            u = u._replace(path=u.path.rstrip('/'))
+        if u.path == '/api/fetch':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(
+                    do_fetch(int(body.get('id')), bool(body.get('force'))),
+                    ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/update':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(do_update(bool(body.get('auto'))),
                                            ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
-                self._send(500, json.dumps({'ok': False, 'error': str(e)},
-                                           ensure_ascii=False))
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/update-window':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(
+                    do_update_window(str(body.get('window', ''))), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/fetch-batch':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(
+                    do_fetch_batch(int(body.get('hours', 0) or 0)), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/phone-odds':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(do_phone_odds(body), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/pick':
             n = int(self.headers.get('Content-Length', 0))
@@ -5644,7 +5958,6 @@ if __name__ == '__main__':
     # 推送（符合「本機係數據主人」原則）。
     if not DISABLE_UPDATE:
         threading.Thread(target=_feat_hourly_loop, daemon=True).start()
-        threading.Thread(target=_hb_retrain_loop, daemon=True).start()
     else:
         print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '
               'restart loop）；紀錄由本機每小時做、每日推送', flush=True)
