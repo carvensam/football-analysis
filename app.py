@@ -5446,6 +5446,20 @@ if __name__ == '__main__':
     # 半全場版面預熱：冷掃描喺 512MB/0.5C 實機要 40-90 秒，可能超過 Render
     # proxy 60 秒逾時——開機 30 秒後 background 先算一次入快取，用戶撳到就有
     threading.Timer(30, lambda: api_htftboard()).start()
+    # 好波池預熱：瘦身后得 ~13MB，開機 60 秒背景建池——第一個撳好波預測嘅
+    # 用戶唔使捱冷啟動（0.5C 冷建 30-50 秒，會撞 Render proxy 逾時）
+    def _hb_warm():
+        try:
+            conn = db()
+            try:
+                _hb_context.__wrapped__ if hasattr(_hb_context, '__wrapped__') else None
+                import haobao_engine
+                haobao_engine.HB(conn)
+            finally:
+                conn.close()
+        except Exception:
+            pass
+    threading.Timer(60, _hb_warm).start()
     # 賽果補抓＋V2 定時窗口更新：兩邊都開——雲端行代理池通道（proxy_pool.json
     # 隨映像焗入，titan007 封 IP 段封唔到公共代理），所以雲端數據而家會自動
     # 保鮮（2026-10-02 用戶投訴「雲端各樣 update 都唔得」嘅根治）；

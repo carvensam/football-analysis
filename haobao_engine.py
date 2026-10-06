@@ -64,9 +64,21 @@ def load_pool(conn, max_age=POOL_TTL):
             conn)
         df['total'] = df['home_score'] + df['away_score']
         df['kickoff'] = df['kickoff'].astype(str)
+        # 512MB 實機瘦身（2026-10-06）：object 欄轉 category＋細數值型——
+        # 96k 行原本 ~200MB，瘦完 ~60-80MB，同 V1/V2/V3 池並存先唔會 OOM。
+        # category 對 ==/groupby/value_counts 完全兼容原有用法
+        for c in ('league', 'round_label', 'ah_gv'):
+            if c in df.columns:
+                df[c] = df[c].astype('category')
+        for c in ('home_score', 'away_score', 'half_home', 'half_away'):
+            df[c] = df[c].astype('Int16')
+        for c in ('ou_line', 'ou_over', 'ou_under', 'oi_line', 'oi_over',
+                  'oi_under', 'ah_hc'):
+            df[c] = df[c].astype('float32')
         _pool['df'] = df
         _pool['ts'] = time.time()
-        print(f'[hb_pool] {len(df)} 場', flush=True)
+        print(f'[hb_pool] {len(df)} 場，{df.memory_usage(deep=True).sum() // 1e6} MB',
+              flush=True)
         gc.collect()
         return df
 
