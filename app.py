@@ -4590,27 +4590,6 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
-        if u.path == '/api/hb/retrain':
-            if DISABLE_UPDATE:
-                self._send(200, json.dumps(
-                    {'ok': False, 'error': '雲端唔做訓練（0.5C 搶資源）——'
-                                           '本機每日 05:45 自動重訓＋推送'}, ensure_ascii=False))
-                return
-            try:
-                if _hb_retrain_state['running']:
-                    self._send(200, json.dumps(
-                        {'ok': False, 'running': True}, ensure_ascii=False))
-                    return
-                threading.Thread(target=_hb_retrain_worker,
-                                 daemon=True).start()
-                self._send(200, json.dumps({'ok': True, 'started': True},
-                                           ensure_ascii=False))
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                self._send(500, json.dumps({'ok': False, 'error': str(e)},
-                                           ensure_ascii=False))
-            return
         if u.path == '/api/hb/retrain-status':
             self._send(200, json.dumps({k: v for k, v in
                                         _hb_retrain_state.items()},
@@ -5014,6 +4993,27 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/hb/retrain':
+            if DISABLE_UPDATE:
+                self._send(200, json.dumps(
+                    {'ok': False, 'error': '雲端唔做訓練（0.5C 搶資源）——'
+                                           '本機每日 05:45 自動重訓＋推送'}, ensure_ascii=False))
+                return
+            try:
+                if _hb_retrain_state['running']:
+                    self._send(200, json.dumps(
+                        {'ok': False, 'running': True}, ensure_ascii=False))
+                    return
+                threading.Thread(target=_hb_retrain_worker,
+                                 daemon=True).start()
+                self._send(200, json.dumps({'ok': True, 'started': True},
+                                           ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
             return
         if u.path == '/api/pick':
             n = int(self.headers.get('Content-Length', 0))
