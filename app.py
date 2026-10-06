@@ -5543,11 +5543,18 @@ if __name__ == '__main__':
             except Exception:
                 pass
     if DISABLE_UPDATE:
-        print('[boot] 雲端代理模式：賽果補抓＋每 2 小時窗口更新經代理池自動行；'
+        print('[boot] 雲端代理模式：賽果補抓 30 分鐘一次經代理池；'
               '全量自動更新＋30 秒睇門狗照舊閂（全量由電腦每日推送）', flush=True)
     else:
         threading.Thread(target=_data_host_watchdog, daemon=True).start()
         threading.Timer(5, _boot_auto_update).start()
-    # 精選系列每小時自動紀錄（2026-10-05）：本地＋雲端都開，唯讀 DB＋重用掃描
-    threading.Thread(target=_feat_hourly_loop, daemon=True).start()
+    # 精選系列每小時自動紀錄（2026-10-05）：只喺本機行——tick 會跑四個全庫
+    # 掃描（V3＋7/8/12），喺 0.5C 雲端實機要成粒鐘 CPU，直接令 Render health
+    # check 超時無限 restart（2026-10-06 實測）。雲端嘅紀錄靠每日朝早由本機
+    # 推送（符合「本機係數據主人」原則）。
+    if not DISABLE_UPDATE:
+        threading.Thread(target=_feat_hourly_loop, daemon=True).start()
+    else:
+        print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '
+              'restart loop）；紀錄由本機每小時做、每日推送', flush=True)
     httpd.serve_forever()
