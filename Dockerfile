@@ -1,10 +1,14 @@
 FROM python:3.12-slim
 
+# MALLOC_ARENA_MAX=2：ThreadingHTTPServer 每請求開線程，glibc 預設開多達
+# 8×CPU 個 malloc arena，碎片唔還俾 OS，RSS 虛增——512MB 容器 OOM 元兇之一
+# （2026-10-06 記憶體審計；Render 事件「used over 512MB」一日四單）
 ENV PYTHONUNBUFFERED=1 \
     TZ=Asia/Hong_Kong \
     HOST=0.0.0.0 \
     PORT=10000 \
-    DB_PATH=/app/football.db
+    DB_PATH=/app/football.db \
+    MALLOC_ARENA_MAX=2
 
 WORKDIR /app
 

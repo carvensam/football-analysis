@@ -89,6 +89,19 @@ _BUILD_POOL = ThreadPoolExecutor(max_workers=_BUILD_WORKERS,
 # 並行嗰陣 CPU+RAM 雙峰值係 OOM 誘因之一
 _scan_gate = {'busy': False}
 
+# 重型 GET 並發閘（2026-10-06 記憶體審計實測：12 並發重型請求峰值 +233MB RSS，
+# 512MB 雲端（baseline ~300MB）一撞就 OOM——Render 事件「Ran out of memory
+# used over 512MB」一日四單。低記憶體機同時間最多 2 個重型請求，其餘排隊
+# 最多 45 秒，排唔到回 429 叫前端重試；輕端點（health/靜態/status）唔過閘。
+_HEAVY_GET_SEM = threading.Semaphore(2 if _RAM_GB < 2.5 else 6)
+_HEAVY_GET_TIMEOUT = 45
+_HEAVY_GET_PREFIXES = (
+    '/api/hb/predict', '/api/featured', '/api/v1/featured',
+    '/api/v2/', '/api/v3/', '/api/check', '/api/fwcheck', '/api/fwgrid',
+    '/api/results', '/api/htft', '/api/picks', '/api/screen',
+    '/api/upcoming', '/api/lgpred', '/api/oupred',
+)
+
 
 def _scan_thread(fn, *args):
     def run():
@@ -1374,7 +1387,25 @@ def _build_featured_rec(row, tbl, now):
     return rec
 
 
+_featured_full_cache = {'ts': 0.0, 'z': None, 'data': None, 'lock': threading.Lock()}
+_FEATURED_FULL_TTL = 60
+
+
 def get_featured_full(z=False):
+    """精選全量（60 秒 TTL 快取——2026-10-06 記憶體審計：連環請求會反覆
+    起 109 場卡片 build，係 OOM 誘因之一；自動結算副作用延遲 ≤60 秒可接受）。"""
+    with _featured_full_cache['lock']:
+        if (_featured_full_cache['data'] is not None
+                and _featured_full_cache['z'] == z
+                and time.time() - _featured_full_cache['ts'] < _FEATURED_FULL_TTL):
+            return _featured_full_cache['data']
+    data = _get_featured_full_impl(z)
+    with _featured_full_cache['lock']:
+        _featured_full_cache.update(ts=time.time(), z=z, data=data)
+    return data
+
+
+def _get_featured_full_impl(z=False):
     """精選全量：未開賽順時間排先；已完場最新排先（永不刪除）。
     z=True 讀精選Z（featured_z）。順便結算新完場場次（以入選方向計 贏/輸/走）。"""
     tbl = 'featured_z' if z else 'featured'
@@ -1522,7 +1553,23 @@ def _v1_scan_job():
         _v1_scan['running'] = False
 
 
+_v1_featured_full_cache = {'ts': 0.0, 'z': None, 'data': None, 'lock': threading.Lock()}
+
+
 def get_v1_featured_full(z=False):
+    """V1 精選全量（60 秒 TTL 快取，理由同 get_featured_full——記憶體審計 2026-10-06）。"""
+    with _v1_featured_full_cache['lock']:
+        if (_v1_featured_full_cache['data'] is not None
+                and _v1_featured_full_cache['z'] == z
+                and time.time() - _v1_featured_full_cache['ts'] < _FEATURED_FULL_TTL):
+            return _v1_featured_full_cache['data']
+    data = _get_v1_featured_full_impl(z)
+    with _v1_featured_full_cache['lock']:
+        _v1_featured_full_cache.update(ts=time.time(), z=z, data=data)
+    return data
+
+
+def _get_v1_featured_full_impl(z=False):
     """V1 精選全量：結構同 get_featured_full 一樣（冇 letters）。
     z=True 讀 v1_featured_z。"""
     tbl = 'v1_featured_z' if z else 'v1_featured'
@@ -4488,6 +4535,20 @@ class Handler(BaseHTTPRequestHandler):
         # 直接改寫 u.path，後面成條 dispatch 鏈自動用 stripped 版
         if u.path != '/' and u.path.endswith('/'):
             u = u._replace(path=u.path.rstrip('/'))
+        # 重型 GET 並發閘（2026-10-06 記憶體審計）：超額請求排隊，排唔到回 429
+        if u.path.startswith(_HEAVY_GET_PREFIXES):
+            if not _HEAVY_GET_SEM.acquire(timeout=_HEAVY_GET_TIMEOUT):
+                self._send(429, json.dumps(
+                    {'error': '系統繁忙，請 30 秒後重試'}, ensure_ascii=False))
+                return
+            try:
+                self._do_GET(u)
+            finally:
+                _HEAVY_GET_SEM.release()
+        else:
+            self._do_GET(u)
+
+    def _do_GET(self, u):
         if u.path == '/' or u.path == '/index.html':
             with open(os.path.join(STATIC_DIR, 'index.html'), 'rb') as f:
                 self._send(200, f.read(), 'text/html; charset=utf-8')
@@ -5867,6 +5928,15 @@ if __name__ == '__main__':
                 haobao_engine.HB(conn)
             finally:
                 conn.close()
+        except Exception:
+            pass
+        try:
+            # 常駐池物件（V1 池／好波池／半全場快取）移入永久代：gc 唔再逐次掃，
+            # 減少 GC CPU 尖峰同記憶體碎片化（2026-10-06 記憶體審計）
+            import gc
+            gc.collect()
+            gc.freeze()
+            print('[preheat] 常駐物件已 gc.freeze', flush=True)
         except Exception:
             pass
     threading.Timer(30, _preheat_all).start()
