@@ -112,7 +112,9 @@ def load_v2_pool(conn, max_age=5400):
         df['up_zone12'] = z12
         _v2_pool['df'] = df
         _v2_pool['ts'] = time.time()
-        print(f'[v2_pool] {len(df)} 場', flush=True)
+        se._slim_pool_dtypes(df)   # 四時點新增欄位都要瘦
+        print(f'[v2_pool] {len(df)} 場，{df.memory_usage(deep=True).sum() // 1e6} MB',
+              flush=True)
         import gc
         gc.collect()          # 盡快還返合併臨時記憶體
         return df

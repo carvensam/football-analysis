@@ -145,6 +145,24 @@ def _prev_convert(h, g, ho, ao, same):
     return h2, g2, ho2, ao2
 
 
+def _slim_pool_dtypes(df):
+    """512MB 實機瘦身（2026-10-06 Render 證實 OOM）：object→category、
+    float64→float32、int64→細型——V1/V2/V3 池由 ~450MB 壓到 ~250MB。
+    category 對 ==/groupby/to_numpy 完全兼容原有用法；kickoff 保留字串唔郁。"""
+    for c in df.columns:
+        s = df[c]
+        try:
+            if s.dtype == object and c != 'kickoff':
+                df[c] = s.astype('category')
+            elif str(s.dtype) == 'float64':
+                df[c] = s.astype('float32')
+            elif str(s.dtype) == 'int64':
+                df[c] = pd.to_numeric(s, downcast='integer')
+        except (TypeError, ValueError):
+            pass
+    return df
+
+
 def load_pool(conn, max_age=5400):
     """載入歷史數據池（約 7 萬場），結果記憶 90 分鐘；多執行緒同時呼叫只會建立一次。
     max_age 由 30 分鐘加長到 90：Render 512MB 實例少啲重載少啲記憶體尖峰
@@ -297,7 +315,9 @@ def load_pool(conn, max_age=5400):
         _pool_cache['prev_h2h'] = prev
         _pool_cache['pair_latest'] = pair_latest
         _pool_cache['ts'] = time.time()
-        print(f'[load_pool] {len(df)} 場，耗時 {time.time()-t0:.1f}s')
+        _slim_pool_dtypes(df)   # 512MB 實機瘦身（V2/V3 copy 都會跟住瘦）
+        print(f'[load_pool] {len(df)} 場，耗時 {time.time()-t0:.1f}s，'
+              f'{df.memory_usage(deep=True).sum() // 1e6} MB')
         import gc
         gc.collect()          # 合併臨時 DataFrame 即刻還返
         return df, prev

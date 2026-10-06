@@ -173,7 +173,9 @@ def load_v3_pool(conn, max_age=5400):
         df['ret_ok'] = (~np.isnan(ret)) & (ret >= RETURN_LO) & (ret <= RETURN_HI)
         _v3_pool['df'] = df
         _v3_pool['ts'] = time.time()
-        print(f'[v3_pool] {n} 場', flush=True)
+        se._slim_pool_dtypes(df)   # 對調欄都瘦（giver→category、sw→float32）
+        print(f'[v3_pool] {n} 場，{df.memory_usage(deep=True).sum() // 1e6} MB',
+              flush=True)
         import gc
         gc.collect()
         return df
