@@ -127,7 +127,9 @@ def get_crawler():
 
 
 def db():
-    return sqlite3.connect(DB_PATH)
+    # timeout=60：賽果補抓等長寫入交易會鎖庫分鐘級——舊預設 5 秒令並行請求
+    # 即刻「database is locked」（2026-10-06 雲端 /api/fetch 實測）
+    return sqlite3.connect(DB_PATH, timeout=60)
 
 
 def _migrate_db():
