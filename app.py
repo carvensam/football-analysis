@@ -3571,28 +3571,60 @@ def api_htftboard():
         return _HTFTB_CACHE['data']
     conn = db()
     try:
-        # 1) 全歷史同類統計（一次掃描）
-        rows = conn.execute(
-            'SELECT c.req_name, o.handicap, o.giver, m.half_home, m.half_away, '
-            'm.home_score, m.away_score FROM matches m '
-            "JOIN odds_asian o ON o.match_id=m.id AND o.label='closing' "
-            'AND o.company_id=12 '
+        # 1) 三個區域嘅場次（先攞，先知需要邊啲 class）
+        hk = "datetime('now','+8 hours')"
+        base_sql = (
+            'SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc, '
+            'm.half_home, m.half_away, m.home_score, m.away_score, '
+            'o.handicap, o.giver FROM matches m '
             'JOIN seasons s ON s.id=m.season_id '
             'JOIN competitions c ON c.titan_id=s.titan_id '
-            'WHERE m.home_score IS NOT NULL AND m.half_home IS NOT NULL '
-            'AND o.handicap IS NOT NULL').fetchall()
+            'JOIN teams ht ON ht.titan_id=m.home_id '
+            'JOIN teams at ON at.titan_id=m.away_id '
+            "JOIN odds_asian o ON o.match_id=m.id AND o.label='closing' "
+            'AND o.company_id=12 AND o.handicap IS NOT NULL ')
+        upcoming = conn.execute(
+            base_sql + f'WHERE m.home_score IS NULL AND m.kickoff >= {hk} '
+            'ORDER BY m.kickoff LIMIT 24').fetchall()
+        live = conn.execute(
+            base_sql + 'WHERE m.home_score IS NULL '
+            f"AND m.kickoff < {hk} "
+            "AND m.kickoff >= datetime('now','+8 hours','-3 hours') "
+            'ORDER BY m.kickoff DESC LIMIT 24').fetchall()
+        finished = conn.execute(
+            base_sql + 'WHERE m.home_score IS NOT NULL '
+            "AND m.kickoff >= datetime('now','+8 hours','-48 hours') "
+            'ORDER BY m.kickoff DESC LIMIT 24').fetchall()
+
+        # 2) 只聚合「顯示場次需要」嘅 class——512MB 實機全量 fetchall 會 OOM
+        # （2026-10-06 實測：成個實例 crash loop）。逐行迭代，唔使的即刻丟。
+        need = {(lg, h, (g or '')) for (_i, _k, lg, _h, _a, _hh, _ha,
+                                        _hs, _aw, h, g)
+                in (upcoming + live + finished)}
         classes = {}
-        for lg, h, g, hh, ha, hs, aws in rows:
+        for lg, h, g, hh, ha, hs, aws in conn.execute(
+                'SELECT c.req_name, o.handicap, o.giver, '
+                'm.half_home, m.half_away, m.home_score, m.away_score '
+                'FROM matches m '
+                "JOIN odds_asian o ON o.match_id=m.id AND o.label='closing' "
+                'AND o.company_id=12 '
+                'JOIN seasons s ON s.id=m.season_id '
+                'JOIN competitions c ON c.titan_id=s.titan_id '
+                'WHERE m.home_score IS NOT NULL AND m.half_home IS NOT NULL '
+                'AND o.handicap IS NOT NULL'):
             key = (lg, h, g or '')
+            if key not in need:
+                continue
             a = classes.setdefault(
-                key, {'n': 0, 'c': [0, 0, 0, 0], 'htH': [0, 0, 0], 'htA': [0, 0, 0]})
+                key, {'n': 0, 'c': [0, 0, 0, 0], 'htH': [0, 0, 0],
+                      'htA': [0, 0, 0]})
             cat = _htft_cat(hh, ha, hs, aws)
             a['n'] += 1
             if cat:
                 a['c'][cat - 1] += 1
-            if hh > ha:         # 半場主領先：全場 主勝/和/客勝
+            if hh > ha:
                 a['htH'][0 if hs > aws else (1 if hs == aws else 2)] += 1
-            elif ha > hh:       # 半場客領先：全場 客勝/和/主勝
+            elif ha > hh:
                 a['htA'][0 if aws > hs else (1 if hs == aws else 2)] += 1
 
         def pack(a):
@@ -5411,6 +5443,9 @@ if __name__ == '__main__':
         _auto_scans()
     threading.Thread(target=_boot_init, daemon=True).start()
     threading.Thread(target=_warmup, daemon=True).start()
+    # 半全場版面預熱：冷掃描喺 512MB/0.5C 實機要 40-90 秒，可能超過 Render
+    # proxy 60 秒逾時——開機 30 秒後 background 先算一次入快取，用戶撳到就有
+    threading.Timer(30, lambda: api_htftboard()).start()
     # 賽果補抓＋V2 定時窗口更新：兩邊都開——雲端行代理池通道（proxy_pool.json
     # 隨映像焗入，titan007 封 IP 段封唔到公共代理），所以雲端數據而家會自動
     # 保鮮（2026-10-02 用戶投訴「雲端各樣 update 都唔得」嘅根治）；
