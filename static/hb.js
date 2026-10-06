@@ -158,6 +158,24 @@
         }).join('｜');
         h += gi('最可能波膽', sc);
       }
+      /* 學習模型＋莊家訊號（2026-10-06） */
+      if (ou.model_over != null) {
+        h += gi('🧠 學習模型', '<span class="pct-over">' + ou.model_over + '% 大</span>' +
+                '<br><small>' + esc(ou.model_src || '') + '｜逐聯賽權重自動回測修正</small>');
+      }
+      if (ou.bookmaker_signal && ou.bookmaker_signal.move_txt) {
+        var bs = ou.bookmaker_signal;
+        var bt = esc(bs.move_txt);
+        if (bs.w_txt) bt += '<br><small>學習權重：' + esc(bs.w_txt) +
+                             (bs.w_line_move != null ? '（' + bs.w_line_move + '）' : '') + '</small>';
+        h += gi('🏦 莊家訊號', bt);
+      }
+      if (ou.rules && ou.rules.length) {
+        var rt = ou.rules.map(function (r) {
+          return '<div>・' + esc(r.desc) + ' <b>' + r.hit_rate + '%</b><small>（n=' + r.n + '）</small></div>';
+        }).join('');
+        h += gi('📏 適用規則', rt);
+      }
     } else {
       h += gi('尾盤線', '未開大小球盤');
       h += gi('場均入球 λ', ou.lambda != null ? ou.lambda : '—');

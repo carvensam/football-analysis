@@ -294,6 +294,15 @@ class HB:
         self.teams = team_factors(df)
         # 全庫 上下盤×大小球 關係
         self.rel_all = self._ah_ou_relation(df)
+        # 自我學習模型（hb_learn 訓練產出；冇就照舊行泊松混合）
+        self.models, self.model_rules = {}, {}
+        try:
+            import hb_learn
+            self.models, self.model_rules = hb_learn.load_models(conn)
+            self._fctx = hb_learn.build_ctx(df, self.lg, self.stages,
+                                            self.teams)
+        except Exception:
+            self._fctx = None
 
     def _ah_ou_relation(self, sub):
         d = sub[sub['ou_line'].notna() & sub['ah_hc'].notna()]
@@ -323,7 +332,7 @@ class HB:
 
     def predict(self, home_id, away_id, league, round_label,
                 ou_line=None, ou_over=None, ou_under=None,
-                oi_line=None, oi_over=None):
+                oi_line=None, oi_over=None, ah_hc=None):
         """回傳 {'ou':..., 'htft':..., 'relation':..., 'factors':...}"""
         L = self.lg.get(league)
         lg_n = L['n'] if L else 0
@@ -408,7 +417,32 @@ class HB:
             emp_all = a_tab['over_r'] if a_tab else 0.5
             base = emp if emp is not None else emp_all
             over_r = (1 - w_emp) * po + w_emp * base
-            over_r = 0.5 * over_r + 0.5 * po        # 最終：模型主導，實證修正
+            over_r = 0.5 * over_r + 0.5 * po        # 傳統：模型主導，實證修正
+            model_r = None
+            model_src = None
+            # 自我學習層：逐聯賽邏輯迴歸（冇就用全局）；權重由回測自動修正
+            if self._fctx is not None and self.models:
+                try:
+                    import hb_learn
+                    prow = {'league': league, 'round_label': round_label,
+                            'home_id': home_id, 'away_id': away_id,
+                            'ou_line': ou_line, 'oi_line': oi_line,
+                            'ou_over': ou_over, 'ou_under': ou_under,
+                            'ah_hc': ah_hc}
+                    f = hb_learn.features_for_row(prow, self._fctx)
+                    if f is not None:
+                        mdl = self.models.get(league) \
+                            or self.models.get('__ALL__')
+                        if mdl is not None:
+                            model_r = float(
+                                hb_learn._predict_prob(mdl, f[None, :])[0])
+                            model_src = league if league in self.models \
+                                else '全庫'
+                except Exception:
+                    model_r = None
+            if model_r is not None:
+                # 學習模型主導 70%，傳統泊松/實證 30%
+                over_r = 0.7 * model_r + 0.3 * over_r
             under_r = 1.0 - over_r - pp
             out_ou['over_r'] = round(over_r * 100, 1)
             out_ou['under_r'] = round(under_r * 100, 1)
@@ -416,6 +450,9 @@ class HB:
             out_ou['lean'] = '大' if over_r > under_r else '細'
             out_ou['empirical_over'] = round(base * 100, 1)
             out_ou['empirical_n'] = e['n'] if e else 0
+            if model_r is not None:
+                out_ou['model_over'] = round(model_r * 100, 1)
+                out_ou['model_src'] = model_src
             # 信心：層間一致度＋樣本
             lams = [x for x in (lam_h_team + lam_a_team,
                                 lam_home_lg + lam_away_lg, lam_bm) if x]
@@ -423,11 +460,73 @@ class HB:
             conf = '高' if (spread < 0.12 and lg_n >= 200) else \
                    '中' if spread < 0.25 else '低'
             out_ou['confidence'] = conf
-            # 盤口走勢
+            # 莊家訊號（誘盤/減損）：初→尾走勢＋學習權重方向
+            bsig = {}
             if oi_line is not None:
-                out_ou['line_move'] = round(ou_line - oi_line, 2)
+                lm = round(ou_line - oi_line, 2)
+                bsig['line_move'] = lm
                 if ou_over is not None and oi_over is not None:
-                    out_ou['over_odds_move'] = round(ou_over - oi_over, 2)
+                    bsig['over_odds_move'] = round(ou_over - oi_over, 2)
+                if lm > 0:
+                    bsig['move_txt'] = f'升盤 +{lm:g}（莊家調高大球門檻'
+                elif lm < 0:
+                    bsig['move_txt'] = f'降盤 {lm:g}（莊家調低大球門檻'
+                else:
+                    bsig['move_txt'] = '盤口不變'
+                # 水位走勢補完句：大球水位跌=莊家減大球賠付（怕大）
+                if bsig.get('over_odds_move'):
+                    om = bsig['over_odds_move']
+                    if om < -0.04:
+                        bsig['move_txt'] += '｜大球水位下調＝莊家減損防大'
+                    elif om > 0.04:
+                        bsig['move_txt'] += '｜大球水位上調＝誘大之嫌'
+                    else:
+                        bsig['move_txt'] += '｜水位平穩'
+                bsig['move_txt'] += '）'
+            # 學習權重對走勢訊號嘅敏感度（正=升盤偏向大球）
+            if model_r is not None and league in self.models:
+                try:
+                    w = self.models[league]['w']
+                    j = hb_learn.FEATURE_NAMES.index('line_move')
+                    s = w[j]
+                    bsig['w_line_move'] = round(float(s), 3)
+                    bsig['w_txt'] = ('升盤偏向大球' if s > 0.15 else
+                                     '升盤偏向細球' if s < -0.15 else
+                                     '走勢訊號弱')
+                except Exception:
+                    pass
+            if bsig:
+                out_ou['bookmaker_signal'] = bsig
+            # 適用規則（挖掘出嚟、命中率高嘅單特徵規則）
+            if self._fctx is not None:
+                try:
+                    import hb_learn
+                    prow2 = {'league': league, 'round_label': round_label,
+                             'home_id': home_id, 'away_id': away_id,
+                             'ou_line': ou_line, 'oi_line': oi_line,
+                             'ou_over': ou_over, 'ou_under': ou_under,
+                             'ah_hc': ah_hc}
+                    f2 = hb_learn.features_for_row(prow2, self._fctx)
+                    if f2 is not None:
+                        hit_rules = []
+                        for r in (self.model_rules.get(league) or []) + \
+                                 (self.model_rules.get('__ALL__') or []):
+                            try:
+                                j_s, ge_s, q_s = r.get('cond', '|').split('|')
+                                j = int(j_s); q = float(q_s); ge = ge_s == '>='
+                                ok = f2[j] >= q if ge else f2[j] < q
+                                if ok:
+                                    hit_rules.append(r)
+                            except Exception:
+                                continue
+                        hit_rules.sort(key=lambda r: -r['hit_rate'])
+                        if hit_rules:
+                            out_ou['rules'] = [
+                                {'desc': r['desc'],
+                                 'hit_rate': round(r['hit_rate'] * 100, 1),
+                                 'n': r['n']} for r in hit_rules[:3]]
+                except Exception:
+                    pass
 
         # 5) 半全場 9 格
         emp_m = L.get('htft') if L else None

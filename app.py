@@ -3377,6 +3377,62 @@ def api_hb_list(hours=72):
     return {'matches': out, 'now': now}
 
 
+def api_hb_models():
+    """好波學習模型狀態：逐聯賽驗證命中率（唯讀，雲端都開到）。"""
+    import hb_learn
+    conn = db()
+    try:
+        rep = hb_learn.model_report(conn)
+    finally:
+        conn.close()
+    return rep
+
+
+_hb_retrain_state = {'running': False, 'last': None, 'report': None,
+                     'error': None}
+
+
+def _hb_retrain_worker():
+    if _hb_retrain_state['running']:
+        return
+    _hb_retrain_state['running'] = True
+    try:
+        import hb_learn
+        ctx = _hb_context()          # 重用緩存池（13MB）
+        conn = db()
+        try:
+            rep = hb_learn.retrain(conn, ctx.df, ctx.lg, ctx.stages,
+                                   ctx.teams)
+        finally:
+            conn.close()
+        _hb_retrain_state['report'] = rep
+        _hb_retrain_state['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+        _hb_retrain_state['error'] = None
+        _hb_ctx['ctx'] = None        # 下次 predict 重建（讀新模型）
+        _hb_ctx['ts'] = 0
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        _hb_retrain_state['error'] = traceback.format_exc(limit=3)
+    finally:
+        _hb_retrain_state['running'] = False
+
+
+def _hb_retrain_loop():
+    """每日 05:45 自動重訓（本機）：趕及 06:17 推送將新權重焗入雲端映像。"""
+    import datetime as dt
+    while True:
+        try:
+            now = dt.datetime.now()
+            target = now.replace(hour=5, minute=45, second=0, microsecond=0)
+            if now >= target:
+                target += dt.timedelta(days=1)
+            time.sleep(max((target - now).total_seconds(), 60))
+            _hb_retrain_worker()
+        except Exception:
+            time.sleep(3600)
+
+
 def api_hb_predict(mid):
     """好波單場預測：大小球＋半全場＋上下盤×大小球關係＋因子明細。"""
     conn = db()
@@ -3402,7 +3458,7 @@ def api_hb_predict(mid):
      ahc, agv) = r
     ctx = _hb_context()
     res = ctx.predict(hid, aid, lg, rd, ou_line=ln, ou_over=oo,
-                      ou_under=uo, oi_line=iln, oi_over=ioo)
+                      ou_under=uo, oi_line=iln, oi_over=ioo, ah_hc=ahc)
     res['match'] = {'id': mid, 'league': lg, 'home_id': hid, 'away_id': aid,
                     'score': f'{hs}-{aws}' if hs is not None else None,
                     'half': f'{hhs}-{haws}' if hhs is not None else None,
@@ -4515,6 +4571,14 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(STATIC_DIR, 'hb.html'), 'rb') as f:
                 self._send(200, f.read(), 'text/html; charset=utf-8')
             return
+        if u.path == '/api/hb/models':
+            try:
+                self._send(200, json.dumps(api_hb_models(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         if u.path == '/api/hb/list':
             try:
                 q = parse_qs(u.query)
@@ -4525,6 +4589,32 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/hb/retrain':
+            if DISABLE_UPDATE:
+                self._send(200, json.dumps(
+                    {'ok': False, 'error': '雲端唔做訓練（0.5C 搶資源）——'
+                                           '本機每日 05:45 自動重訓＋推送'}, ensure_ascii=False))
+                return
+            try:
+                if _hb_retrain_state['running']:
+                    self._send(200, json.dumps(
+                        {'ok': False, 'running': True}, ensure_ascii=False))
+                    return
+                threading.Thread(target=_hb_retrain_worker,
+                                 daemon=True).start()
+                self._send(200, json.dumps({'ok': True, 'started': True},
+                                           ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
+        if u.path == '/api/hb/retrain-status':
+            self._send(200, json.dumps({k: v for k, v in
+                                        _hb_retrain_state.items()},
+                                       ensure_ascii=False))
             return
         if u.path == '/api/hb/predict':
             try:
@@ -5554,6 +5644,7 @@ if __name__ == '__main__':
     # 推送（符合「本機係數據主人」原則）。
     if not DISABLE_UPDATE:
         threading.Thread(target=_feat_hourly_loop, daemon=True).start()
+        threading.Thread(target=_hb_retrain_loop, daemon=True).start()
     else:
         print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '
               'restart loop）；紀錄由本機每小時做、每日推送', flush=True)
