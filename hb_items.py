@@ -185,16 +185,20 @@ class HBItems:
         m_agf = np.abs(A._gf_away - away_gf_a) <= tol if away_gf_a is not None else None
         m_aga = np.abs(A._ga_away - away_ga_a) <= tol if away_ga_a is not None else None
         # ---- 1–4：四 scope 按今場尾盤線
+        t_line = f'同今場尾盤線 {line_key:g}' if line_key is not None \
+            else '同今場尾盤線（冇尾盤線數據）'
         for no, (sc, base) in zip(('1', '2', '3', '4'),
                                   (('all', m_line), ('lg', m_lg_line),
                                    ('ha', m_line & m_hgf if (m_line is not None and m_hgf is not None) else None),
                                    ('sw', m_line & m_agf if (m_line is not None and m_agf is not None) else None))):
             r = self._rates(base) if base is not None else None
-            add(no, _t(sc, f'同今場尾盤線 {line_key:g}'), r)
+            add(no, _t(sc, t_line), r)
         # ---- 5–6：按今場初盤線
+        t_line_i = f'同今場初盤線 {line_i_key:g}' if line_i_key is not None \
+            else '同今場初盤線（冇初盤線數據）'
         for no, sc in zip(('5', '6'), ('all', 'lg')):
             base = scope_masks[sc] & m_line_i if m_line_i is not None else None
-            add(no, _t(sc, f'同今場初盤線 {line_i_key:g}'),
+            add(no, _t(sc, t_line_i),
                 self._rates(base) if base is not None else None)
         # ---- 7–10：線＋大球水位區
         if m_line is not None and tgt_w_c is not None:
