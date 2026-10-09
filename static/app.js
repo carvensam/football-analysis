@@ -210,7 +210,6 @@ function goto(pg){
     featlog: () => loadFeatlog(),
     oupred: () => loadOupred(),
     feathourly: () => loadFeatHourly(),
-    ou: () => loadOuRules(),
     haobao: () => {
       const f = $('#hbFrame');
       if (f && !f.src) f.src = '/haobao/';
@@ -1668,96 +1667,6 @@ async function loadFwGrid(g){
     }
   };
 });
-
-/* ---------- 大小規則（分聯賽 O/U 規則版：ou_rules.json 規則卡命中先出手） ---------- */
-function _ouTierBadge(tier){
-  // 觀察＝黃、種子＝灰、試行＝藍
-  const map = {'觀察': 'background:#4a3a10;color:#ffd766',
-               '種子': 'background:#2a2f3a;color:#9aa4b2',
-               '試行': 'background:#12283a;color:#7ec8ff'};
-  return `<span class="tag" style="${map[tier] || map['種子']}">${esc(tier || '—')}</span>`;
-}
-function _ouCard(p){
-  const sideTag = p.side === '大'
-    ? '<span class="tag up" style="font-size:15px">大球</span>'
-    : '<span class="tag down" style="font-size:15px">細球</span>';
-  const sideBig = p.side === '大'
-    ? '<b class="r-up" style="font-size:22px">大</b>'
-    : '<b class="r-down" style="font-size:22px">細</b>';
-  const stBadge = p.settle === '贏' ? '<b class="r-up">✅贏</b>'
-    : p.settle === '輸' ? '<b class="r-down">❌輸</b>'
-    : p.settle === '走' ? '<b>➖走</b>' : '';
-  const line2 = v => (v == null ? '—' : Number(v).toFixed(2));
-  return `<div class="fcard" data-mid="${p.match_id}">
-    <div class="f-top">
-      <div class="f-head"><span class="ko">${esc((p.kickoff || '').slice(5, 16))}</span>
-        <span class="lg">${esc(p.league || '')}</span>
-        ${sideTag}${_ouTierBadge(p.tier)}
-        <button class="btn gold ft-share">⇗</button></div>
-      <div class="teams">${esc(p.home)} <span class="vs">vs</span> ${esc(p.away)}${p.score ? ` <b>${esc(p.score)}</b>` : ''} ${stBadge}</div>
-      <div class="gaprow"><span class="lab">方向</span>${sideBig}｜規則 ${esc(p.rule_id || '')}｜${esc(p.rule_text || '')}</div>
-      <div class="gaprow"><span class="lab">統計</span>訓練 ${esc(p.train || '—')}｜WF ${esc(p.wf || '—')}</div>
-      ${p.note ? `<div class="gaprow"><span class="lab">備註</span>${esc(p.note)}</div>` : ''}
-      <div class="gaprow"><span class="lab">尾盤</span>線 ${line2(p.line)}｜大水 ${line2(p.over_odds)}｜細水 ${line2(p.under_odds)}</div>
-      ${p.goals != null ? `<div class="gaprow"><span class="lab">入球</span>全場 ${p.goals} 球（尾線 ${line2(p.line)}：${p.goals > p.line ? '大' : p.goals < p.line ? '細' : '走'}）</div>` : ''}
-    </div></div>`;
-}
-function _ouShareText(p){
-  const L = [];
-  L.push(`【大小規則】${p.league} ${(p.kickoff || '').slice(5, 16)}`);
-  L.push(`${p.home} vs ${p.away}${p.score ? '（' + p.score + '）' : ''}`);
-  L.push(`方向：${p.side}球｜規則 ${p.rule_id}（${p.rule_text}）｜tier=${p.tier}`);
-  L.push(`尾盤：線 ${p.line != null ? Number(p.line).toFixed(2) : '—'}｜大水 ${p.over_odds != null ? Number(p.over_odds).toFixed(2) : '—'}｜細水 ${p.under_odds != null ? Number(p.under_odds).toFixed(2) : '—'}`);
-  if (p.settle) L.push(`結果：${p.settle === '贏' ? '✅贏' : p.settle === '輸' ? '❌輸' : '➖走'}（全場 ${p.goals} 球）`);
-  return L.join('\n');
-}
-async function loadOuRules(){
-  const listEl = $('#ouList');
-  listEl.innerHTML = '<div class="note">載入中…</div>';
-  let d;
-  try { d = await jget('/api/ou_rules'); }
-  catch (e) { listEl.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
-  if (d.error) { listEl.innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
-  const s = d.stats || {};
-  $('#ouCnt').textContent = s.upcoming ? `(${s.upcoming})` : '';
-  $('#ouStats').innerHTML = `<div class="statbar">
-    <span>未開賽出手 <b>${s.upcoming || 0}</b></span><span>近7日已評 <b>${s.played || 0}</b></span>
-    <span>贏 <b class="r-up">${s.wins || 0}</b></span><span>走 <b>${s.pushes || 0}</b></span>
-    <span>輸 <b class="r-down">${s.losses || 0}</b></span>
-    <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>
-    <div class="note">出手邏輯：命中規則同方向先出，方向衝突或無規則＝觀望唔出。已完場場次按尾線自動結算（贏／走／輸），近 7 日保留。規則卡更新：${esc(d.rules_updated || '—')}。</div>`;
-  const scan = d.scan || {};
-  $('#ouScanInfo').textContent = scan.running
-    ? '掃描中…'
-    : (scan.last ? `上次掃描：${scan.last}｜出手 ${s.upcoming || 0}` : '');
-  let h = '';
-  if ((d.upcoming || []).length) h += `<div class="day-h">🔜 未開賽（規則命中・${d.upcoming.length} 場・順開賽時間）</div>` + d.upcoming.map(_ouCard).join('');
-  if ((d.played || []).length) h += `<div class="day-h">📼 近 7 日已完場（${d.played.length} 場・自動結算）</div>` + d.played.map(_ouCard).join('');
-  if (!h) h = '<div class="note">暫無場次命中大小規則。規則命中先會出現喺呢度——撳「🔍 重新掃描大小規則」即刻重評未來48小時＋近7日場次。</div>';
-  listEl.innerHTML = h;
-  [...listEl.querySelectorAll('.fcard')].forEach(c => {
-    const mid = +c.dataset.mid;
-    c.querySelector('.ft-share').onclick = async ev => {
-      ev.stopPropagation();
-      shareText(_ouShareText([...(d.upcoming || []), ...(d.played || [])].find(x => x.match_id === mid)));
-    };
-    c.querySelector('.f-top').onclick = ev => {
-      if (!ev.target.closest('.btn')) openDetail(mid);
-    };
-  });
-}
-$('#btnOuScan').onclick = async function(){
-  this.disabled = true;
-  try {
-    await jpost('/api/ou_rules/scan', {});
-    pollScanJob('ou', '/api/ou_rules/scan-status',
-                '#btnOuScan', '#ouScanInfo', () => loadOuRules(),
-                x => `完成${x.error ? '｜錯誤：' + x.error : ''}`);
-  } catch (e) {
-    toast('掃描失敗：' + e.message);
-    this.disabled = false;
-  }
-};
 
 /* ---------- 主頁場次 <select> 共用填充：未開賽全部＋過去24小時已開賽（最近排先） ---------- */
 function fillCheckSelect(sel, firstLabel){

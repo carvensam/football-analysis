@@ -14,7 +14,6 @@
   GET  /api/v3/featlog            精選W 過往紀錄（尾盤快照）
   GET  /api/fwgrid/full?g=7|8|12  精選7／8／12 清單（POST …/scan|refresh）
   GET  /api/fwcheck/full|target   Check 一下 7／8／12（8 情境回測表＋單場檢驗）
-  GET  /api/ou_rules              大小規則（分聯賽 O/U 規則版，POST …/scan 掃描）
   GET  /api/lgpred                聯賽預測標籤（>78% 規則）
   GET  /api/lgalerts              🔔 聯賽規則提示鐘
   GET  /api/hitrate?kind=&id=     命中率回查（fw7／fw8／fw12／fwx）
@@ -85,26 +84,6 @@ _BUILD_WORKERS = 1 if _RAM_GB < 2.5 else min(6, (os.cpu_count() or 4))
 _BUILD_POOL = ThreadPoolExecutor(max_workers=_BUILD_WORKERS,
                                  thread_name_prefix='build')
 
-
-def _map_bounded(build, rows, budget_sec=20.0):
-    """有界並行 build：保證整體喺 budget_sec 內返回。單個 worker 卡住（死循環、
-    僵死 DB 連線）舊版 map 會無限等，連環請求全部阻塞——2026-10-08 V1/V2 舊頁
-    「用唔到」元兇：一個卡死 build 霸住 build_lock，之後所有請求排隊到死。
-    超時未完成嘅列回傳 None（調用方丟棄），下次重建（TTL 內快取照舊）再補。"""
-    if not rows:
-        return []
-    import concurrent.futures as cf
-    futs = {}
-    for i, r in enumerate(rows):
-        futs[_BUILD_POOL.submit(build, r)] = i
-    done = {}
-    try:
-        for f in cf.as_completed(futs, timeout=budget_sec):
-            done[futs[f]] = f.result()
-    except cf.TimeoutError:
-        pass
-    return [done.get(i) for i in range(len(rows))]
-
 # 全局掃描閘（2026-10-02 記憶體審計）：512MB/0.5C 實例同時間只行一個全庫掃描，
 # 其餘自動跳過等下個觸發——精選/V3/Check/FWGrid 四個掃描以前可以疊住行，
 # 並行嗰陣 CPU+RAM 雙峰值係 OOM 誘因之一
@@ -119,7 +98,6 @@ _HEAVY_GET_TIMEOUT = 45
 _HEAVY_GET_PREFIXES = (
     '/api/hb/predict', '/api/featured', '/api/v1/featured',
     '/api/v2/', '/api/v3/', '/api/check', '/api/fwcheck', '/api/fwgrid',
-    '/api/ou_rules',
     '/api/results', '/api/htft', '/api/picks', '/api/screen',
     '/api/upcoming', '/api/lgpred', '/api/oupred',
 )
@@ -347,26 +325,16 @@ def _update_worker():
             'ORDER BY m.kickoff').fetchall()
         fetcher = crawler.Fetcher(conn, cfg)
         n_ok = n_fail = 0
-        outage_streak = 0   # 連續斷線計數：代理池太殘時唔好逐場捱逾時拖死成條線
         for i, (mid, ko) in enumerate(todo):
             _update_state['phase'] = (
                 f'刷新已存在場次嘅盤口及賠率 {i + 1}/{len(todo)}')
             try:
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
                     n_ok += 1
-                    outage_streak = 0
                 else:
                     n_fail += 1
-                    outage_streak = (outage_streak + 1
-                                     if getattr(fetcher, 'last_outage', False)
-                                     else 0)
             except Exception:
                 n_fail += 1
-                outage_streak += 1
-            if outage_streak >= 12:
-                print('[update] 連線連續逾時 12 場，中止本次更新'
-                      '（代理池太差，半小時後自動重試）', flush=True)
-                break
         st['odds_refresh'] = f'{n_ok} 場成功 / {n_fail} 場失敗'
         # ②b 未開賽但完全冇盤口嘅場次（未來72小時內）補爬——
         # 舊快照/新插入場次可能從未抓過賠率，冇呢步佢哋永遠冇盤口顯示
@@ -382,32 +350,21 @@ def _update_worker():
             'WHERE o3.match_id=m.id AND o3.company_id=3) '
             'ORDER BY m.kickoff').fetchall()
         n_fill_ok = n_fill_fail = n_fill_crown = 0
-        outage_streak2 = 0
         for i, (mid, ko) in enumerate(todo2):
             _update_state['phase'] = (
                 f'補爬缺少盤口嘅場次 {i + 1}/{len(todo2)}')
             try:
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
                     n_fill_ok += 1
-                    outage_streak2 = 0
                 elif crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 3):
                     # 易胜博未開盤 → Crown(3) 暫代（顯示用，V3 分析照舊 12）；
                     # 記入 line12_track：之後每日用 12BET 再試直至成功
                     n_fill_crown += 1
                     _line12_record(conn, mid)
-                    outage_streak2 = 0
                 else:
                     n_fill_fail += 1
-                    outage_streak2 = (outage_streak2 + 1
-                                      if getattr(fetcher, 'last_outage', False)
-                                      else 0)
             except Exception:
                 n_fill_fail += 1
-                outage_streak2 += 1
-            if outage_streak2 >= 12:
-                print('[update] 補爬階段連線連續逾時 12 場，中止本次更新'
-                      '（代理池太差，半小時後自動重試）', flush=True)
-                break
         st['odds_fill'] = (f'{n_fill_ok} 場成功 / {n_fill_fail} 場失敗'
                            + (f' / {n_fill_crown} 場 Crown 後備'
                               if n_fill_crown else ''))
@@ -1180,29 +1137,24 @@ def get_picks_full():
     conn.close()
     now_str = time.strftime('%Y-%m-%d %H:%M:%S')
 
-    def _fallback(row):
-        (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao,
-         ph, pg, pho, pao, hr_, ar_) = row
-        return {'id': mid, 'choice': choice, 'kickoff': ko, 'home': h,
-                'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
-                'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
-                'odds': f'主{ho}/客{ao}' if ho is not None else None,
-                'pick_line': screen_engine.fmt_line(ph, pg)
-                if ph is not None else None,
-                'pick_odds': f'主{pho}/客{pao}' if pho is not None else None,
-                'played': ko < now_str, 'brief': None}
-
     def build(row):
         try:
             return _build_pick_rec(row, now_str)
         except Exception:
             traceback.print_exc()
-            return _fallback(row)
+            (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao,
+             ph, pg, pho, pao, hr_, ar_) = row
+            return {'id': mid, 'choice': choice, 'kickoff': ko, 'home': h,
+                    'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
+                    'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+                    'odds': f'主{ho}/客{ao}' if ho is not None else None,
+                    'pick_line': screen_engine.fmt_line(ph, pg)
+                    if ph is not None else None,
+                    'pick_odds': f'主{pho}/客{pao}' if pho is not None else None,
+                    'played': ko < now_str, 'brief': None}
 
-    # 並行起唄——單線程每場 5–8 秒，幾十場必超時；
-    # 超時未完成用 fallback 補底（brief=None），唔丟 row
-    out = [r or _fallback(row)
-           for r, row in zip(_map_bounded(build, rows), rows)]
+    # 並行起唄——單線程每場 5–8 秒，幾十場必超時
+    out = list(_BUILD_POOL.map(build, rows))
     # 未開賽順時間排先；已開賽永久保留跟後（按日子分類），最新嘅排最前
     pending = sorted([r for r in out if not r['played']],
                      key=lambda r: r['kickoff'])
@@ -1435,28 +1387,29 @@ def _build_featured_rec(row, tbl, now):
     return rec
 
 
-# 雙 z 槽（False=正選／True=同主隊）——單槽舊版 z 交替會互相踢走重建，
-# 連環請求 stacking build 30 秒逾時（2026-10-08 V1/V2「用唔到」復發元兇）。
-# 後台 refresher 每 150 秒預熱；請求只讀快取，冷啟動先 inline build 一次。
-_featured_full_cache = {False: {'ts': 0.0, 'data': None},
-                        True: {'ts': 0.0, 'data': None},
-                        'lock': threading.Lock(), 'build_lock': threading.Lock()}
-_FEATURED_FULL_TTL = 300
+_featured_full_cache = {'ts': 0.0, 'z': None, 'data': None,
+                       'lock': threading.Lock(), 'build_lock': threading.Lock()}
+_FEATURED_FULL_TTL = 60
 
 
 def get_featured_full(z=False):
-    """非阻塞讀快取：後台 _featured_cache_refresher 每 150 秒重建兩個 z 槽。"""
-    slot = _featured_full_cache[z]
+    """精選全量（60 秒 TTL 快取——2026-10-06 記憶體審計：連環請求會反覆
+    起 109 場卡片 build，係 OOM 誘因之一；自動結算副作用延遲 ≤60 秒可接受）。
+    build_lock 防快取擊穿：並發請求只起一個 build，其餘等完讀快取。"""
     with _featured_full_cache['lock']:
-        if slot['data'] is not None:
-            return slot['data']
+        if (_featured_full_cache['data'] is not None
+                and _featured_full_cache['z'] == z
+                and time.time() - _featured_full_cache['ts'] < _FEATURED_FULL_TTL):
+            return _featured_full_cache['data']
     with _featured_full_cache['build_lock']:
         with _featured_full_cache['lock']:
-            if slot['data'] is not None:
-                return slot['data']
+            if (_featured_full_cache['data'] is not None
+                    and _featured_full_cache['z'] == z
+                    and time.time() - _featured_full_cache['ts'] < _FEATURED_FULL_TTL):
+                return _featured_full_cache['data']
         data = _get_featured_full_impl(z)
         with _featured_full_cache['lock']:
-            slot.update(ts=time.time(), data=data)
+            _featured_full_cache.update(ts=time.time(), z=z, data=data)
         return data
 
 
@@ -1508,37 +1461,24 @@ def _get_featured_full_impl(z=False):
         'WHERE m.kickoff < ? ORDER BY m.kickoff DESC', (now,)).fetchall()
     conn.close()
 
-    def _fallback(row):
-        (mid, d, res, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv,
-         ho, ao, letters, hr_, ar_) = row
-        rec = {'id': mid, 'direction': d, 'result': res, 'added_at': added,
-               'kickoff': ko, 'home': h, 'away': a, 'league': lg,
-               'rank_home': hr_, 'rank_away': ar_,
-               'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
-               'odds': f'主{ho}/客{ao}' if ho is not None else None,
-               'played': ko < now, 'brief': None, 'check': None,
-               'letters': None}
-        if hs is not None:
-            rec['score'] = f'{hs}-{aws}'
-        if hh is not None:
-            rec['ht'] = f'{hh}-{ha}'
-        if fg in ('home', 'away'):
-            rec['first_goal'] = fg
-        return rec
-
     def build(row):
         try:
             return _build_featured_rec(row, tbl, now)
         except Exception:
             traceback.print_exc()
-            return _fallback(row)
+            (mid, d, res, added, ko, hs, aws, h, a, lg, hc, gv, ho, ao, letters,
+             hr_, ar_) = row
+            return {'id': mid, 'direction': d, 'added_at': added,
+                    'kickoff': ko, 'home': h, 'away': a, 'league': lg,
+                    'rank_home': hr_, 'rank_away': ar_,
+                    'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+                    'odds': f'主{ho}/客{ao}' if ho is not None else None,
+                    'played': ko < now, 'brief': None, 'check': None,
+                    'letters': None}
 
     # 並行起唄——單線程逐場 5–8 秒，幾十場必超時
-    # 超時未完成嘅列用 _fallback 補底（brief=None）——唔丟row，頁面永遠齊場
-    pending = [r or _fallback(row)
-               for r, row in zip(_map_bounded(build, pending_rows), pending_rows)]
-    played = [r or _fallback(row)
-              for r, row in zip(_map_bounded(build, played_rows), played_rows)]
+    pending = list(_BUILD_POOL.map(build, pending_rows))
+    played = list(_BUILD_POOL.map(build, played_rows))
     wins = sum(1 for r in played if r.get('result') == 'W')
     losses = sum(1 for r in played if r.get('result') == 'L')
     pushes = sum(1 for r in played if r.get('result') == 'P')
@@ -1621,24 +1561,27 @@ def _v1_scan_job():
         _v1_scan['running'] = False
 
 
-_v1_featured_full_cache = {False: {'ts': 0.0, 'data': None},
-                           True: {'ts': 0.0, 'data': None},
+_v1_featured_full_cache = {'ts': 0.0, 'z': None, 'data': None,
                            'lock': threading.Lock(), 'build_lock': threading.Lock()}
 
 
 def get_v1_featured_full(z=False):
-    """V1 版同 get_featured_full：後台 refresher 預熱，請求零阻塞。"""
-    slot = _v1_featured_full_cache[z]
+    """V1 精選全量（60 秒 TTL 快取＋build_lock 防擊穿，理由同 get_featured_full
+    ——記憶體審計 2026-10-06）。"""
     with _v1_featured_full_cache['lock']:
-        if slot['data'] is not None:
-            return slot['data']
+        if (_v1_featured_full_cache['data'] is not None
+                and _v1_featured_full_cache['z'] == z
+                and time.time() - _v1_featured_full_cache['ts'] < _FEATURED_FULL_TTL):
+            return _v1_featured_full_cache['data']
     with _v1_featured_full_cache['build_lock']:
         with _v1_featured_full_cache['lock']:
-            if slot['data'] is not None:
-                return slot['data']
+            if (_v1_featured_full_cache['data'] is not None
+                    and _v1_featured_full_cache['z'] == z
+                    and time.time() - _v1_featured_full_cache['ts'] < _FEATURED_FULL_TTL):
+                return _v1_featured_full_cache['data']
         data = _get_v1_featured_full_impl(z)
         with _v1_featured_full_cache['lock']:
-            slot.update(ts=time.time(), data=data)
+            _v1_featured_full_cache.update(ts=time.time(), z=z, data=data)
         return data
 
 
@@ -1673,36 +1616,23 @@ def _get_v1_featured_full_impl(z=False):
         base + 'WHERE m.kickoff < ? ORDER BY m.kickoff DESC', (now,)).fetchall()
     conn.close()
 
-    def _fallback(row):
-        (mid, d, res, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv,
-         ho, ao, _letters, hr_, ar_) = row
-        rec = {'id': mid, 'direction': d, 'result': res, 'added_at': added,
-               'kickoff': ko, 'home': h, 'away': a, 'league': lg,
-               'rank_home': hr_, 'rank_away': ar_,
-               'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
-               'odds': f'主{ho}/客{ao}' if ho is not None else None,
-               'played': ko < now, 'brief': None, 'check': None,
-               'letters': None}
-        if hs is not None:
-            rec['score'] = f'{hs}-{aws}'
-        if hh is not None:
-            rec['ht'] = f'{hh}-{ha}'
-        if fg in ('home', 'away'):
-            rec['first_goal'] = fg
-        return rec
-
     def build(row):
         try:
             return _build_featured_rec(row, tbl, now)
         except Exception:
             traceback.print_exc()
-            return _fallback(row)
+            (mid, d, res, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv,
+             ho, ao, _letters, hr_, ar_) = row
+            return {'id': mid, 'direction': d, 'added_at': added,
+                    'kickoff': ko, 'home': h, 'away': a, 'league': lg,
+                    'rank_home': hr_, 'rank_away': ar_,
+                    'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
+                    'odds': f'主{ho}/客{ao}' if ho is not None else None,
+                    'played': ko < now, 'brief': None, 'check': None,
+                    'letters': None}
 
-    # 超時未完成嘅列用 _fallback 補底（brief=None）——唔丟row，頁面永遠齊場
-    pending = [r or _fallback(row)
-               for r, row in zip(_map_bounded(build, pending_rows), pending_rows)]
-    played = [r or _fallback(row)
-              for r, row in zip(_map_bounded(build, played_rows), played_rows)]
+    pending = list(_BUILD_POOL.map(build, pending_rows))
+    played = list(_BUILD_POOL.map(build, played_rows))
     wins = sum(1 for r in played if r.get('result') == 'W')
     losses = sum(1 for r in played if r.get('result') == 'L')
     pushes = sum(1 for r in played if r.get('result') == 'P')
@@ -3242,50 +3172,6 @@ def api_fwcheck_target(mid, g):
         conn.close()
 
 
-# ============ 大小規則（2026-10-09：分聯賽 O/U 規則版，接入 15 分鐘循環） ============
-# 引擎係純 SQL＋規則評估、無狀態表：每次掃描全量重算，結果放 module-level cache
-# （同 z 槽思路——頁面請求永遠讀快取，刷新交畀掃描循環），已完場卡自動結算。
-_ou_rules_scan = {'running': False, 'done': 0, 'total': 0, 'added': 0,
-                  'last': None, 'error': None}
-_ou_rules_cache = {'ts': 0.0, 'data': None}
-_OU_RULES_TTL = 960   # 掃描循環 900 秒，TTL 稍長啲兜住循環延遲
-
-
-def _ou_rules_scan_job():
-    """大小規則掃描：未來48小時場次＋近7日已完場場次行規則引擎，結果入 cache。"""
-    st = _ou_rules_scan
-    if st['running']:
-        return
-    st.update(running=True, error=None)
-    try:
-        import ou_rules_engine
-        data = ou_rules_engine.scan(48)
-        stats = data.get('stats') or {}
-        st['done'] = st['total'] = stats.get('scanned', 0)
-        st['added'] = stats.get('upcoming', 0)
-        _ou_rules_cache.update(ts=time.time(), data=data)
-        st['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
-    except Exception:
-        st['error'] = traceback.format_exc()[-400:]
-    finally:
-        st['running'] = False
-
-
-def get_ou_rules_full():
-    """大小規則全量：cache 新鮮直讀；過期／冷啟動即場重建（引擎好快，毫秒級）。
-    已完場卡讀取時自動結算——呢個係無狀態設計，規則卡一換即刻全量重評。"""
-    if _ou_rules_cache['data'] is None or \
-            time.time() - _ou_rules_cache['ts'] > _OU_RULES_TTL:
-        _ou_rules_scan_job()   # 有 running 閘，唔會同背景掃描疊行
-    data = _ou_rules_cache['data']
-    if data is None:
-        return {'upcoming': [], 'played': [], 'stats': {}, 'scan': dict(_ou_rules_scan)}
-    out = dict(data)
-    out['scan'] = {k: _ou_rules_scan[k] for k in
-                   ('running', 'done', 'total', 'added', 'last', 'error')}
-    return out
-
-
 # ============ 聯賽規則提示（>78% 規則出現即提示） ============
 _LG_ALERT_SEEN = os.path.join(BASE_DIR, '_lg_alerts_seen.json')
 
@@ -3647,10 +3533,6 @@ def line12_daily_retry(conn, crawler, fetcher, batch=150):
             conn.execute('UPDATE line12_track SET attempts=attempts+1, '
                          'last_ts=? WHERE match_id=?',
                          (time.strftime('%Y-%m-%d %H:%M:%S'), mid))
-        # 每場即放寫鎖：下一場嘅網絡取之（crawl_odds_for_match 自己會 commit
-        # 賠率寫入）唔可以帶住 line12_track 嘅交易——舊版 150 場一條交易，
-        # 逐場捱代理逾時，鎖庫一個鐘（2026-10-08 獵手 stacks 實證元兇）
-        conn.commit()
     conn.commit()
     stuck = conn.execute(
         'SELECT COUNT(*) FROM line12_track WHERE resolved=0 AND crown=1 '
@@ -4470,9 +4352,6 @@ def _feat_hourly_log(conn, ts):
                 (ts, kind, mid, 1 if mid in now_elig else 0,
                  now_elig.get(mid), ko, lg, h, a))
             logged += 1
-            if logged % 200 == 0:
-                conn.commit()   # 分段提交：呢啲 INSERT 同結算共享一條交易，
-                # 舊版鎖到成輪寫完先放（2026-10-08 獵手抓到嘅元兇之一）
     return logged
 
 
@@ -4517,10 +4396,6 @@ def _feat_hourly_settle(conn):
         conn.execute(
             'UPDATE feat_hourly SET settled=1, result=?, '
             'final_eligible=? WHERE id=?', (res, final_elig, fid))
-        # 每場即時提交：第一個 UPDATE 已開寫交易，舊版一路 commit 到
-        # 成個循環尾——場次一多就鎖庫幾十分鐘（2026-10-08 獵手實證：
-        # _feat_hourly_settle 係歷次寫鎖僵死元兇）
-        conn.commit()
     return len(pend)
 
 
@@ -4537,7 +4412,6 @@ def _feat_hourly_tick():
             try:
                 conn = _fh_conn()
                 _feat_hourly_log(conn, ts)
-                conn.commit()          # 記錄同結算分開交易，各鎖各放
                 _feat_hourly_settle(conn)
                 conn.commit()
                 conn.close()
@@ -4568,7 +4442,6 @@ def _feat_hourly_tick():
             try:
                 conn = _fh_conn()
                 _feat_hourly_log(conn, ts)
-                conn.commit()          # 記錄同結算分開交易，各鎖各放
                 _feat_hourly_settle(conn)
                 conn.commit()
                 conn.close()
@@ -5074,18 +4947,6 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
-            return
-        if u.path == '/api/ou_rules':
-            try:
-                self._send(200, json.dumps(get_ou_rules_full(),
-                                           ensure_ascii=False, default=_jdefault))
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
-            return
-        if u.path == '/api/ou_rules/scan-status':
-            self._send(200, json.dumps(_ou_rules_scan, ensure_ascii=False))
             return
         self._send(404, '{}')
 
@@ -5662,15 +5523,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
                                            ensure_ascii=False))
             return
-        if u.path == '/api/ou_rules/scan':
-            try:
-                if not _ou_rules_scan['running']:
-                    _scan_thread(_ou_rules_scan_job)
-                self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
-            except Exception as e:
-                self._send(500, json.dumps({'ok': False, 'error': str(e)},
-                                           ensure_ascii=False))
-            return
         if u.path == '/api/v2/combo':
             n = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(n) or b'{}')
@@ -5727,71 +5579,6 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         self._send(404, '{}')
-
-
-def _install_seizure_hunter():
-    """寫鎖 seizure 獵手（2026-10-08）：每 60 秒試搶寫鎖；搶唔到即 dump
-    全部線程棧去 logs/seizure_stacks.txt——三宗「殺 APP 即解鎖」事件都搵唔到
-    邊句 SQL 持有交易，呢個直接俾案發現場。發現後可拆走。"""
-    def hunt():
-        import sys
-        last_dump = 0.0
-        while True:
-            time.sleep(60)
-            conn = None
-            try:
-                conn = sqlite3.connect(DB_PATH, timeout=3)
-                try:
-                    conn.execute('BEGIN IMMEDIATE')
-                    conn.execute('ROLLBACK')
-                    conn.close()
-                    conn = None
-                    continue
-                except sqlite3.OperationalError:
-                    pass
-                if time.time() - last_dump < 240:
-                    continue
-                last_dump = time.time()
-                frames = sys._current_frames()
-                out = []
-                for tid, fr in frames.items():
-                    out.append('===== thread %d =====' % tid)
-                    out.extend(x.rstrip() for x in traceback.format_stack(fr))
-                path = os.path.join(BASE_DIR, 'logs',
-                                    'seizure_stacks.txt')
-                os.makedirs(os.path.dirname(path), exist_ok=True)
-                with open(path, 'w', encoding='utf-8') as fp:
-                    fp.write('\n'.join(out))
-            except Exception:
-                pass
-            finally:
-                try:
-                    if conn is not None:
-                        conn.close()
-                except Exception:
-                    pass
-    threading.Thread(target=hunt, daemon=True).start()
-
-
-
-def _featured_cache_refresher():
-    """後台每 150 秒重建 V1/V2 featured 兩個 z 槽——頁面請求永遠讀快取、
-    唔使等 build（2026-10-08 深夜：TTL 過期連環請求 stacking build 再現
-    30 秒逾時；反正精選掃描本身都係週期性工作，搬入後台做最乾淨）。"""
-    time.sleep(60)   # 等 preheat 行完先接手，唔好同開機搶 BUILD_POOL
-    while True:
-        for impl, cache in ((_get_featured_full_impl, _featured_full_cache),
-                            (_get_v1_featured_full_impl,
-                             _v1_featured_full_cache)):
-            for z in (False, True):
-                try:
-                    data = impl(z)
-                    with cache['lock']:
-                        cache[z].update(ts=time.time(), data=data)
-                except Exception:
-                    pass
-        time.sleep(150)
-
 
 
 def _warmup():
@@ -6002,12 +5789,6 @@ def _result_catchup_job():
                 conn2.close()
             except Exception:
                 pass
-            # 大小規則：跟住巡邏節奏每 15 分鐘重掃（引擎純讀+毫秒級；
-            # scan 閘保證同其他全庫掃描錯開，撞閘就等下個循環）
-            try:
-                _scan_thread(_ou_rules_scan_job)
-            except Exception:
-                pass
             _result_catchup['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
             _result_catchup['error'] = None
         except Exception:
@@ -6051,10 +5832,6 @@ def _auto_scans():
             for g in ('7', '8', '12'):
                 if not _fw_grid_scan[g]['running']:
                     _scan_thread(_fw_grid_scan_job, g)
-        # 大小規則：無狀態表，開機即全量掃一次填 cache（空結果都照掃，
-        # 規則卡 ou_rules.json 一換即刻全量重評）
-        if not _ou_rules_scan['running']:
-            _scan_thread(_ou_rules_scan_job)
     except Exception:
         pass
 
@@ -6152,8 +5929,6 @@ if __name__ == '__main__':
         _auto_scans()
     threading.Thread(target=_boot_init, daemon=True).start()
     threading.Thread(target=_warmup, daemon=True).start()
-    threading.Thread(target=_featured_cache_refresher, daemon=True).start()
-    _install_seizure_hunter()
     # 預熱（順序執行，唔好並行——並行峰值會疊加爆 512MB）：
     # 30 秒後 background 先算半全場快取，跟住建好波池；用戶撳到即刻有，
     # 亦避免冷啟動超過 Render proxy 60 秒逾時
