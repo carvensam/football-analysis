@@ -79,6 +79,12 @@ table.htft{width:100%;border-collapse:collapse;font-size:12px;margin:4px 0}
 table.htft th,table.htft td{border:1px solid var(--line);padding:4px 6px;text-align:center}
 table.htft th{background:var(--bg2);color:var(--gold2)}
 table.htft td.top{background:rgba(255,200,40,.30);font-weight:800}
+table.htft td.yl{background:#ffd766;color:#3a2c05;font-weight:900}
+table.htft td.gn{background:#3fb96c;color:#0a2413;font-weight:900}
+.htft-pair{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.htft-cap{font-size:11px;color:var(--dim);text-align:center;margin-top:4px}
+.htft-pt{font-size:13px;font-weight:700;margin:8px 0 2px}
+@media (max-width:640px){.htft-pair{grid-template-columns:1fr}}
 /* 關係表 */
 table.rel{width:100%;border-collapse:collapse;font-size:12px;margin:4px 0}
 table.rel th,table.rel td{border:1px solid var(--line);padding:4px 8px;text-align:center}
@@ -117,6 +123,6 @@ table.rel th{background:var(--bg2);color:var(--gold2)}
 </main>
 <div class="gold-banner bottom">悶住贏</div>
 <div class="toast" id="toast"></div>
-<script src="/static/hb.js?v=5.3.0"></script>
+<script src="/static/hb.js?v=5.4.1"></script>
 </body>
 </html>

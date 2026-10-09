@@ -227,14 +227,26 @@
         rows + '</tbody></table></details>';
     }
 
-    /* 半全場 9 格 */
+    /* 半全場 9 格：初盤／開賽前4小時／尾盤 ×（同聯賽/杯賽、全庫） */
     var ht = d.htft || {};
-    if (ht.cells) {
-      h += '<div class="sec-h">⚡ 半全場（9格）</div>';
-      h += htftTable(ht.cells, ht.top);
-      if (ht.top) {
-        h += '<div class="note">最可能：' + cellName(ht.top.cell) + ' ' + ht.top.pct + '%' +
-             (ht.ht_avg_total != null ? '｜半場場均 ' + ht.ht_avg_total + ' 球' : '') + '</div>';
+    if (ht.points && ht.points.length) {
+      h += '<div class="sec-h">⚡ 半全場（9格）｜依據：初盤・開賽前4小時・尾盤</div>';
+      ht.points.forEach(function (p) {
+        if (p.line == null) return;
+        h += '<div class="htft-pt">🕐 ' + p.name + '｜大小線 <b>' + p.line + '</b></div>';
+        h += '<div class="htft-pair">';
+        h += '<div><div class="htft-cap">同聯賽/杯賽' +
+             (p.league.cells ? '（n=' + p.league.n + '）' : '（冇樣本）') + '</div>' +
+             htftTable(p.league.cells, p.league_hl) + '</div>';
+        h += '<div><div class="htft-cap">全庫' +
+             (p.all.cells ? '（n=' + p.all.n + '）' : '（冇樣本）') + '</div>' +
+             htftTable(p.all.cells, p.all_hl) + '</div>';
+        h += '</div>';
+      });
+      h += '<div class="note">🟨 主和/主客/客和/客主 之中最高 &gt;6.5%｜🟩 第二高 &gt;6.5%｜' +
+           '主主/和和/客客/和主/和客 唔標｜n=樣本場數，細樣本參考時留意</div>';
+      if (ht.ht_avg_total != null) {
+        h += '<div class="note">半場場均 ' + ht.ht_avg_total + ' 球</div>';
       }
     }
 
@@ -276,26 +288,20 @@
            '<br><small>n=' + n + '</small>';
   }
 
-  function cellName(c) {
-    var m = { H: '主', A: '客', D: '和' };
-    return '半場' + m[c.charAt(0)] + ' → 全場' + m[c.charAt(1)];
-  }
-
-  function htftTable(cells, top) {
-    var order = ['HH', 'HD', 'HA', 'DH', 'DD', 'DA', 'AH', 'AD', 'AA'];
+  function htftTable(cells, hl) {
+    hl = hl || {};
     var h = '<table class="htft"><tr><th>半場＼全場</th><th>主勝</th><th>和</th><th>客勝</th></tr>';
     ['H', 'D', 'A'].forEach(function (htSide) {
       h += '<tr><th>' + (htSide === 'H' ? '主勝' : htSide === 'D' ? '和' : '客勝') + '</th>';
       ['H', 'D', 'A'].forEach(function (ftSide) {
         var k = htSide + ftSide;
-        var v = cells[k];
+        var v = cells ? cells[k] : null;
         if (v == null) { h += '<td>—</td>'; return; }
-        var isTop = top && top.cell === k;
-        h += '<td class="' + (isTop ? 'top' : '') + '">' + v + '%</td>';
+        var cls = hl.yellow === k ? 'yl' : (hl.green === k ? 'gn' : '');
+        h += '<td class="' + cls + '">' + v + '%</td>';
       });
       h += '</tr>';
     });
-    void order;
     h += '</table>';
     return h;
   }

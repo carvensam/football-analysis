@@ -25,6 +25,15 @@ POOL_TTL = 5400
 HT_SHARE_ALL = 0.45          # 半場入球佔全場比例（全庫校準用後備）
 MIN_LG_N = 60                # 聯賽樣本下限（低過向全庫混合）
 
+# ---------- 半全場（2026-10-08 用戶指示重做）----------
+# 以 初盤／開賽前4小時／尾盤 三個時點嘅大小線為依據：每時點喺歷史池搵
+# 「同線（0.5 步）＋有半場賽果」嘅場次，計半全場 9 格觀測百分率；
+# 同聯賽/杯賽 同 全庫 各出一個網格（兩樣都展示）。
+# Highlight 只限 主和/主客/客和/客主：四項之中最高 >6.5% 標黃、第二高 >6.5% 標綠
+#（主主/和和/客客/和主/和客 一律唔標；樣本 n 唔設下限，細樣本照標，n 值顯示俾用戶自判）。
+HTFT_HL_KEYS = ('HD', 'HA', 'AD', 'AH')
+HTFT_HL_MIN = 6.5
+
 
 def hk_now():
     return datetime.now(HK_TZ).replace(tzinfo=None)
@@ -223,6 +232,51 @@ def poisson_ou_probs(lam, line, kmax=14):
             else:
                 under += pk
     return over, under, push
+
+
+# ---------- 半全場實證網格（三時點 × 同聯賽/全庫） ----------
+
+
+def _htft_grid(sub, line_col, line_val):
+    """歷史池 sub 入面，時點線（line_col）同 line_val 同線（0.5 步）＋
+    有半場賽果嘅場次，計半全場 9 格觀測百分率。回傳 (cells, n)。"""
+    if sub is None or line_val is None:
+        return None, 0
+    d = sub[(sub[line_col].notna()) & (sub['half_home'].notna())]
+    if not len(d):
+        return None, 0
+    key2 = int(round(float(line_val) * 2))
+    d = d[(d[line_col] * 2).round().astype('int32') == key2]
+    n = len(d)
+    if not n:
+        return None, 0
+    hh = d['half_home'].to_numpy(dtype='float64')
+    ha = d['half_away'].to_numpy(dtype='float64')
+    fh = d['home_score'].to_numpy(dtype='float64')
+    fa = d['away_score'].to_numpy(dtype='float64')
+    m9 = np.zeros((3, 3))
+    hti = np.where(hh > ha, 0, np.where(hh == ha, 1, 2))
+    fti = np.where(fh > fa, 0, np.where(fh == fa, 1, 2))
+    np.add.at(m9, (hti, fti), 1)
+    m9 /= max(m9.sum(), 1)
+    names = ('H', 'D', 'A')
+    cells = {names[i] + names[j]: round(float(m9[i, j]) * 100, 1)
+             for i in range(3) for j in range(3)}
+    return cells, n
+
+
+def _htft_hl(cells, n):
+    """四項（主和HD/主客HA/客和AD/客主AH）之中：最高 >6.5% 標黃、
+    第二高 >6.5% 標綠。n 唔設下限——樣本細照標，n 值已顯示俾用戶自判。"""
+    if not cells:
+        return {}
+    ranked = sorted(((cells[k], k) for k in HTFT_HL_KEYS), reverse=True)
+    out = {}
+    if ranked[0][0] > HTFT_HL_MIN:
+        out['yellow'] = ranked[0][1]
+    if len(ranked) > 1 and ranked[1][0] > HTFT_HL_MIN:
+        out['green'] = ranked[1][1]
+    return out
 
 
 def top_scorelines(lh, la, topn=3):
@@ -438,13 +492,21 @@ class HB:
             if items_out:
                 out_ou['items'] = items_out['items']
 
-        # 5) 半全場 9 格
-        emp_m = L.get('htft') if L else None
-        emp_n = L.get('ht_n', 0) if L else 0
-        if emp_m is None or emp_n < 100:
-            emp_m, emp_n = self.all_htft, self.all_htft_n
-        cells = htft_matrix(lam_home, lam_away, ht_share, emp_m, emp_n)
-        top_cell = max(cells.items(), key=lambda kv: kv[1])
+        # 5) 半全場 9 格：初盤／開賽前4小時／尾盤 三時點 ×（同聯賽/杯賽、全庫）
+        lg_sub = self.df[self.df['league'] == league]
+        htft_points = []
+        for pkey, pname, pcol, pval in (
+                ('initial', '初盤', 'oi_line', oi_line),
+                ('pre_4h', '開賽前4小時', 'o4_line', o4_line),
+                ('closing', '尾盤', 'ou_line', ou_line)):
+            lg_cells, lg_n = _htft_grid(lg_sub, pcol, pval)
+            al_cells, al_n = _htft_grid(self.df, pcol, pval)
+            htft_points.append({
+                'key': pkey, 'name': pname, 'line': pval,
+                'league': {'cells': lg_cells, 'n': lg_n},
+                'all': {'cells': al_cells, 'n': al_n},
+                'league_hl': _htft_hl(lg_cells, lg_n),
+                'all_hl': _htft_hl(al_cells, al_n)})
 
         # 6) 上下盤 × 大小球關係
         lg_rel, all_rel = self.relation_for(league)
@@ -465,7 +527,7 @@ class HB:
 
         return {
             'ou': out_ou,
-            'htft': {'cells': cells, 'top': {'cell': top_cell[0], 'pct': top_cell[1]},
+            'htft': {'points': htft_points,
                      'ht_avg_total': round(avg_total * ht_share, 2)},
             'relation': {'league': rel_fmt(lg_rel), 'all': rel_fmt(all_rel)},
             'factors': {
