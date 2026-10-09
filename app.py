@@ -18,6 +18,7 @@
   GET  /api/lgalerts              🔔 聯賽規則提示鐘
   GET  /api/hitrate?kind=&id=     命中率回查（fw7／fw8／fw12／fwx）
   仲有：/api/picks、/api/results、/api/featlog、/api/v2/*、/api/v1/*（V1/V2 舊頁）
+  GET  /api/ou_rules              大小規則（分聯賽 O/U 規則版，POST …/scan 掃描）
 """
 import json
 import os
@@ -98,6 +99,7 @@ _HEAVY_GET_TIMEOUT = 45
 _HEAVY_GET_PREFIXES = (
     '/api/hb/predict', '/api/featured', '/api/v1/featured',
     '/api/v2/', '/api/v3/', '/api/check', '/api/fwcheck', '/api/fwgrid',
+    '/api/ou_rules',
     '/api/results', '/api/htft', '/api/picks', '/api/screen',
     '/api/upcoming', '/api/lgpred', '/api/oupred',
 )
@@ -3172,6 +3174,51 @@ def api_fwcheck_target(mid, g):
         conn.close()
 
 
+
+
+# ============ 大小規則（2026-10-09：分聯賽 O/U 規則版，接入 15 分鐘循環） ============
+# 引擎係純 SQL＋規則評估、無狀態表：每次掃描全量重算，結果放 module-level cache
+# （同 z 槽思路——頁面請求永遠讀快取，刷新交畀掃描循環），已完場卡自動結算。
+_ou_rules_scan = {'running': False, 'done': 0, 'total': 0, 'added': 0,
+                  'last': None, 'error': None}
+_ou_rules_cache = {'ts': 0.0, 'data': None}
+_OU_RULES_TTL = 960   # 掃描循環 900 秒，TTL 稍長啲兜住循環延遲
+
+
+def _ou_rules_scan_job():
+    """大小規則掃描：未來48小時場次＋近7日已完場場次行規則引擎，結果入 cache。"""
+    st = _ou_rules_scan
+    if st['running']:
+        return
+    st.update(running=True, error=None)
+    try:
+        import ou_rules_engine
+        data = ou_rules_engine.scan(48)
+        stats = data.get('stats') or {}
+        st['done'] = st['total'] = stats.get('scanned', 0)
+        st['added'] = stats.get('upcoming', 0)
+        _ou_rules_cache.update(ts=time.time(), data=data)
+        st['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        st['error'] = traceback.format_exc()[-400:]
+    finally:
+        st['running'] = False
+
+
+def get_ou_rules_full():
+    """大小規則全量：cache 新鮮直讀；過期／冷啟動即場重建（引擎好快，毫秒級）。
+    已完場卡讀取時自動結算——呢個係無狀態設計，規則卡一換即刻全量重評。"""
+    if (_ou_rules_cache['data'] is None or
+            time.time() - _ou_rules_cache['ts'] > _OU_RULES_TTL):
+        _ou_rules_scan_job()   # 有 running 閘，唔會同背景掃描疊行
+    data = _ou_rules_cache['data']
+    if data is None:
+        return {'upcoming': [], 'played': [], 'stats': {}, 'scan': dict(_ou_rules_scan)}
+    out = dict(data)
+    out['scan'] = {k: _ou_rules_scan[k] for k in
+                   ('running', 'done', 'total', 'added', 'last', 'error')}
+    return out
+
 # ============ 聯賽規則提示（>78% 規則出現即提示） ============
 _LG_ALERT_SEEN = os.path.join(BASE_DIR, '_lg_alerts_seen.json')
 
@@ -4948,6 +4995,18 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/ou_rules':
+            try:
+                self._send(200, json.dumps(get_ou_rules_full(),
+                                           ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/ou_rules/scan-status':
+            self._send(200, json.dumps(_ou_rules_scan, ensure_ascii=False))
+            return
         self._send(404, '{}')
 
     def do_POST(self):
@@ -5523,6 +5582,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
                                            ensure_ascii=False))
             return
+        if u.path == '/api/ou_rules/scan':
+            try:
+                if not _ou_rules_scan['running']:
+                    _scan_thread(_ou_rules_scan_job)
+                self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
         if u.path == '/api/v2/combo':
             n = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(n) or b'{}')
@@ -5789,6 +5857,12 @@ def _result_catchup_job():
                 conn2.close()
             except Exception:
                 pass
+            # 大小規則：跟住巡邏節奏每 15 分鐘重掃（引擎純讀+毫秒級；
+            # scan 閘保證同其他全庫掃描錯開，撞閘就等下個循環）
+            try:
+                _scan_thread(_ou_rules_scan_job)
+            except Exception:
+                pass
             _result_catchup['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
             _result_catchup['error'] = None
         except Exception:
@@ -5832,6 +5906,10 @@ def _auto_scans():
             for g in ('7', '8', '12'):
                 if not _fw_grid_scan[g]['running']:
                     _scan_thread(_fw_grid_scan_job, g)
+        # 大小規則：無狀態表，開機即全量掃一次填 cache（空結果都照掃，
+        # 規則卡 ou_rules.json 一換即刻全量重評）
+        if not _ou_rules_scan['running']:
+            _scan_thread(_ou_rules_scan_job)
     except Exception:
         pass
 
