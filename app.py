@@ -635,6 +635,28 @@ def phone_push_note(device, written):
     _phone_push['total'] += int(written or 0)
 
 
+def do_phone_odds_debug(body):
+    """診斷（2026-10-10）：手機直爬全部「未開盤/失敗」——攞到手機實際收到嘅
+    頁面頭 600 字／原生錯誤，寫入 crawl_log 供追查（titan007 改頁面 vs IP 被餵空殼）。"""
+    try:
+        mid = body.get('id')
+        device = str(body.get('device') or '手機')[:30]
+        head = str(body.get('head') or '')[:600]
+        ln = body.get('len')
+        err = body.get('err')
+        conn = db()
+        try:
+            import crawler
+            crawler.log(conn, 'WARN',
+                        '📱DEBUG %s 場次%s len=%s err=%s 頁首: %s'
+                        % (device, mid, ln, err, head[:300]))
+        finally:
+            conn.close()
+        return {'ok': True}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
+
+
 # ============ V2 背景排程：每日 12 時起每 2 小時自動更新未來 24 小時盤口直至尾盤 ============
 # （12/14/16/18/20/22/24 時；賽果補抓沿用 15 分鐘巡邏。手機 APP 閂咗都會行——
 #   排程喺 Render 伺服器端，唔係手機端。）
@@ -4513,6 +4535,22 @@ def _feat_hourly_tick():
         _feat_hourly['running'] = False
 
 
+def _result_settle_loop():
+    """賽果回填+精選結算（2026-10-10 用戶規格）：開賽逾120分鐘冇比分→爬賽果；
+    已完場嘅精選/7/8/12 紀錄補結算。每 15 分鐘一次；雲端爬唔到安全跳過（NO_DATA），
+    結算照做（比分經每日推庫到達後自動補）。"""
+    time.sleep(300)   # 等啟動穩定先
+    while True:
+        try:
+            import subprocess
+            subprocess.run([sys.executable,
+                            os.path.join(PARENT_DIR, '_result_settle.py'), '40'],
+                           timeout=600, capture_output=True)
+        except Exception:
+            pass
+        time.sleep(900)
+
+
 def _feat_hourly_loop():
     time.sleep(180)   # 等伺服器起好、數據池熱身先
     while not _feat_hourly['stop']:
@@ -5068,6 +5106,16 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/phone-odds-debug':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(do_phone_odds_debug(body), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
         if u.path == '/api/hb/predict':
             try:
                 q = parse_qs(u.query)
@@ -5462,6 +5510,16 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b'{}')
             try:
                 self._send(200, json.dumps(do_phone_odds(body), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/phone-odds-debug':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(do_phone_odds_debug(body), ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -6142,6 +6200,7 @@ if __name__ == '__main__':
     # 推送（符合「本機係數據主人」原則）。
     if not DISABLE_UPDATE:
         threading.Thread(target=_feat_hourly_loop, daemon=True).start()
+        threading.Thread(target=_result_settle_loop, daemon=True).start()
     else:
         print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '
               'restart loop）；紀錄由本機每小時做、每日推送', flush=True)
