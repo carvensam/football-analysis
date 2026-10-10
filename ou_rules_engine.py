@@ -54,9 +54,41 @@ def mv5(a, b):
     return '大降'
 
 
-def atoms(cl, co, cu, il, io_, iu, f4l, f4o, f4u):
-    """一場嘅條件原子集合——格式同礦工 atoms() 逐字一致（frozenset 用 set 都得，
-    匹配只做子集判斷）。pre_4h 缺→臨場三個 atom 唔出。"""
+def pzone(p):
+    if p < 0.42: return '<42%'
+    if p < 0.46: return '42-46%'
+    if p < 0.50: return '46-50%'
+    if p < 0.54: return '50-54%'
+    if p < 0.58: return '54-58%'
+    return '>=58%'
+
+def rateline(r):
+    if r < 0.90: return '<90%'
+    if r < 0.93: return '90-93%'
+    if r < 0.95: return '93-95%'
+    if r < 0.97: return '95-97%'
+    return '>=97%'
+
+def dzone(d):
+    if d <= -0.30: return '<=-0.30'
+    if d <= -0.15: return '-0.30~-0.15'
+    if d <= 0.0: return '-0.15~0'
+    if d <= 0.15: return '0~0.15'
+    if d <= 0.30: return '0.15~0.30'
+    return '>=0.30'
+
+def depth(x):
+    if x < 0.25: return '平手'
+    if x < 0.75: return '淺0.25-0.75'
+    if x < 1.25: return '中0.75-1.25'
+    if x < 1.75: return '深1.25-1.75'
+    return '超深>=1.75'
+
+
+def atoms(cl, co, cu, il, io_, iu, f4l, f4o, f4u, ah=None):
+    """一場嘅條件原子集合——格式同礦工 v3 atoms() 逐字一致。
+    pre_4h 缺→臨場三個 atom 唔出；AH 缺 giver→成組 M3 唔出。
+    ah = (handicap, home_odds, giver, initial_handicap)。"""
     A = set()
     if cl is not None:
         A.add('尾線=%.2f' % (round(cl * 4) / 4))
@@ -69,6 +101,24 @@ def atoms(cl, co, cu, il, io_, iu, f4l, f4o, f4u):
                  ('細水變', mv5(iu, cu)), ('臨線變', mv5(f4l, cl)),
                  ('臨水變', mv5(f4o, co)), ('臨細水變', mv5(f4u, cu))):
         if v: A.add('%s=%s' % (k, v))
+    # M2 賠率結構（同礦工 v3 口徑：qo=1/odds）
+    if co is not None and cu is not None and co > 0 and cu > 0:
+        qo, qu = 1.0 / co, 1.0 / cu
+        A.add('隱大率=' + pzone(qo / (qo + qu)))
+        A.add('返還=' + rateline(1.0 / (qo + qu)))
+        A.add('水差=' + dzone(co - cu))
+    # M3 亞盤交叉（giver 閘同礦工一致）
+    if ah:
+        ahl, aho, agv, ahil = ah
+        if ahl is not None and agv in ('home', 'away'):
+            sgn = ahl if agv == 'home' else -ahl
+            A.add('亞向=' + ('主讓' if sgn > 0.05 else ('客讓' if sgn < -0.05 else '平手')))
+            A.add('亞深=' + depth(abs(sgn)))
+            if aho is not None: A.add('亞主水=' + z6(aho))
+            if ahil is not None:
+                isgn = ahil if agv == 'home' else -ahil
+                m2 = mv5(isgn, sgn)
+                if m2: A.add('亞線變=' + m2)
     return A
 
 # ---------------------------------------------------------------- 規則
@@ -130,9 +180,9 @@ def cond_text(conds):
 
 # ---------------------------------------------------------------- 盤口快照
 def snapshots(conn, mid):
-    """攞 company 12 各時點快照，回傳 (initial, tail, pre4h)——每個係
-    (total_line, over_odds, under_odds) 或 None。尾盤=closing，冇就用
-    pre_5m/pre_10m/pre_15m/pre_30m/pre_4h 最新一份。"""
+    """攞 company 12 各時點快照，回傳 (initial, tail, pre4h, ah)——前三個係
+    (total_line, over_odds, under_odds) 或 None；ah = (handicap, home_odds,
+    giver, initial_handicap) 或 None（M3 亞盤原子用）。"""
     rows = conn.execute(
         'SELECT label, total_line, over_odds, under_odds FROM odds_ou '
         'WHERE match_id=? AND company_id=12', (mid,)).fetchall()
@@ -146,7 +196,17 @@ def snapshots(conn, mid):
         if s is not None and s[0] is not None:
             tail = s
             break
-    return init, tail, by.get(PRE4H_LABEL)
+    ah = None
+    ah_rows = conn.execute(
+        "SELECT label, handicap, home_odds, giver FROM odds_asian "
+        "WHERE match_id=? AND company_id=12 AND label IN ('closing','initial')",
+        (mid,)).fetchall()
+    ah_by = {lb: (hc, ho, gv) for lb, hc, ho, gv in ah_rows}
+    if 'closing' in ah_by:
+        ahl, aho, agv = ah_by['closing']
+        ahil = ah_by.get('initial', (None, None, None))[0]
+        ah = (ahl, aho, agv, ahil)
+    return init, tail, by.get(PRE4H_LABEL), ah
 
 
 def eval_match(leagues_cfg, req_name, snaps):
@@ -154,7 +214,7 @@ def eval_match(leagues_cfg, req_name, snaps):
     rules = league_rules(leagues_cfg, req_name)
     if not rules:
         return None, [], None
-    init, tail, pre4h = snaps
+    init, tail, pre4h, ah = snaps
     if tail is None:
         return None, [], None
     cl, co, cu = tail
@@ -164,7 +224,7 @@ def eval_match(leagues_cfg, req_name, snaps):
     f4l = f4o = f4u = None
     if pre4h:
         f4l, f4o, f4u = pre4h
-    A = atoms(cl, co, cu, il, io_, iu, f4l, f4o, f4u)
+    A = atoms(cl, co, cu, il, io_, iu, f4l, f4o, f4u, ah)
     side, hit = pick_side(rules, A, cl)
     return side, hit, tail
 
