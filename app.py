@@ -19,6 +19,7 @@
   GET  /api/hitrate?kind=&id=     命中率回查（fw7／fw8／fw12／fwx）
   仲有：/api/picks、/api/results、/api/featlog、/api/v2/*、/api/v1/*（V1/V2 舊頁）
   GET  /api/ou_rules              大小規則（分聯賽 O/U 規則版，POST …/scan 掃描）
+  GET  /api/htft_rules            半全場方法（分聯賽 HT/FT 方法版，POST …/scan 掃描）
 """
 import json
 import os
@@ -100,6 +101,7 @@ _HEAVY_GET_PREFIXES = (
     '/api/hb/predict', '/api/featured', '/api/v1/featured',
     '/api/v2/', '/api/v3/', '/api/check', '/api/fwcheck', '/api/fwgrid',
     '/api/ou_rules',
+    '/api/htft_rules',
     '/api/results', '/api/htft', '/api/picks', '/api/screen',
     '/api/upcoming', '/api/lgpred', '/api/oupred',
 )
@@ -3241,6 +3243,50 @@ def get_ou_rules_full():
                    ('running', 'done', 'total', 'added', 'last', 'error')}
     return out
 
+# ============ 半全場方法（2026-10-10：分聯賽 HT/FT 方法版，接入 15 分鐘循環） ============
+# 引擎係純 SQL＋方法評估、無狀態表：每次掃描全量重算，結果放 module-level cache
+# （同大小規則思路——頁面請求永遠讀快取，刷新交畀掃描循環），已完場卡自動結算。
+_htft_rules_scan = {'running': False, 'done': 0, 'total': 0, 'added': 0,
+                    'last': None, 'error': None}
+_htft_rules_cache = {'ts': 0.0, 'data': None}
+_HTFT_RULES_TTL = 960   # 掃描循環 900 秒，TTL 稍長啲兜住循環延遲
+
+
+def _htft_rules_scan_job():
+    """半全場方法掃描：未來48小時場次＋近7日已完場場次行 HT/FT 方法引擎，結果入 cache。"""
+    st = _htft_rules_scan
+    if st['running']:
+        return
+    st.update(running=True, error=None)
+    try:
+        import htft_rules_engine
+        data = htft_rules_engine.scan(48)
+        stats = data.get('stats') or {}
+        st['done'] = st['total'] = stats.get('scanned', 0)
+        st['added'] = stats.get('upcoming', 0)
+        _htft_rules_cache.update(ts=time.time(), data=data)
+        st['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+    except Exception:
+        st['error'] = traceback.format_exc()[-400:]
+    finally:
+        st['running'] = False
+
+
+def get_htft_rules_full():
+    """半全場方法全量：cache 新鮮直讀；過期／冷啟動即場重建（引擎好快，毫秒級）。
+    已完場卡讀取時自動結算——呢個係無狀態設計，方法卡一換即刻全量重評。"""
+    if _htft_rules_cache['data'] is None or \
+            time.time() - _htft_rules_cache['ts'] > _HTFT_RULES_TTL:
+        _htft_rules_scan_job()   # 有 running 閘，唔會同背景掃描疊行
+    data = _htft_rules_cache['data']
+    if data is None:
+        return {'upcoming': [], 'played': [], 'stats': {}, 'scan': dict(_htft_rules_scan)}
+    out = dict(data)
+    out['scan'] = {k: _htft_rules_scan[k] for k in
+                   ('running', 'done', 'total', 'added', 'last', 'error')}
+    return out
+
+
 # ============ 聯賽規則提示（>78% 規則出現即提示） ============
 _LG_ALERT_SEEN = os.path.join(BASE_DIR, '_lg_alerts_seen.json')
 
@@ -5045,6 +5091,18 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/ou_rules/scan-status':
             self._send(200, json.dumps(_ou_rules_scan, ensure_ascii=False))
             return
+        if u.path == '/api/htft_rules':
+            try:
+                self._send(200, json.dumps(get_htft_rules_full(),
+                                           ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/htft_rules/scan-status':
+            self._send(200, json.dumps(_htft_rules_scan, ensure_ascii=False))
+            return
         self._send(404, '{}')
 
     def do_POST(self):
@@ -5649,6 +5707,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
                                            ensure_ascii=False))
             return
+        if u.path == '/api/htft_rules/scan':
+            try:
+                if not _htft_rules_scan['running']:
+                    _scan_thread(_htft_rules_scan_job)
+                self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
         if u.path == '/api/v2/combo':
             n = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(n) or b'{}')
@@ -5921,6 +5988,11 @@ def _result_catchup_job():
                 _scan_thread(_ou_rules_scan_job)
             except Exception:
                 pass
+            # 半全場方法：同一巡邏節奏重掃（引擎同大小規則一樣純讀+毫秒級）
+            try:
+                _scan_thread(_htft_rules_scan_job)
+            except Exception:
+                pass
             _result_catchup['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
             _result_catchup['error'] = None
         except Exception:
@@ -5968,6 +6040,9 @@ def _auto_scans():
         # 規則卡 ou_rules.json 一換即刻全量重評）
         if not _ou_rules_scan['running']:
             _scan_thread(_ou_rules_scan_job)
+        # 半全場方法：同一思路，開機即全量掃一次填 cache
+        if not _htft_rules_scan['running']:
+            _scan_thread(_htft_rules_scan_job)
     except Exception:
         pass
 

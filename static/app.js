@@ -213,6 +213,7 @@ function goto(pg){
     oupred: () => loadOupred(),
     feathourly: () => loadFeatHourly(),
     ou: () => loadOuRules(),
+    htftm: () => loadHtftRules(),
     haobao: () => {
       const f = $('#hbFrame');
       if (f && !f.src) f.src = '/haobao/';
@@ -1754,6 +1755,70 @@ $('#btnOuScan').onclick = async function(){
     await jpost('/api/ou_rules/scan', {});
     pollScanJob('ou', '/api/ou_rules/scan-status',
                 '#btnOuScan', '#ouScanInfo', () => loadOuRules(),
+                x => `完成${x.error ? '｜錯誤：' + x.error : ''}`);
+  } catch (e) {
+    toast('掃描失敗：' + e.message);
+    this.disabled = false;
+  }
+};
+
+/* ---------- 主頁場次 <select> 共用填充：未開賽全部＋過去24小時已開賽（最近排先） ---------- */
+function fillCheckSelect(sel, firstLabel){
+  const cur = sel.value;
+  const now = homeData.now || '';
+  const cut = now ? _hktMinusHours(now, 24) : '';
+  const recent = (homeData.played || [])
+    .filter(m => !cut || (m.kickoff || '') >= cut)
+    .slice()
+    .sort((a, b) => (b.kickoff || '').localeCompare(a.kickoff || ''));
+  sel.innerHTML = `<option value="">${firstLabel}</option>` +
+    homeData.upcoming.map(m => `<option value="${m.id}">${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}</option>`).join('') +
+    (recent.length ? '<option disabled>──── 已開賽（過去24小時・最近排先）────</option>' : '') +
+    recent.map(m => `<option value="${m.id}">🔴 ${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}${m.score ? '（' + esc(m.score) + '）' : ''}</option>`).join('');
+  if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+/* ---------- Check 一下 7／8／12（離線 8 情境回測表＋單場檢驗） ---------- */
+
+async function loadHtftRules(){
+  const listEl = $('#htftmList');
+  listEl.innerHTML = '<div class="note">載入中…</div>';
+  let d;
+  try { d = await jget('/api/htft_rules'); }
+  catch (e) { listEl.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  if (d.error) { listEl.innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
+  const s = d.stats || {};
+  $('#htftmCnt').textContent = s.upcoming ? `(${s.upcoming})` : '';
+  $('#htftmStats').innerHTML = `<div class="statbar">
+    <span>未開賽出手 <b>${s.upcoming || 0}</b></span><span>近7日已評 <b>${s.played || 0}</b></span>
+    <span>贏 <b class="r-up">${s.wins || 0}</b></span><span>輸 <b class="r-down">${s.losses || 0}</b></span>
+    <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>
+    <div class="note">出手邏輯：方法條件全部命中先出，多個方法命中各自獨立出卡（HT/FT 唔設方向衝突觀望）。已完場場次按半場×全場九格自動結算（贏／輸，XH=半主→全唔贏 {HD,HA}、XA=半客→全唔贏 {AD,AA}），近 7 日保留。方法卡更新：${esc(d.rules_updated || '—')}。</div>`;
+  const scan = d.scan || {};
+  $('#htftmScanInfo').textContent = scan.running
+    ? '掃描中…'
+    : (scan.last ? `上次掃描：${scan.last}｜出手 ${s.upcoming || 0}` : '');
+  let h = '';
+  if ((d.upcoming || []).length) h += `<div class="day-h">🔜 未開賽（方法命中・${d.upcoming.length} 場・順開賽時間）</div>` + d.upcoming.map(_htftCard).join('');
+  if ((d.played || []).length) h += `<div class="day-h">📼 近 7 日已完場（${d.played.length} 場・自動結算）</div>` + d.played.map(_htftCard).join('');
+  if (!h) h = '<div class="note">暫無場次命中半全場方法。方法命中先會出現喺呢度——撳「🔍 重新掃描半全場方法」即刻重評未來48小時＋近7日場次。</div>';
+  listEl.innerHTML = h;
+  [...listEl.querySelectorAll('.fcard')].forEach(c => {
+    const mid = +c.dataset.mid;
+    c.querySelector('.ft-share').onclick = async ev => {
+      ev.stopPropagation();
+      shareText(_htftShareText([...(d.upcoming || []), ...(d.played || [])].find(x => x.match_id === mid)));
+    };
+    c.querySelector('.f-top').onclick = ev => {
+      if (!ev.target.closest('.btn')) openDetail(mid);
+    };
+  });
+}
+$('#btnHtftmScan').onclick = async function(){
+  this.disabled = true;
+  try {
+    await jpost('/api/htft_rules/scan', {});
+    pollScanJob('htftm', '/api/htft_rules/scan-status',
+                '#btnHtftmScan', '#htftmScanInfo', () => loadHtftRules(),
                 x => `完成${x.error ? '｜錯誤：' + x.error : ''}`);
   } catch (e) {
     toast('掃描失敗：' + e.message);

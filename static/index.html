@@ -232,6 +232,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <button class="tab" data-pg="oupred">📐 規則預測</button>
     <button class="tab" data-pg="feathourly">⏰ 每小時紀錄</button>
     <button class="tab" data-pg="ou">🎲 大小規則 <span id="ouCnt"></span></button>
+    <button class="tab" data-pg="htftm">⚡ 半全場方法 <span id="htftmCnt"></span></button>
     <button class="tab" data-pg="v1">📼 舊版本</button>
     <button class="tab" data-pg="haobao">⚽ 好波</button>
     <button class="tab" data-pg="settings">⚙️ 設定</button>
@@ -382,6 +383,14 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     </div>
     <div id="ouStats"></div>
     <div id="ouList"><div class="note">載入中…</div></div>
+  </section>
+<section class="pg" id="pg-htftm">
+    <div class="toolbar">
+      <button class="btn accent" id="btnHtftmScan">🔍 重新掃描半全場方法</button>
+      <span class="hint" id="htftmScanInfo"></span>
+    </div>
+    <div id="htftmStats"></div>
+    <div id="htftmList"><div class="note">載入中…</div></div>
   </section>
 
   <!-- 舊版本（V1 精選／精選Z） -->
