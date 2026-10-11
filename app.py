@@ -6389,6 +6389,17 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _read_json_safe(self):
+        '''安全讀 JSON body：壞編碼/壞 JSON 一律當 {}，唔准炸連線（2026-10-11：
+        json.loads 裸奔令任何非 UTF-8 body 斷連線變 502——手機/代理偶然送出
+        非 UTF-8 bytes 就會整冧單次請求）。'''
+        try:
+            n = int(self.headers.get('Content-Length', 0) or 0)
+            raw = self.rfile.read(n) if n > 0 else b''
+            return json.loads(raw or b'{}')
+        except Exception:
+            return {}
+
     def do_GET(self):
         u = urlparse(self.path)
         # 2026-10-05：路由比對統一去尾斜線——APK／書籤用 /haobao/（trailing
@@ -6836,8 +6847,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path != '/' and u.path.endswith('/'):
             u = u._replace(path=u.path.rstrip('/'))
         if u.path == '/api/fetch':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     do_fetch(int(body.get('id')), bool(body.get('force'))),
@@ -6848,8 +6858,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/update':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(do_update(bool(body.get('auto'))),
                                            ensure_ascii=False))
@@ -6859,8 +6868,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/update-window':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     do_update_window(str(body.get('window', ''))), ensure_ascii=False))
@@ -6870,8 +6878,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/fetch-batch':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     do_fetch_batch(int(body.get('hours', 0) or 0)), ensure_ascii=False))
@@ -6881,8 +6888,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/phone-odds':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(do_phone_odds(body), ensure_ascii=False))
             except Exception as e:
@@ -6891,8 +6897,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/phone-odds-debug':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(do_phone_odds_debug(body), ensure_ascii=False))
             except Exception as e:
@@ -7245,8 +7250,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path != '/' and u.path.endswith('/'):
             u = u._replace(path=u.path.rstrip('/'))
         if u.path == '/api/fetch':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     do_fetch(int(body.get('id')), bool(body.get('force'))),
@@ -7257,8 +7261,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/update':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(do_update(bool(body.get('auto'))),
                                            ensure_ascii=False))
@@ -7268,8 +7271,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/update-window':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     do_update_window(str(body.get('window', ''))), ensure_ascii=False))
@@ -7279,8 +7281,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/fetch-batch':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     do_fetch_batch(int(body.get('hours', 0) or 0)), ensure_ascii=False))
@@ -7290,8 +7291,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/phone-odds':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(do_phone_odds(body), ensure_ascii=False))
             except Exception as e:
@@ -7300,8 +7300,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/phone-odds-debug':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(do_phone_odds_debug(body), ensure_ascii=False))
             except Exception as e:
@@ -7310,8 +7309,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/pick':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     do_pick(int(body.get('id')), str(body.get('choice', ''))),
@@ -7322,8 +7320,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/featured/refresh':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     do_featured_refresh(int(body.get('id'))), ensure_ascii=False))
@@ -7333,8 +7330,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/featured/scan':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 if body.get('reset'):
                     conn = db()
@@ -7359,8 +7355,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/v1/featured/scan':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 if body.get('reset'):
                     conn = db()
@@ -7377,8 +7372,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/v1/featured/refresh':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     do_v1_featured_refresh(int(body.get('id'))), ensure_ascii=False))
@@ -7386,8 +7380,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/pick/delete':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(do_pick_delete(int(body.get('id'))),
                                            ensure_ascii=False))
@@ -7397,8 +7390,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/fwgrid/scan':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             g = str(body.get('g') or '7')
             if g not in ('7', '8', '12'):
                 self._send(400, json.dumps({'ok': False, 'error': 'g 只可以係 7/8/12'}))
@@ -7412,8 +7404,7 @@ class Handler(BaseHTTPRequestHandler):
                                            ensure_ascii=False))
             return
         if u.path == '/api/fwgrid/refresh':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             g = str(body.get('g') or '7')
             try:
                 self._send(200, json.dumps(
@@ -7443,8 +7434,7 @@ class Handler(BaseHTTPRequestHandler):
                                            ensure_ascii=False))
             return
         if u.path == '/api/v2/combo':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     api_v2_combo(int(body.get('id')), body.get('sel') or []),
@@ -7456,8 +7446,7 @@ class Handler(BaseHTTPRequestHandler):
                                            ensure_ascii=False))
             return
         if u.path == '/api/v3/combo':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     api_v3_combo(int(body.get('id')), body.get('sel') or []),
@@ -7469,8 +7458,7 @@ class Handler(BaseHTTPRequestHandler):
                                            ensure_ascii=False))
             return
         if u.path == '/api/v3/featured/scan':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 if body.get('reset'):
                     conn = db()
@@ -7487,8 +7475,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/v3/featured/refresh':
-            n = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(n) or b'{}')
+            body = self._read_json_safe()
             try:
                 self._send(200, json.dumps(
                     do_v3_featured_refresh(int(body.get('id'))), ensure_ascii=False))
