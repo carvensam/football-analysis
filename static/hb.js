@@ -119,14 +119,18 @@
         (br != null ? ' ' + br + '%' : '') +
         (ou.n_voted != null ? '｜' + ou.n_voted + '項' : '');
       lean.className = 'lean ' + (ou.lean === '大' ? 'big' : 'small');
-    } else if (ou.strongest && ou.strongest.rate >= 0.58 && ou.line != null) {
+    } else if (ou.strongest && ou.strongest.rate >= 0.52 && ou.line != null) {
       /* 大字/細字擺最前面＋色碼（大=金、細=綠），一眼睇到方向，唔使撳入去
        * （2026-10-11 用戶：「61% 即係大定細？」——舊版「最強訊號細 61%」
-       *   個方向字埋喺中間唔夠显眼） */
+       *   個方向字埋喺中間唔夠显眼）
+       * 2026-10-11 修正（用戶：「表列無展示大小」）：共識門檻外，有最強單項訊號
+       *   （n≥30 已係引擎保證）就照顯示方向，52–58% 加「（弱）」標記，
+       *   只有 <52% 或完全冇訊號先顯示「觀望（共識不足）」。 */
       var side = ou.strongest.side;
-      lean.innerHTML = '<b>' + side + '</b> ' +
+      var strong = ou.strongest.rate >= 0.58;
+      lean.innerHTML = (strong ? '<b>' + side + '</b> ' : side + ' ') +
         Math.round(ou.strongest.rate * 100) + '%' +
-        '<small>（最強訊號 n=' + ou.strongest.n + '）</small>';
+        '<small>（最強訊號 n=' + ou.strongest.n + (strong ? '' : '，弱') + '）</small>';
       lean.className = 'lean ' + (side === '大' ? 'big' : 'small');
     } else if (ou.line != null) {
       lean.textContent = '觀望（共識不足）';
