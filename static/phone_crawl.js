@@ -140,6 +140,14 @@
         if (!txt || txt.indexOf('ERR:') === 0) {
           this.res[mid] = { err: txt || '無回應' };
           this.fail++;
+          /* 診斷（2026-10-10）：回報原生層錯誤，追查手機直爬全部失敗 */
+          try {
+            fetch('/api/phone-odds-debug', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: mid, device: this.device,
+                                     err: (txt || 'empty').slice(0, 120) }),
+            }).catch(() => {});
+          } catch (e) {}
           resolve(this.res[mid]);
           return;
         }
@@ -147,6 +155,15 @@
         if (!snaps) {
           this.res[mid] = { noOdds: true };
           this.noOdds++;
+          /* 診斷（2026-10-10）：解析不到盤口時回報實際頁面內容——
+           * 用嚟分辨係 titan007 改咗頁面定係手機 IP 俾人 serving 空殼頁 */
+          try {
+            fetch('/api/phone-odds-debug', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: mid, device: this.device,
+                                     len: txt.length, head: txt.slice(0, 600) }),
+            }).catch(() => {});
+          } catch (e) {}
           resolve(this.res[mid]);
           return;
         }
@@ -176,14 +193,19 @@
       if (this.running) return { running: true };
       this.running = true;
       this.done = 0; this.ok = 0; this.fail = 0; this.noOdds = 0;
+      const errs = [];
       for (const m of list) {
         await this.crawlOne(m.id, m.kickoff, srvOf ? srvOf(m) : null);
+        const rr = this.res[m.id];
+        if (rr && rr.err && errs.length < 5 && errs.indexOf(rr.err) === -1)
+          errs.push(rr.err);
         this.done++;
         if (onTick) onTick(this);
-        await new Promise(r => setTimeout(r, 900));
+        await new Promise(r2 => setTimeout(r2, 900));
       }
       this.running = false;
-      return { done: true, ok: this.ok, fail: this.fail, noOdds: this.noOdds };
+      return { done: true, ok: this.ok, fail: this.fail, noOdds: this.noOdds,
+               errs };
     },
     /* 畫面合併：有手機直爬結果就用佢（📱），否則 null 用返伺服器數據 */
     lineFor(mid) {

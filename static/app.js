@@ -612,7 +612,11 @@ function renderHome(){
         toast(r.snaps
           ? (r.agree === false ? '📱 手機已更新：⚠ 同本機唔同（分析以本機為準）'
                                : `📱 手機已直爬更新（${r.at.slice(11, 16)}）`)
-          : (r.noOdds ? '該場仲未開盤' : '手機直爬失敗：' + (r.err || '')));
+          : (r.noOdds ? '該場仲未開盤'
+            : '手機直爬失敗：' + (r.err || '') +
+              (/Timeout|Connect|timed|refused/i.test(String(r.err))
+                ? '（手機網絡連唔到 titan007——如用緊 WiFi，請轉流動數據再試）'
+                : '')));
       } else {
         const r = await jpost('/api/fetch', {id: +b.dataset.fb, force: true});
         toast(r.ok ? '已更新最新賠率同盤口' : ('更新失敗：' + (r.error || '未知')));
@@ -690,9 +694,13 @@ async function phoneBatchAll(btn){
       $('#updInfo').textContent =
         `📱 手機直爬緊 ${st.done} 場（✓${st.ok} ✗${st.fail} 未開盤${st.noOdds}）…`;
     }, m => m.line || null);
-    $('#updInfo').textContent =
-      `📱 手機直爬完成：更新 ${r.ok}｜失敗 ${r.fail}｜未開盤 ${r.noOdds}——` +
+    let msg = `📱 手機直爬完成：更新 ${r.ok}｜失敗 ${r.fail}｜未開盤 ${r.noOdds}——` +
       `已即時顯示＋同步雲端（裝置 ${PhoneCrawl.device}）`;
+    if (r.fail > 0) {
+      msg += `｜錯誤範例：${(r.errs || []).join('；') || '無回應'}` +
+        '。全部場次都失敗＝手機而家嘅網絡連唔到 titan007（多數係 WiFi IP 俾封）——轉用流動數據再撳一次；盤口會繼續用伺服器數據顯示。';
+    }
+    $('#updInfo').textContent = msg;
     loadHome();
   } finally {
     btn.disabled = false;
