@@ -29,6 +29,7 @@ import sqlite3
 import threading
 import time
 import traceback
+import datetime as dt
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -160,7 +161,168 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.1.1'
+SERVER_VERSION = '5.2.0'
+
+# ---------------------------------------------------------------- 爬取控制
+# 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
+# 寫入倉庫根 control.json，crawl_extra 每個任務前都會 read_control——
+# cmd=stop 時工人完成手頭任務即退出（唔再派新嘢）；cmd=run 由本處重開工人。
+CONTROL_PATH = os.path.join(PARENT_DIR, 'control.json')
+_CRAWL_WORKERS = {   # 線道編號 → 啟動參數（同 auto_doctor 一致）
+    'w1': '--worker 1',
+    'w2': '--worker 2 --market ou',
+    'w3': '--worker 3',
+    'w7': '--worker 7',
+    'w8': '--worker 8',
+    'w10': '--worker 10 --market hkjc_ou',
+}
+_PYW = r'C:\Users\user\AppData\Local\Python\bin\pythonw.exe'
+
+
+def _read_crawl_control():
+    try:
+        with open(CONTROL_PATH, encoding='utf-8') as fp:
+            return json.load(fp).get('cmd', 'run')
+    except (OSError, ValueError):
+        return 'run'
+
+
+def _write_crawl_control(cmd):
+    tmp = CONTROL_PATH + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as fp:
+        json.dump({'cmd': cmd, 'ts': time.time()}, fp)
+    os.replace(tmp, CONTROL_PATH)
+
+
+def _crawl_workers_alive():
+    """由鎖檔數 live 工人（同 crawl_extra.acquire_lock 機制一致）。"""
+    import ctypes
+    alive = []
+    for wkey in _CRAWL_WORKERS:
+        lock = os.path.join(PARENT_DIR, 'engine',
+                            'crawl_extra.lock.main.' + wkey)
+        try:
+            pid = int(open(lock).read().strip())
+        except (OSError, ValueError):
+            pid = 0
+        ok = False
+        if pid:
+            h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+            if h:
+                ctypes.windll.kernel32.CloseHandle(h)
+                ok = True
+        if ok:
+            alive.append(wkey)
+    return alive
+
+
+def _spawn_crawl_worker(args):
+    import subprocess
+    exe = _PYW if os.path.exists(_PYW) else sys.executable
+    try:
+        subprocess.Popen('"%s" "%s" %s' % (exe, os.path.join(
+            PARENT_DIR, 'engine', 'crawl_extra.py'), args),
+            cwd=PARENT_DIR, shell=True,
+            creationflags=getattr(subprocess, 'DETACHED_PROCESS', 0)
+            | getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0)
+            | getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except OSError:
+        pass   # 雲端（Render Linux）冇本機 crawl_extra——spawn 失敗都照寫 run
+
+
+def api_crawl_state():
+    alive = _crawl_workers_alive()
+    return {'cmd': _read_crawl_control(),
+            'workers_alive': len(alive), 'workers_total': len(_CRAWL_WORKERS),
+            'workers': alive}
+
+
+def do_crawl_stop():
+    _write_crawl_control('stop')
+    return {'ok': True, 'cmd': 'stop',
+            'note': '已停止派新任務；手頭任務完成後工人會陸續退出'}
+
+
+def do_crawl_run():
+    _write_crawl_control('run')
+    alive = set(_crawl_workers_alive())
+    launched = []
+    for wkey, args in _CRAWL_WORKERS.items():
+        if wkey in alive:
+            continue
+        _spawn_crawl_worker(args)
+        launched.append(wkey)
+    return {'ok': True, 'cmd': 'run', 'launched': launched,
+            'already_running': sorted(alive)}
+
+
+def api_probe_hosts():
+    """探測 titan007 各數據主機喺本機網絡通唔通（2026-10-12 分工架構）：
+    邊個節點（本機／football-analysis 雲端／balltrend-api）通邊啲主機，
+    邊啲市場就派俾邊個爬。404 都算通（到達伺服器）。"""
+    import time as _t
+    from curl_cffi import requests as creq
+    targets = {
+        'zq': 'https://zq.titan007.com/jsData/LeagueSeason/sea178.js',
+        'vip': ('https://vip.titan007.com/changeDetail/handicap.aspx'
+                '?id=1&companyid=12'),
+        'bf': 'https://bf.titan007.com/',
+        'live': 'https://live.titan007.com/',
+        '1x2d': 'https://1x2d.titan007.com/3077673.js',
+    }
+    out = {}
+    for name, url in targets.items():
+        t0 = _t.time()
+        try:
+            r = creq.get(url, timeout=8, impersonate='chrome')
+            out[name] = {'ok': r.status_code in (200, 404),
+                         'status': r.status_code, 'bytes': len(r.content),
+                         'ms': int((_t.time() - t0) * 1000)}
+        except Exception as e:                        # noqa: BLE001
+            out[name] = {'ok': False, 'error': str(e)[:120],
+                         'ms': int((_t.time() - t0) * 1000)}
+    return {'ts': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'node': os.environ.get('RENDER_SERVICE_NAME', 'local'),
+            'hosts': out}
+
+
+_EXPORT_TABLES = (('odds_asian', 'fetched_at'),
+                  ('odds_ou', 'change_time'),
+                  ('odds_1x2_all', 'change_time'),
+                  ('odds_corner', 'change_time'),
+                  ('hkjc_ou', None))
+
+
+def api_export_odds(since, limit=20000):
+    """本節點爬到的賠率數據倒出——其他節點（本機電腦）pull 返去 merge，
+    令手機 API 同本機 DB 兩邊都有最新數據。增量：有時間欄嘅表用 since 過濾。"""
+    import sqlite3 as _sq
+    dbp = os.environ.get('DB_PATH') or os.path.join(PARENT_DIR, 'football.db')
+    out = {'since': since, 'node': os.environ.get(
+               'RENDER_SERVICE_NAME', 'local'), 'tables': {}}
+    con = _sq.connect(dbp, timeout=15)
+    try:
+        for tbl, tcol in _EXPORT_TABLES:
+            try:
+                cols = [r[1] for r in con.execute(
+                    'PRAGMA table_info(%s)' % tbl)]
+            except _sq.Error:
+                continue
+            if not cols:
+                continue
+            if tcol and tcol in cols:
+                rows = con.execute(
+                    'SELECT * FROM %s WHERE %s > ? ORDER BY %s LIMIT %d'
+                    % (tbl, tcol, tcol, limit), (since,)).fetchall()
+            else:
+                # 無時間欄：唔做增量，交俾專用 endpoint（暫不回傳，避免全表 dump）
+                continue
+            if rows:
+                out['tables'][tbl] = {'cols': cols, 'rows': rows,
+                                      'time_col': tcol}
+    finally:
+        con.close()
+    return out
 _started = time.time()
 _pool_ready = {'done': False, 'err': None}
 
@@ -5165,6 +5327,28 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(404, '{}')
             return
+        if u.path == '/api/crawl/state':
+            self._send(200, json.dumps(api_crawl_state(), ensure_ascii=False))
+            return
+        if u.path == '/api/probe':
+            try:
+                self._send(200, json.dumps(api_probe_hosts(),
+                                           ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)},
+                                           ensure_ascii=False))
+            return
+        if u.path == '/api/export/odds':
+            q = parse_qs(u.query)
+            since = (q.get('since') or [''])[0]
+            limit = int((q.get('limit') or ['20000'])[0] or 20000)
+            try:
+                self._send(200, json.dumps(api_export_odds(since, limit),
+                                           ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)},
+                                           ensure_ascii=False))
+            return
         if u.path == '/api/ready':
             self._send(200, json.dumps({
                 'ready': _pool_ready['done'], 'version': SERVER_VERSION,
@@ -5584,6 +5768,20 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path != '/' and u.path.endswith('/'):
             u = u._replace(path=u.path.rstrip('/'))
+        if u.path == '/api/crawl/stop':
+            try:
+                self._send(200, json.dumps(do_crawl_stop(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
+        if u.path == '/api/crawl/run':
+            try:
+                self._send(200, json.dumps(do_crawl_run(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
         if u.path == '/api/fetch':
             n = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(n) or b'{}')
@@ -6002,6 +6200,20 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path != '/' and u.path.endswith('/'):
             u = u._replace(path=u.path.rstrip('/'))
+        if u.path == '/api/crawl/stop':
+            try:
+                self._send(200, json.dumps(do_crawl_stop(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
+        if u.path == '/api/crawl/run':
+            try:
+                self._send(200, json.dumps(do_crawl_run(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
         if u.path == '/api/fetch':
             n = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(n) or b'{}')
@@ -6852,4 +7064,18 @@ if __name__ == '__main__':
     else:
         print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '
               'restart loop）；紀錄由本機每小時做、每日推送', flush=True)
+    # 2026-10-12 雲端爬蟲節點：ENABLE_CLOUD_CRAWL=1 時喺背景線程探測 titan007
+    # 各主機並爬佢通到嘅市場（寫 /data/football.db；本機 IP 被硬封鎖，雲端
+    # 出口 IP 直達唔使代理）。本機（冇呢個 env）永遠唔會行呢段。
+    if os.environ.get('ENABLE_CLOUD_CRAWL') == '1':
+        def _cloud_crawl_boot():
+            try:
+                sys.path.insert(0, os.path.join(BASE_DIR, 'engine'))
+                import cloud_crawl
+                cloud_crawl.main()
+            except Exception:                          # noqa: BLE001
+                print('[cloud-crawl] 啟動失敗：\n' + traceback.format_exc(),
+                      flush=True)
+        threading.Thread(target=_cloud_crawl_boot, daemon=True).start()
+        print('[boot] 雲端爬蟲節點已啟用（背景探測+爬取）', flush=True)
     httpd.serve_forever()

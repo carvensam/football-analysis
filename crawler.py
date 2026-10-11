@@ -14,6 +14,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import random
 import re
 import sqlite3
 import sys
@@ -253,7 +254,9 @@ def db_connect(cfg):
     # busy-wait 等最多 120 秒先讓步（screen_app 都係咁做）
     # 相對 db_path 一律解析到倉庫根：正本 football.db 喺 root，
     # 之前靠 engine/football.db 軟鏈接力，鏈一斷就各自開空庫（孤兒 WAL 事件）
-    db_path = cfg['db_path']
+    # 2026-10-12：DB_PATH 環境變數優先（Render 雲端數據庫掛永久硬碟 /data，
+    # 爬蟲同 web app 必須共用同一個 DB——否則爬咗寫去映像種子，API 睇唔到）
+    db_path = os.environ.get('DB_PATH') or cfg['db_path']
     if not os.path.isabs(db_path):
         db_path = os.path.join(ROOT_DIR, db_path)
     global _DB_PATH
@@ -363,7 +366,9 @@ RELAYS = [
     'https://api.codetabs.com/v1/proxy?quest={q}',
 ]
 DIRECT_TIMEOUT = 10          # 直接連線逾時（秒）
-RELAY_TIMEOUT = 8            # 中繼逾時（秒）
+RELAY_TIMEOUT = 15           # 中繼/代理逾時（秒）——2026-10-09 由 8 加長：
+                             # changeDetail 完場頁有成 60KB+，弱代理傳 8 秒timeout
+                             # 會誤殺可用代理（9 月回填實證成功率由 ~15% 改善）
 FAIL_COOLDOWN_SEC = 30       # 主機連續失敗後冷卻期（秒）——2026-09-29 用戶指示取消強制長等
 CONN_BACKOFF_MAX = 30        # 連線錯誤退避上限（秒）——取代以往「休息 8 分鐘」
 # 分層休息（2026-09-29 用戶指示）：每 100 次請求休息 1 秒、
@@ -400,6 +405,13 @@ def _chrome_get(url, headers=None, timeout=DIRECT_TIMEOUT, proxies=None,
     異常統一轉拋 requests.ConnectionError，原有斷路/中繼/代理池邏輯照舊接住。"""
     try:
         from curl_cffi import requests as creq
+        # titan007 對「Chrome TLS 指紋 + python-requests UA」組合回 442 封鎖
+        # （2026-10-08 實證：傳咗 self.s.headers 嘅 python-requests UA → 442×N 次
+        # 重現；剝走 UA 交返俾 impersonate → 全部 200）。爬蟲一直誤當代理被燒，
+        # 其實係每個代理試完都被標「休息 6 分鐘」——池從未真乾過。
+        if headers:
+            headers = {k: v for k, v in headers.items()
+                       if k.lower() != 'user-agent'}
         if session is not None:
             return session.get(url, headers=headers or {}, timeout=timeout,
                                proxies=proxies)
@@ -488,6 +500,8 @@ class Fetcher:
         self._proxy_pool_mtime = 0.0
         self._proxy_state = {}       # proxy -> {'used': int, 'rest_until': ts}
         self._proxy_cursor = 0       # 輪轉游標（順序行，唔亂跳）
+        self._good_pool = []         # 生產驗證過嘅代理（good_proxies.log 共享）
+        self._good_mtime = 0.0
         self._proxy_budget = int(cfg.get('proxy_req_budget', PROXY_REQ_BUDGET))
         self._proxy_cooldown = int(cfg.get('proxy_ban_cooldown_sec',
                                           PROXY_BAN_COOLDOWN_SEC))
@@ -595,13 +609,61 @@ class Fetcher:
             pool = [p.strip() for p in data.get('proxies', []) if p.strip()]
         except (OSError, ValueError):
             pool = []
+        # 免費代理池常見「開頭一截全死」——洗牌打散，令每 5 個一試嘅窗口
+        # 撞到活代理嘅機會平均化（2026-10-08：頭 5 個全死令成條線道空等）
+        random.shuffle(pool)
         self._proxy_pool = pool
         self._proxy_pool_mtime = mtime
 
+    def _load_good(self):
+        """由 good_proxies.log 讀各進程共享嘅「生產驗證過」代理（攞到真頁先記錄）。
+        有呢個名單就唔使次次喺成池假代理入面抽獎（每個任務慳 15-25 秒）。"""
+        path = os.path.join(ROOT_DIR, 'logs', 'good_proxies.log')
+        try:
+            m = os.path.getmtime(path)
+        except OSError:
+            return
+        if m == self._good_mtime:
+            return
+        try:
+            with open(path, encoding='utf-8', errors='replace') as f:
+                lines = f.readlines()[-300:]
+            pool = []
+            for ln in lines:
+                p = ln.strip()
+                if p and p not in pool:
+                    pool.append(p)
+            self._good_pool = pool[-60:]
+            self._good_mtime = m
+        except OSError:
+            pass
+
+    def _note_good(self, proxy):
+        """生產驗證成功：頂置 + 追加到共享 log（append 原子，多進程安全）。"""
+        if proxy in self._good_pool:
+            self._good_pool.remove(proxy)
+        self._good_pool.insert(0, proxy)
+        del self._good_pool[60:]
+        try:
+            with open(os.path.join(ROOT_DIR, 'logs', 'good_proxies.log'),
+                      'a', encoding='utf-8') as f:
+                f.write(proxy + '\n')
+        except OSError:
+            pass
+
     def _pick_proxy(self):
-        """順序輪轉：跳過休息緊或者用盡配額嘅代理；冇可用回 None。"""
-        pool = self._proxy_pool
+        """生產驗證過嘅代理先行（good_pool），然後先輪轉成池——
+        2026-10-11 用戶「最快最快」指示：拒絕假代理抽獎。"""
         now = time.time()
+        self._load_good()
+        for p in self._good_pool:
+            st = self._proxy_state.get(p)
+            if st and (now < st['rest_until'] or st['used'] >= self._proxy_budget):
+                continue
+            if p not in self._proxy_pool:
+                continue
+            return p
+        pool = self._proxy_pool
         n = len(pool)
         for i in range(n):
             p = pool[(self._proxy_cursor + i) % n]
@@ -618,16 +680,26 @@ class Fetcher:
         self._load_proxies()
         if not self._proxy_pool:
             return None
-        for _ in range(min(len(self._proxy_pool), 5)):
+        for _ in range(min(len(self._proxy_pool), 8)):
             proxy = self._pick_proxy()
             if proxy is None:
-                return None     # 冇可用代理（全部休息緊/用盡配額）
+                # 全部休息緊：連環失敗會將成池標記過度（6 分鐘冷卻喺高
+                # 失敗率下永不過期）——清一次 marks 重試，打破全池僵死
+                # （2026-10-09：新 process 10/10 成功 vs 工人全池 resting 0%）
+                for _st in self._proxy_state.values():
+                    _st['rest_until'] = 0.0
+                proxy = self._pick_proxy()
+                if proxy is None:
+                    return None     # 真係冇可用代理
             st = self._proxy_state.setdefault(proxy, {'used': 0, 'rest_until': 0.0})
             now = time.time()
             try:
                 # Chrome 指紋經代理：DPI 對代理出口一樣會攔非瀏覽器 TLS
+                # 2026-10-10 加速：timeout 改 (連接3s, 讀取12s)——死代理 3 秒內彈出，
+                # 線程即刻試下一個；舊制 10s 連接逾時令每個死代理燒 10 秒，
+                # 假代理池下 216 線有 80% 時間喺度等死代理（實測樽頸）
                 r = self._chrome(url, headers=dict(self.s.headers),
-                                 timeout=RELAY_TIMEOUT,
+                                 timeout=(3, 12),
                                  proxies={'http': proxy, 'https': proxy})
             except requests.RequestException:
                 # 連唔到（可能 proxy 死，或者都俾 titan007 封咗）→ 停 6 分鐘
@@ -652,6 +724,7 @@ class Fetcher:
                 # 到配額：主動休息 6 分鐘轉下一個（唔觸發 titan007 封鎖）
                 st['rest_until'] = now + self._proxy_cooldown
                 st['used'] = 0
+            self._note_good(proxy)      # 生產驗證成功：全隊優先（最快最快措施）
             self.last_req_time = time.time()
             self.req_count += 1
             self._set_state('req_count', self.req_count)
@@ -688,6 +761,26 @@ class Fetcher:
                                 time.sleep(secs)
                             break
             headers = {'Referer': referer} if referer else {}
+
+            # PROXY_HOSTS（zq/vip）對本機 IP 係硬封鎖（直連 100% 逾時；2026-10-09
+            # 朝早 DPI 連 zq 都封埋）：直連＋公共中繼只係每個任務白捱 ~40 秒兼
+            # 重新觸發冷卻期，relay_first 永遠清零唔到——一律直接行代理池
+            # （實證：新路徑 10/10 成功，舊路徑工人 0%）。
+            # 例外（2026-10-12 雲端節點）：cfg proxy_direct=true 代表本節點
+            # IP 直達 zq/vip（如 balltrend-api／Render 某區）——跳過代理池，
+            # 跌落下面 Chrome 指紋直連路徑。
+            if host in PROXY_HOSTS and not self.cfg.get('proxy_direct'):
+                t = self._via_proxy(url, encoding, is_odds_page)
+                if t is not None:
+                    self.last_error = None
+                    self.host_down_until.pop(host, None)
+                    return t
+                self.host_down_until[host] = time.time() + \
+                    self._cooldown_sec(host)
+                self.last_error = (f'{host} 代理池暫時全數休息——'
+                                   f'{self._proxy_cooldown} 秒後自動重試')
+                self.last_outage = True
+                return None
 
             # 連線逾時冷卻期（30 秒；用戶指示取消強制 5 分鐘等待）：拒絕直接 request——
             # 即時回 None（自動忽略），唔試中繼、唔緩存（2026-09-29 用戶指示）
@@ -1044,6 +1137,9 @@ def save_with_sub_leagues(conn, fetcher, titan_id, season_label, is_current,
     各自獨立數據檔 s<id>_<subId>.js），補取各子檔，避免只入庫其中一個階段
     （巴西聖保羅州錦標賽曾因此只入庫決賽 2 場）。"""
     season_id, n = save_season(conn, titan_id, season_label, is_current, parsed)
+    # 每次網絡取之（子聯賽檔）之前先落盤：舊版成個 expand 共享一條未 commit
+    # 交易，代理逾時下鎖庫幾分鐘一個聯賽——APP 更新同爬蟲全部餓死（2026-10-08）
+    conn.commit()
     if not expand:
         return season_id, n
     m = re.search(r'var arrSubLeague = \[(.*?)\];', text, re.S)
@@ -1314,6 +1410,7 @@ def recent_update(conn, cfg, days=3, progress=None):
     stats = {'leagues': 0, 'seasons': 0, 'odds': 0, 'odds_fail': 0}
     cutoff = (dt.datetime.now() - dt.timedelta(days=days)
               ).strftime('%Y-%m-%d %H:%M')
+    fail_streak = 0     # 連續斷線計數：代理池太殘時中止，唔好捱足成輪逾時
     for lg in leagues:
         if not lg.get('enabled'):
             continue
@@ -1332,26 +1429,36 @@ def recent_update(conn, cfg, days=3, progress=None):
             try:
                 seasons = get_season_list(fetcher, tid)
                 if not seasons:
+                    fail_streak += 1
                     continue
                 season_label = seasons[0]        # 只取現行賽季
                 if progress:
                     progress(f'{lg["req_name"]}（{tid}）{season_label}')
                 prefix = resolve_prefix(fetcher, tid)
                 if not prefix:
+                    fail_streak += 1
                     continue
                 url = (f'https://zq.titan007.com/jsData/matchResult/'
                        f'{season_label}/{prefix}.js?version=1')
                 text = fetcher.get(url)
                 if not text or text.lstrip().startswith('<'):
                     log(conn, 'WARN', f'賽季檔下載失敗 {tid} {season_label}')
+                    fail_streak += 1
                     continue
                 parsed = parse_season_js(text)
                 save_with_sub_leagues(conn, fetcher, tid, season_label, 1,
                                       text, parsed, expand=('_' in prefix))
                 stats['seasons'] += 1
+                fail_streak = 0
             except Exception:
                 log(conn, 'ERROR',
                     f'快速更新失敗 {tid}\n' + traceback.format_exc())
+                fail_streak += 1
+            if fail_streak >= 12:
+                log(conn, 'WARN',
+                    '連線連續逾時 12 個聯賽，中止本輪快速更新'
+                    '（代理池太差，下一輪自動重試）')
+                break
         stats['leagues'] += 1
     # 最近 N 日完場但欠盤口嘅場次
     todo = conn.execute(
@@ -1360,16 +1467,25 @@ def recent_update(conn, cfg, days=3, progress=None):
         (cutoff,)).fetchall()
     if progress:
         progress(f'補爬最近{days}日盤口：{len(todo)} 場')
+    o_streak = 0
     for mid, kickoff in todo:
         try:
             if crawl_odds_for_match(conn, fetcher, mid, kickoff,
                                     cfg['company_id']):
                 stats['odds'] += 1
+                o_streak = 0
             else:
                 stats['odds_fail'] += 1
+                o_streak = (o_streak + 1
+                            if getattr(fetcher, 'last_outage', False) else 0)
         except Exception:
             stats['odds_fail'] += 1
+            o_streak += 1
             log(conn, 'ERROR', f'補爬盤口失敗 {mid}\n' + traceback.format_exc())
+        if o_streak >= 15:
+            log(conn, 'WARN',
+                '補爬階段連線連續逾時 15 場，中止本輪（代理池太差，下一輪自動重試）')
+            break
     # 完場數冇點變就唔重建 prematch：build_all 係單一大交易，
     # 會鎖成張表幾分鐘——爬蟲同 APP 係咁互搶 database is locked 嘅元兇。
     # 只有真係補咗新賽果（≥50 場）先值得重建
