@@ -3382,8 +3382,13 @@ def get_predstats(days=30, lg=''):
             ' ORDER BY m.kickoff DESC LIMIT 500', args).fetchall()
         mids = [r[0] for r in rows]
 
+        _tbls = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
         def _map1(sql):
             if not mids:
+                return {}
+            _t = sql.split('FROM')[1].strip().split()[0]
+            if _t not in _tbls:          # 雲端舊庫缺表→當冇紀錄（如有原則）
                 return {}
             ph = ','.join('?' * len(mids))
             tail = (' AND match_id IN (' if ' WHERE ' in sql.upper()
