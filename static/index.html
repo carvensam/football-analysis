@@ -233,6 +233,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <button class="tab" data-pg="feathourly">⏰ 每小時紀錄</button>
     <button class="tab" data-pg="ou">🎲 大小規則 <span id="ouCnt"></span></button>
     <button class="tab" data-pg="htftm">⚡ 半全場方法 <span id="htftmCnt"></span></button>
+    <button class="tab" data-pg="pstat">📊 預測結果統計 <span id="pstatCnt"></span></button>
     <button class="tab" data-pg="v1">📼 舊版本</button>
     <button class="tab" data-pg="haobao">⚽ 好波</button>
     <button class="tab" data-pg="settings">⚙️ 設定</button>
@@ -392,6 +393,18 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <div id="htftmStats"></div>
     <div id="htftmList"><div class="note">載入中…</div></div>
   </section>
+<section class="pg" id="pg-pstat">
+    <div class="toolbar">
+      <span class="hint">時間段</span>
+      <button class="btn" data-ps-days="7">7日</button>
+      <button class="btn accent" data-ps-days="30">30日</button>
+      <button class="btn" data-ps-days="90">90日</button>
+      <button class="btn" data-ps-days="0">全部</button>
+      <label class="hint">聯賽 <select id="pstatLg"><option value="">全部</option></select></label>
+    </div>
+    <div id="pstatAgg"></div>
+    <div id="pstatBody"><div class="note">載入中…</div></div>
+  </section>
 
   <!-- 舊版本（V1 精選／精選Z） -->
   <!-- 舊版本（V1 精選／精選Z＋V2 十六字頭精選） -->
@@ -454,6 +467,6 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   </div>
 </div>
 <script src="/static/phone_crawl.js?v=5.3.0"></script>
-<script src="/static/app.js?v=5.3.2"></script>
+<script src="/static/app.js?v=5.3.4"></script>
 </body>
 </html>

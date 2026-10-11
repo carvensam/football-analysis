@@ -214,6 +214,7 @@ function goto(pg){
     feathourly: () => loadFeatHourly(),
     ou: () => loadOuRules(),
     htftm: () => loadHtftRules(),
+    pstat: () => loadPredStats(),
     haobao: () => {
       const f = $('#hbFrame');
       if (f && !f.src) f.src = '/haobao/';
@@ -1825,6 +1826,77 @@ $('#btnHtftmScan').onclick = async function(){
     this.disabled = false;
   }
 };
+
+/* ---------- 主頁場次 <select> 共用填充：未開賽全部＋過去24小時已開賽（最近排先） ---------- */
+function fillCheckSelect(sel, firstLabel){
+  const cur = sel.value;
+  const now = homeData.now || '';
+  const cut = now ? _hktMinusHours(now, 24) : '';
+  const recent = (homeData.played || [])
+    .filter(m => !cut || (m.kickoff || '') >= cut)
+    .slice()
+    .sort((a, b) => (b.kickoff || '').localeCompare(a.kickoff || ''));
+  sel.innerHTML = `<option value="">${firstLabel}</option>` +
+    homeData.upcoming.map(m => `<option value="${m.id}">${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}</option>`).join('') +
+    (recent.length ? '<option disabled>──── 已開賽（過去24小時・最近排先）────</option>' : '') +
+    recent.map(m => `<option value="${m.id}">🔴 ${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}${m.score ? '（' + esc(m.score) + '）' : ''}</option>`).join('');
+  if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+/* ---------- Check 一下 7／8／12（離線 8 情境回測表＋單場檢驗） ---------- */
+
+async function loadPredStats(days, lg){
+  if (days != null) _pstatDays = days;
+  if (lg !== undefined) _pstatLg = lg;
+  const aggEl = $('#pstatAgg'), bodyEl = $('#pstatBody');
+  bodyEl.innerHTML = '<div class="note">載入中…</div>';
+  let d;
+  try { d = await jget(`/api/predstats?days=${_pstatDays}&lg=${encodeURIComponent(_pstatLg)}`); }
+  catch (e) { bodyEl.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  if (d.error) { bodyEl.innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
+  const sel = $('#pstatLg'), cur = _pstatLg;
+  sel.innerHTML = '<option value="">全部</option>' +
+    (d.leagues || []).map(x =>
+      `<option value="${esc(x)}"${x === cur ? ' selected' : ''}>${esc(x)}</option>`).join('');
+  sel.value = cur;
+  $$('#pg-pstat [data-ps-days]').forEach(b =>
+    b.classList.toggle('accent', +b.dataset.psDays === _pstatDays));
+  $('#pstatCnt').textContent = d.matches && d.matches.length ? `(${d.matches.length})` : '';
+  const a = d.agg || {};
+  aggEl.innerHTML = '<div class="statbar">' + PSTAT_SRC.map(([k, nm]) => {
+    const s = a[k] || {};
+    const v = s.n
+      ? `${pct(s.rate)}<small style="color:var(--dim)">（${s.n}場・贏${s.hit} 輸${s.miss} 走${s.push}）</small>`
+      : '<span class="hint">—</span>';
+    return `<span>${nm} <b>${v}</b></span>`;
+  }).join('') + `<span class="hint">更新：${esc(d.updated || '—')}</span></div>` +
+  '<div class="note">結算口徑：讓球來源對 company12 尾盤＋全場比分（上盤＝讓球方）；我的選擇對揀嗰刻嘅 pick 線；半場領先最終唔贏（主和/主客/客和/客主）黃底。命中率＝贏÷(贏+輸)。</div>';
+  if (!d.matches || !d.matches.length){
+    bodyEl.innerHTML = '<div class="note">呢個時段／聯賽篩選冇完場場次。</div>';
+    return;
+  }
+  let h = '<div class="checkwrap"><table class="ck-table"><thead><tr>' +
+    '<th>時間</th><th>聯賽</th><th>主 vs 客</th><th>半場→全場</th>' +
+    PSTAT_SRC.map(([, nm]) => `<th>${nm}</th>`).join('') +
+    '</tr></thead><tbody>';
+  for (const m of d.matches){
+    h += '<tr><td>' + esc((m.kickoff || '').slice(5, 16)) + '</td>' +
+      `<td>${esc(m.league || '')}</td>` +
+      `<td style="text-align:left;white-space:nowrap">${esc(m.home)} <span style="color:var(--dim)">vs</span> ${esc(m.away)}</td>`;
+    const htTxt = m.hh != null
+      ? `${m.hh}-${m.ha}→${m.hs}-${m.aws} ${PSTAT_CELL[m.cell] || esc(m.cell || '')}`
+      : `—→${m.hs}-${m.aws}`;
+    h += `<td${m.xh_xa ? ' class="hl"' : ''}>${htTxt}</td>`;
+    for (const [k] of PSTAT_SRC)
+      h += `<td>${_pstatCell((m.sources || {})[k])}</td>`;
+    h += '</tr>';
+  }
+  bodyEl.innerHTML = h + '</tbody></table></div>';
+}
+$('#pg-pstat').addEventListener('click', e => {
+  const b = e.target.closest('[data-ps-days]');
+  if (b) loadPredStats(+b.dataset.psDays);
+});
+$('#pstatLg').addEventListener('change', () => loadPredStats(null, $('#pstatLg').value));
 
 /* ---------- 主頁場次 <select> 共用填充：未開賽全部＋過去24小時已開賽（最近排先） ---------- */
 function fillCheckSelect(sel, firstLabel){
