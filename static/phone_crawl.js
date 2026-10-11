@@ -193,19 +193,14 @@
       if (this.running) return { running: true };
       this.running = true;
       this.done = 0; this.ok = 0; this.fail = 0; this.noOdds = 0;
-      const errs = [];
       for (const m of list) {
         await this.crawlOne(m.id, m.kickoff, srvOf ? srvOf(m) : null);
-        const rr = this.res[m.id];
-        if (rr && rr.err && errs.length < 5 && errs.indexOf(rr.err) === -1)
-          errs.push(rr.err);
         this.done++;
         if (onTick) onTick(this);
-        await new Promise(r2 => setTimeout(r2, 900));
+        await new Promise(r => setTimeout(r, 900));
       }
       this.running = false;
-      return { done: true, ok: this.ok, fail: this.fail, noOdds: this.noOdds,
-               errs };
+      return { done: true, ok: this.ok, fail: this.fail, noOdds: this.noOdds };
     },
     /* 畫面合併：有手機直爬結果就用佢（📱），否則 null 用返伺服器數據 */
     lineFor(mid) {

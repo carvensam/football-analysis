@@ -230,12 +230,16 @@ $('#tabs').addEventListener('click', e => {
 });
 
 /* ---------- ⚡ 半全場逆轉統計（獨立頁） ---------- */
+let htftHours = 48, htftCat = 'all';   // 已完結回查篩選（2026-10-10，二選一或二選二）
+function htftSetHours(v){ htftHours = +v; loadHtft(); }
+function htftSetCat(v){ htftCat = v; loadHtft(); }
 const HTFT_CAT = ['—', '①半主全和', '②半主全客', '③半客全和', '④半客全主'];
 function _htftStatsRow(r){
   if (!r.n) return '<span class="note">同類歷史樣本不足</span>';
   const pc = v => pct(v);
-  return `<span title="①半場主勝→全場和 ②半主→全客 ③半客→全和 ④半客→全主">` +
-    `同類(n=${r.n})：①${pc(r.p[0])} ②${pc(r.p[1])} ③${pc(r.p[2])} ④${pc(r.p[3])}｜` +
+  const nd = r.nd ? `＋半場和${r.nd}場` : '';
+  return `<span title="有半場領先嘅同類場次中：①半場主勝→全場和 ②半主→全客 ③半客→全和 ④半客→全主">` +
+    `同類(n=${r.n}${nd})：①${pc(r.p[0])} ②${pc(r.p[1])} ③${pc(r.p[2])} ④${pc(r.p[3])}｜` +
     `<b style="color:var(--gold2)">任何一項 ${pc(r.p_any)}</b></span>`;
 }
 function _htftMatchCard(r){
@@ -250,11 +254,16 @@ function _htftMatchCard(r){
   else if (r.ft) h += `<span class="tag dim">唔屬四項</span>`;
   h += `<br><span class="sub">${_htftStatsRow(r)}</span>`;
   if (r.live_p){
-    const lead = (r.ht || '').split('-');
-    const homeLead = +lead[0] > +lead[1];
-    h += `<br><span class="sub" style="color:var(--up)">同類同半場${homeLead ? '主' : '客'}領先走勢：` +
-         `${homeLead ? '主勝' : '客勝'} ${pct(r.live_p[0])}｜和 ${pct(r.live_p[1])}｜` +
-         `${homeLead ? '被逆轉（客勝）' : '被逆轉（主勝）'} ${pct(r.live_p[2])}</span>`;
+    if (r.live_side === 'draw'){
+      h += `<br><span class="sub" style="color:var(--up)">同類半場和走勢：` +
+           `主勝 ${pct(r.live_p[0])}｜和 ${pct(r.live_p[1])}｜客勝 ${pct(r.live_p[2])}</span>`;
+    } else {
+      const lead = (r.ht || '').split('-');
+      const homeLead = +lead[0] > +lead[1];
+      h += `<br><span class="sub" style="color:var(--up)">同類同半場${homeLead ? '主' : '客'}領先走勢：` +
+           `${homeLead ? '主勝' : '客勝'} ${pct(r.live_p[0])}｜和 ${pct(r.live_p[1])}｜` +
+           `${homeLead ? '被逆轉（客勝）' : '被逆轉（主勝）'} ${pct(r.live_p[2])}</span>`;
+    }
   }
   h += `</summary>`;
   if (r.ex && r.ex.length){
@@ -272,7 +281,11 @@ async function loadHtft(){
   box.innerHTML = '<div class="note">載入中…</div>';
   let b, d;
   try {
-    b = await jget('/api/htftboard');
+    const q = (htftHours !== 48 || htftCat !== 'all')
+      ? `?fin_hours=${htftHours}` + (htftCat !== 'all'
+        ? '&fin_cat=' + encodeURIComponent(htftCat) : '')
+      : '';
+    b = await jget('/api/htftboard' + q);
     d = await jget('/api/htft');
   } catch (e) { box.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
   let h = '';
@@ -280,8 +293,26 @@ async function loadHtft(){
   h += (b.live || []).map(_htftMatchCard).join('') || '<div class="note">而家冇進行中場次。</div>';
   h += `<div class="day-h">⏰ 即將開賽（未來48小時・${(b.upcoming || []).length} 場）</div>`;
   h += (b.upcoming || []).map(_htftMatchCard).join('') || '<div class="note">冇即將開賽場次。</div>';
-  h += `<div class="day-h">✅ 已完結（最近48小時・${(b.finished || []).length} 場）</div>`;
-  h += (b.finished || []).map(_htftMatchCard).join('') || '<div class="note">冇已完結場次。</div>';
+  /* 2026-10-10：已完結回查篩選——Period／聯賽杯賽類，獨立可疊加（二選一或二選二） */
+  const finTitle = htftHours >= 720 ? '近30日' : htftHours >= 168 ? '近7日'
+    : htftHours >= 72 ? '近3日' : `最近${htftHours}小時`;
+  h += `<div class="statbar">已完結回查：Period
+    <select onchange="htftSetHours(this.value)">
+      <option value="24"${htftHours===24?' selected':''}>最近24小時</option>
+      <option value="48"${htftHours===48?' selected':''}>最近48小時</option>
+      <option value="72"${htftHours===72?' selected':''}>近3日</option>
+      <option value="168"${htftHours===168?' selected':''}>近7日</option>
+      <option value="720"${htftHours===720?' selected':''}>近30日</option>
+    </select>
+    ｜類型
+    <select onchange="htftSetCat(this.value)">
+      <option value="all"${htftCat==='all'?' selected':''}>全部</option>
+      <option value="聯賽"${htftCat==='聯賽'?' selected':''}>聯賽</option>
+      <option value="杯賽"${htftCat==='杯賽'?' selected':''}>杯賽</option>
+    </select>
+    <span class="hint">（兩個篩選可單用可疊用）</span></div>`;
+  h += `<div class="day-h">✅ 已完結（${finTitle}${htftCat !== 'all' ? '・' + esc(htftCat) : ''}・${(b.finished || []).length} 場）</div>`;
+  h += (b.finished || []).map(_htftMatchCard).join('') || '<div class="note">呢個條件下冇已完結場次。</div>';
   /* 組合統計表（原有） */
   const t = d.total || {n: 0, p: [0, 0, 0, 0], p_any: 0};
   h += `<div class="day-h">📊 精選組合歷史統計（check_rows 全庫）</div>`;
@@ -302,11 +333,24 @@ async function loadHtft(){
 }
 /* ---------- 主頁 ---------- */
 let homeData = {upcoming: [], played: []};
+/* 已完賽回查篩選（2026-10-11，二選一或二選二，同半全場頁一樣玩法） */
+let playedHours = 120, playedCat = 'all';
+function playedSetHours(v){ playedHours = +v; loadHome(); }
+function playedSetCat(v){ playedCat = v; loadHome(); }
+/* 指定聯賽（2026-10-11 用戶規格：揀聯賽類可以再揀指定聯賽，例如英超）——
+   聯賽清單由已載入數據提取，純 client-side 過濾，撳完即時變唔使等 fetch */
+let playedLg = 'all';
+function playedSetLg(v){ playedLg = v; renderHome(); }
 async function loadHome(){
   $('#homeList').innerHTML = '<div class="note">載入中…</div>';
   const hours = $('#hoursSel').value;
+  let q = '/api/v3/list?hours=' + hours;
+  if (playedHours !== 120 || playedCat !== 'all'){
+    q += '&fin_hours=' + playedHours;
+    if (playedCat !== 'all') q += '&fin_cat=' + encodeURIComponent(playedCat);
+  }
   try {
-    const d = await jget('/api/v3/list?hours=' + hours);
+    const d = await jget(q);
     homeData = d;
     jget('/api/lgpred').then(p => { lgPred = p.predictions || {}; renderHome(); })
       .catch(() => {});
@@ -378,6 +422,7 @@ $('#alertClose').onclick = () => { $('#alertPanel').style.display = 'none'; };
 function _stateTag(st){
   if (st === 'live') return '<span class="tag live">進行中</span>';
   if (st === 'finished') return '<span class="tag dim">完場</span>';
+  if (st === 'unknown') return '<span class="tag dim" title="開賽逾26小時仍無比分——可能取消/延期或數據缺失，唔再當進行中">未知</span>';
   return '';
 }
 /* 半場賽果＋首隊入球 標籤（2026-10-02：所有已完結場次顯示） */
@@ -539,6 +584,10 @@ function _mrow(m, playedSec){
   const od = playedSec ? '' : ((m.has_odds || (m.line && m.line.src === 'crown'))
     ? `<span class="od has">已有賠率</span>`
     : '<span class="od">未獲取賠率</span>');
+  const oud = (playedSec && m.ou && m.ou.line != null)
+    ? `<div class="ln" title="大小球尾盤（易勝博）"><b>大${esc(String(m.ou.line))}</b><br>` +
+      `${m.ou.over != null ? m.ou.over.toFixed(2) : '—'}/${m.ou.under != null ? m.ou.under.toFixed(2) : '—'}</div>`
+    : '';
   const at = pc
     ? `<span class="od at" title="手機直爬最後更新：${esc(pc.at)}（裝置 ${esc(window.PhoneCrawl.device)}）">📱 ${esc(pc.at.slice(11, 16))}</span>`
     : (m.odds_at ? `<span class="od at" title="賠率/盤口最後更新：${esc(m.odds_at)}">🕒 ${esc(fmtAt(m.odds_at))}</span>` : '');
@@ -550,7 +599,7 @@ function _mrow(m, playedSec){
     <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
     <span class="lg">${esc(m.league)}</span>
     <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}</span>
-    ${_stateTag(m.state)}${sc}${line}${od}${at}${rfb}${BetSlip.btn(m)}</div>`;
+    ${_stateTag(m.state)}${sc}${line}${oud}${od}${at}${rfb}${BetSlip.btn(m)}</div>`;
 }
 /* 同賽事盤口模型：主頁球隊旁展示上/下盤%（oupred = upcoming() 每場自帶） */
 function _oupredBadge(m, p){
@@ -588,9 +637,36 @@ function renderHome(){
     if (d !== lastDay) { h += `<div class="day-h" style="background:#141a24;color:var(--dim);border-left-color:var(--accent)">📅 ${esc(d)}</div>`; lastDay = d; }
     h += _mrow(m, false);
   }
-  h += `<div class="day-h">📼 已開賽（最近 120 小時・${homeData.played.length} 場・按日期分類，撳入去照睇 45 項分析）</div>`;
+  /* 2026-10-11：已完賽回查篩選——Period／聯賽杯賽類／指定聯賽，獨立可疊加 */
+  const pdTitle = playedHours >= 720 ? '近30日' : playedHours >= 168 ? '近7日'
+    : `最近${playedHours}小時`;
+  const lgs = [...new Set(homeData.played.map(m => m.league))].sort();
+  if (playedLg !== 'all' && !lgs.includes(playedLg)) playedLg = 'all';
+  const prow = playedLg === 'all' ? homeData.played
+    : homeData.played.filter(m => m.league === playedLg);
+  h += `<div class="day-h">📼 已開賽（${pdTitle}${playedCat !== 'all' ? '・' + esc(playedCat) : ''}${playedLg !== 'all' ? '・' + esc(playedLg) : ''}・${prow.length} 場・按日期分類，撳入去照睇 45 項分析）</div>`;
+  h += `<div class="statbar">已完賽回查：Period
+    <select onchange="playedSetHours(this.value)">
+      <option value="24"${playedHours===24?' selected':''}>最近24小時</option>
+      <option value="48"${playedHours===48?' selected':''}>最近48小時</option>
+      <option value="120"${playedHours===120?' selected':''}>最近120小時</option>
+      <option value="168"${playedHours===168?' selected':''}>近7日</option>
+      <option value="720"${playedHours===720?' selected':''}>近30日</option>
+    </select>
+    ｜類型
+    <select onchange="playedSetCat(this.value)">
+      <option value="all"${playedCat==='all'?' selected':''}>全部</option>
+      <option value="聯賽"${playedCat==='聯賽'?' selected':''}>聯賽</option>
+      <option value="杯賽"${playedCat==='杯賽'?' selected':''}>杯賽</option>
+    </select>
+    ｜聯賽
+    <select onchange="playedSetLg(this.value)">
+      <option value="all"${playedLg==='all'?' selected':''}>全部</option>
+      ${lgs.map(g => `<option value="${esc(g)}"${playedLg===g?' selected':''}>${esc(g)}</option>`).join('')}
+    </select>
+    <span class="hint">（三個篩選可單用可疊用）</span></div>`;
   lastDay = null;
-  for (const m of homeData.played) {
+  for (const m of prow) {
     const d = (m.kickoff || '').slice(0, 10);
     if (d !== lastDay) { h += `<div class="day-h" style="background:#141a24;color:var(--dim);border-left-color:var(--accent)">📅 ${esc(d)}</div>`; lastDay = d; }
     h += _mrow(m, true);
@@ -612,11 +688,7 @@ function renderHome(){
         toast(r.snaps
           ? (r.agree === false ? '📱 手機已更新：⚠ 同本機唔同（分析以本機為準）'
                                : `📱 手機已直爬更新（${r.at.slice(11, 16)}）`)
-          : (r.noOdds ? '該場仲未開盤'
-            : '手機直爬失敗：' + (r.err || '') +
-              (/Timeout|Connect|timed|refused/i.test(String(r.err))
-                ? '（手機網絡連唔到 titan007——如用緊 WiFi，請轉流動數據再試）'
-                : '')));
+          : (r.noOdds ? '該場仲未開盤' : '手機直爬失敗：' + (r.err || '')));
       } else {
         const r = await jpost('/api/fetch', {id: +b.dataset.fb, force: true});
         toast(r.ok ? '已更新最新賠率同盤口' : ('更新失敗：' + (r.error || '未知')));
@@ -694,13 +766,9 @@ async function phoneBatchAll(btn){
       $('#updInfo').textContent =
         `📱 手機直爬緊 ${st.done} 場（✓${st.ok} ✗${st.fail} 未開盤${st.noOdds}）…`;
     }, m => m.line || null);
-    let msg = `📱 手機直爬完成：更新 ${r.ok}｜失敗 ${r.fail}｜未開盤 ${r.noOdds}——` +
+    $('#updInfo').textContent =
+      `📱 手機直爬完成：更新 ${r.ok}｜失敗 ${r.fail}｜未開盤 ${r.noOdds}——` +
       `已即時顯示＋同步雲端（裝置 ${PhoneCrawl.device}）`;
-    if (r.fail > 0) {
-      msg += `｜錯誤範例：${(r.errs || []).join('；') || '無回應'}` +
-        '。全部場次都失敗＝手機而家嘅網絡連唔到 titan007（多數係 WiFi IP 俾封）——轉用流動數據再撳一次；盤口會繼續用伺服器數據顯示。';
-    }
-    $('#updInfo').textContent = msg;
     loadHome();
   } finally {
     btn.disabled = false;
@@ -1771,23 +1839,41 @@ $('#btnOuScan').onclick = async function(){
   }
 };
 
-/* ---------- 主頁場次 <select> 共用填充：未開賽全部＋過去24小時已開賽（最近排先） ---------- */
-function fillCheckSelect(sel, firstLabel){
-  const cur = sel.value;
-  const now = homeData.now || '';
-  const cut = now ? _hktMinusHours(now, 24) : '';
-  const recent = (homeData.played || [])
-    .filter(m => !cut || (m.kickoff || '') >= cut)
-    .slice()
-    .sort((a, b) => (b.kickoff || '').localeCompare(a.kickoff || ''));
-  sel.innerHTML = `<option value="">${firstLabel}</option>` +
-    homeData.upcoming.map(m => `<option value="${m.id}">${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}</option>`).join('') +
-    (recent.length ? '<option disabled>──── 已開賽（過去24小時・最近排先）────</option>' : '') +
-    recent.map(m => `<option value="${m.id}">🔴 ${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}${m.score ? '（' + esc(m.score) + '）' : ''}</option>`).join('');
-  if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+/* ---------- 半全場方法（分聯賽 HT/FT 方法版：htft_rules.json 方法命中先出手） ---------- */
+function _htftCard(p){
+  const stBadge = p.settle === '贏' ? '<b class="r-up">✅贏</b>'
+    : p.settle === '輸' ? '<b class="r-down">❌輸</b>' : '';
+  const winsRow = Object.entries(p.wins || {}).map(([k, v]) =>
+    `${esc(k)} ${v == null ? '—' : pct(v)}`).join('｜');
+  const scoreTxt = p.home_score != null
+    ? ` <b>${p.home_score}-${p.away_score}</b>` : '';
+  const htTxt = (p.half_home != null && p.home_score != null)
+    ? `<div class="gaprow"><span class="lab">半場</span>半場 ${p.half_home}-${p.half_away}` +
+      `　→　全場 ${p.home_score}-${p.away_score}　判定格 <b>${esc(p.cell || '')}</b>　${stBadge}</div>`
+    : '';
+  return `<div class="fcard" data-mid="${p.match_id}">
+    <div class="f-top">
+      <div class="f-head"><span class="ko">${esc((p.kickoff || '').slice(5, 16))}</span>
+        <span class="lg">${esc(p.league || '')}</span>
+        <button class="btn gold ft-share">⇗</button></div>
+      <div class="teams">${esc(p.home)} <span class="vs">vs</span> ${esc(p.away)}${scoreTxt}</div>
+      <div class="gaprow"><span class="lab">目標</span><b style="font-size:22px;color:var(--gold2)">${esc(p.target_name || '')}</b>　<span class="tag dim">${esc(p.target || '')}</span></div>
+      <div class="gaprow"><span class="lab">方法</span>${esc(p.method_id || '')}｜${esc(p.cond_text || '')}</div>
+      <div class="gaprow"><span class="lab">統計</span>訓練 ${esc(p.train || '—')}｜WF ${esc(p.wf || '—')}</div>
+      ${winsRow ? `<div class="gaprow"><span class="lab">窗口</span>${winsRow}</div>` : ''}
+      ${htTxt}
+    </div></div>`;
 }
-/* ---------- Check 一下 7／8／12（離線 8 情境回測表＋單場檢驗） ---------- */
-
+function _htftShareText(p){
+  const L = [];
+  L.push(`【半全場方法】${p.league} ${(p.kickoff || '').slice(5, 16)}`);
+  L.push(`${p.home} vs ${p.away}${p.home_score != null ? `（全場 ${p.home_score}-${p.away_score}）` : ''}`);
+  L.push(`目標：${p.target_name}（${p.target}）｜方法 ${p.method_id}（${p.cond_text}）`);
+  L.push(`訓練 ${p.train || '—'}｜WF ${p.wf || '—'}`);
+  if (p.settle) L.push(`結果：${p.settle === '贏' ? '✅贏' : '❌輸'}` +
+    `（半場 ${p.half_home}-${p.half_away} → 全場 ${p.home_score}-${p.away_score}，格 ${p.cell}）`);
+  return L.join('\n');
+}
 async function loadHtftRules(){
   const listEl = $('#htftmList');
   listEl.innerHTML = '<div class="note">載入中…</div>';
@@ -1835,23 +1921,22 @@ $('#btnHtftmScan').onclick = async function(){
   }
 };
 
-/* ---------- 主頁場次 <select> 共用填充：未開賽全部＋過去24小時已開賽（最近排先） ---------- */
-function fillCheckSelect(sel, firstLabel){
-  const cur = sel.value;
-  const now = homeData.now || '';
-  const cut = now ? _hktMinusHours(now, 24) : '';
-  const recent = (homeData.played || [])
-    .filter(m => !cut || (m.kickoff || '') >= cut)
-    .slice()
-    .sort((a, b) => (b.kickoff || '').localeCompare(a.kickoff || ''));
-  sel.innerHTML = `<option value="">${firstLabel}</option>` +
-    homeData.upcoming.map(m => `<option value="${m.id}">${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}</option>`).join('') +
-    (recent.length ? '<option disabled>──── 已開賽（過去24小時・最近排先）────</option>' : '') +
-    recent.map(m => `<option value="${m.id}">🔴 ${esc((m.kickoff || '').slice(5, 16))} ${esc(m.home)} vs ${esc(m.away)}${m.score ? '（' + esc(m.score) + '）' : ''}</option>`).join('');
-  if (cur && [...sel.options].some(o => o.value === cur)) sel.value = cur;
+/* ---------- 📊 預測結果統計（完場場次逐來源結算一覽：方向＋贏/輸/走） ---------- */
+const PSTAT_SRC = [['main','上下盤'],['v2','精選V2'],['v1','V1'],['v3','精選W'],
+                   ['f7','精選7'],['f8','精選8'],['f12','精選12'],
+                   ['user','我的選擇'],['ou','好波大小']];
+const PSTAT_CELL = {HH:'主主',HD:'主和',HA:'主客',DH:'和主',DD:'和和',DA:'和客',
+                    AH:'客主',AD:'客和',AA:'客客'};
+let _pstatDays = 30, _pstatLg = '';
+function _pstatCell(s){
+  if (!s) return '—';
+  const mark = s.verdict === '贏' ? ' <b class="r-up">✓</b>'
+    : s.verdict === '輸' ? ' <b class="r-down">✗</b>'
+    : s.verdict === '走' ? ' <span class="hint">走</span>' : '';
+  let t = esc(s.side || '');
+  if (s.pct != null) t += ` ${s.pct}%${s.den != null ? `(${s.den})` : ''}`;
+  return t ? t + mark : '—';
 }
-/* ---------- Check 一下 7／8／12（離線 8 情境回測表＋單場檢驗） ---------- */
-
 async function loadPredStats(days, lg){
   if (days != null) _pstatDays = days;
   if (lg !== undefined) _pstatLg = lg;
@@ -2502,22 +2587,72 @@ async function loadOupred(){
 }
 
 /* ---------- ⏰ 精選系列每小時紀錄頁（2026-10-05） ---------- */
+/* ---------- ⏰ 每兩小時自動紀錄：精選W／7／8／12 資格時間線＋尾盤盤口賠率 ---------- */
+let fhPeriod = 'all', fhCat = 'all';
+function fhSetPeriod(v){ fhPeriod = v; loadFeatHourly(); }
+function fhSetCat(v){ fhCat = v; loadFeatHourly(); }
+function _fhLocalDate(offDays){
+  const d = new Date(Date.now() - (offDays || 0) * 864e5);
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+function _fhPeriodOk(ko){
+  if (fhPeriod === 'all') return true;
+  const d = (ko || '').slice(0, 10);
+  if (!d) return false;
+  if (fhPeriod === 'today') return d === _fhLocalDate(0);
+  if (fhPeriod === 'yesterday') return d === _fhLocalDate(1);
+  return d >= _fhLocalDate(parseInt(fhPeriod, 10));
+}
+function _fhSnapTxt(sp){
+  if (!sp) return '';
+  const parts = [];
+  if (sp.ahc != null){
+    parts.push('亞盤 ' + (sp.ahc === 0 ? '平手'
+      : fmtLine(sp.agv === 'home' ? -sp.ahc : sp.ahc))
+      + ' ' + (sp.aho ?? '–') + '/' + (sp.aaw ?? '–'));
+  }
+  if (sp.oul != null){
+    parts.push('大小 ' + sp.oul + ' ' + (sp.ouo ?? '–') + '/' + (sp.ouu ?? '–'));
+  }
+  return parts.length
+    ? ' <span class="tag dim" title="每兩小時紀錄嘅尾盤快照（易勝博 closing）">'
+      + parts.join('｜') + '</span>' : '';
+}
 async function loadFeatHourly(){
   $('#fhBody').innerHTML = '<div class="note">載入中…</div>';
   try {
     const d = await jget('/api/feathourly');
     let h = '';
     const scan = d.scan || {};
-    h += `<div class="statbar">每小時自動紀錄：上次 <b>${esc(scan.last || '未行過')}</b>
+    h += `<div class="statbar">每兩小時自動紀錄：上次 <b>${esc(scan.last || '未行過')}</b>
       ｜已行 <b>${scan.runs || 0}</b> 次${scan.running ? '｜⏳ 行緊' : ''}
       ${scan.error ? '｜<span class="err">錯誤：' + esc(scan.error) + '</span>' : ''}
       <button class="btn" style="margin-left:auto" onclick="loadFeatHourly()">⟳ 重新整理</button></div>`;
+    /* 2026-10-10：Period／聯賽杯賽類 Filter——兩個獨立可疊加（二選一或二選二） */
+    h += `<div class="statbar">回查篩選：Period
+      <select onchange="fhSetPeriod(this.value)">
+        <option value="all"${fhPeriod==='all'?' selected':''}>全部</option>
+        <option value="today"${fhPeriod==='today'?' selected':''}>今日</option>
+        <option value="yesterday"${fhPeriod==='yesterday'?' selected':''}>昨日</option>
+        <option value="3"${fhPeriod==='3'?' selected':''}>近3日</option>
+        <option value="7"${fhPeriod==='7'?' selected':''}>近7日</option>
+        <option value="30"${fhPeriod==='30'?' selected':''}>近30日</option>
+      </select>
+      ｜類型
+      <select onchange="fhSetCat(this.value)">
+        <option value="all"${fhCat==='all'?' selected':''}>全部</option>
+        <option value="聯賽"${fhCat==='聯賽'?' selected':''}>聯賽</option>
+        <option value="杯賽"${fhCat==='杯賽'?' selected':''}>杯賽</option>
+      </select></div>`;
     for (const kind of ['W', '7', '8', '12']) {
       const K = d.kinds[kind];
       if (!K) continue;
       const s = K.stats;
-      h += `<div class="day-h">★ ${esc(K.name)}：追蹤中 ${s.tracked}｜而家合資格 ${s.now_eligible}｜曾合資格 ${s.ever_eligible}｜最後不合資格 ${s.dropped_final}｜已賽 ${s.played}（W${s.wins}/L${s.losses}/P${s.pushes}）${s.hit_r != null ? '｜命中率 <b style="color:var(--gold2)">' + s.hit_r + '%</b>' : ''}</div>`;
-      for (const M of K.matches) {
+      const list = K.matches.filter(M =>
+        _fhPeriodOk(M.kickoff) && (fhCat === 'all' || M.cat === fhCat));
+      h += `<div class="day-h">★ ${esc(K.name)}：追蹤中 ${s.tracked}｜而家合資格 ${s.now_eligible}｜曾合資格 ${s.ever_eligible}｜最後不合資格 ${s.dropped_final}｜已賽 ${s.played}（W${s.wins}/L${s.losses}/P${s.pushes}）${s.hit_r != null ? '｜命中率 <b style="color:var(--gold2)">' + s.hit_r + '%</b>' : ''}${list.length !== s.tracked ? `｜篩選後 ${list.length} 場` : ''}</div>`;
+      for (const M of list) {
         const badges = M.hist.map(x => x.elig
           ? '<span style="color:var(--up)">✓</span>'
           : '<span style="color:var(--down)">✗</span>').join(' ');
@@ -2532,9 +2667,10 @@ async function loadFeatHourly(){
           <span class="lg" style="color:var(--gold2);font-size:12px">${esc(M.league)}</span>
           <span class="f-teams">${esc(M.home)} vs ${esc(M.away)}</span>
           ${M.direction ? '<span class="tag dim">' + (M.direction === 'up' ? '上' : '下') + '</span>' : ''}
-          ${tags}<span class="hint">每小時資格：${badges}（${M.snaps} 次）</span></div></div>`;
+          ${_fhSnapTxt(M.snap)}
+          ${tags}<span class="hint">每兩小時資格：${badges}（${M.snaps} 次）</span></div></div>`;
       }
-      if (!K.matches.length) h += '<div class="note">暫未有紀錄（每小時自動掃描後出現）。</div>';
+      if (!list.length) h += '<div class="note">篩選條件下暫無紀錄。</div>';
     }
     $('#fhBody').innerHTML = h;
   } catch (e) {
