@@ -290,7 +290,7 @@ _EXPORT_TABLES = ('odds_asian', 'odds_ou', 'odds_1x2_all', 'odds_corner',
                   'hkjc_ou')
 
 
-def api_export_odds(after_rowid=0, limit=20000):
+def api_export_odds(after_rowid=0, limit=5000):
     """本節點爬到的賠率數據倒出——其他節點（本機電腦）pull 返去 merge，
     令手機 API 同本機 DB 兩邊都有最新數據。
     2026-10-12 修訂：增量改用 rowid（= 寫入順序＝爬取順序）。舊版用
@@ -5341,7 +5341,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/export/odds':
             q = parse_qs(u.query)
             after = int((q.get('after_rowid') or ['0'])[0] or 0)
-            limit = int((q.get('limit') or ['20000'])[0] or 20000)
+            limit = int((q.get('limit') or ['5000'])[0] or 5000)
             try:
                 self._send(200, json.dumps(api_export_odds(after, limit),
                                            ensure_ascii=False))
