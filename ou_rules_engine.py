@@ -173,6 +173,21 @@ def pick_side(rules, A, line_raw):
     return hit[0].get('side'), hit
 
 
+def consensus(hits):
+    """共識票：≥2 條已驗證規則同向且多過另一方先出手。
+    樣內 100% 係選擇偏差（規則本身用同庫挖出），tier=共識觀察，實戰結算驗證緊。"""
+    v = {'大': 0, '細': 0}
+    for r in hits:
+        s = r.get('side')
+        if s in v:
+            v[s] += 1
+    top = '大' if v['大'] >= v['細'] else '細'
+    other = v['細' if top == '大' else '大']
+    if v[top] >= 2 and v[top] > other:
+        return top, v[top]
+    return None, 0
+
+
 def cond_text(conds):
     """條件人類可讀：尾細水＝0.85-0.95、尾線≥3.00。"""
     op_txt = {'=': '＝', '>=': '≥', '<=': '≤'}
@@ -309,16 +324,36 @@ def scan(hours=48):
                     leagues_cfg, row[2], snapshots(conn, row[0]))
                 if side:
                     upcoming.append(build_card(row, side, fired, tail))
+                cside, cn = consensus(fired)
+                if cside:
+                    upcoming.append(build_card(
+                        row, cside,
+                        [{'id': '共識x%d' % cn, 'conds': [],
+                          'tier': '共識觀察',
+                          'train': '樣內 100%（選擇偏差，實戰驗證中）'}], tail))
             except Exception:
                 continue
         for row in played_rows:
             try:
                 side, fired, tail = eval_match(
                     leagues_cfg, row[2], snapshots(conn, row[0]))
+                total = row[5] + row[6]
+                cside, cn = consensus(fired)
+                if cside:
+                    ccard = build_card(
+                        row, cside,
+                        [{'id': '共識x%d' % cn, 'conds': [],
+                          'tier': '共識觀察',
+                          'train': '樣內 100%（選擇偏差，實戰驗證中）'}], tail)
+                    cst = settle(cside, total, ccard['line'])
+                    ccard['score'] = '%d-%d' % (row[5], row[6])
+                    ccard['goals'] = total
+                    ccard['settle'] = cst
+                    w += (cst == '贏'); p += (cst == '走'); l += (cst == '輸')
+                    played.append(ccard)
                 if not side:
                     continue
                 card = build_card(row, side, fired, tail)
-                total = row[5] + row[6]
                 st = settle(side, total, card['line'])
                 card['score'] = '%d-%d' % (row[5], row[6])
                 card['goals'] = total
