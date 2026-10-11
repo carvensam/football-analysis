@@ -286,23 +286,23 @@ def api_probe_hosts():
             'hosts': out}
 
 
-_EXPORT_TABLES = (('odds_asian', 'fetched_at'),
-                  ('odds_ou', 'change_time'),
-                  ('odds_1x2_all', 'change_time'),
-                  ('odds_corner', 'change_time'),
-                  ('hkjc_ou', None))
+_EXPORT_TABLES = ('odds_asian', 'odds_ou', 'odds_1x2_all', 'odds_corner',
+                  'hkjc_ou')
 
 
-def api_export_odds(since, limit=20000):
+def api_export_odds(after_rowid=0, limit=20000):
     """本節點爬到的賠率數據倒出——其他節點（本機電腦）pull 返去 merge，
-    令手機 API 同本機 DB 兩邊都有最新數據。增量：有時間欄嘅表用 since 過濾。"""
+    令手機 API 同本機 DB 兩邊都有最新數據。
+    2026-10-12 修訂：增量改用 rowid（= 寫入順序＝爬取順序）。舊版用
+    change_time 做游標係錯嘅——歷史場次今日先爬到，change_time 係幾年前，
+    永遠過唔到 since 過濾，本機收唔到雲端新爬嘅舊賽事。"""
     import sqlite3 as _sq
     dbp = os.environ.get('DB_PATH') or os.path.join(PARENT_DIR, 'football.db')
-    out = {'since': since, 'node': os.environ.get(
+    out = {'after_rowid': after_rowid, 'node': os.environ.get(
                'RENDER_SERVICE_NAME', 'local'), 'tables': {}}
     con = _sq.connect(dbp, timeout=15)
     try:
-        for tbl, tcol in _EXPORT_TABLES:
+        for tbl in _EXPORT_TABLES:
             try:
                 cols = [r[1] for r in con.execute(
                     'PRAGMA table_info(%s)' % tbl)]
@@ -310,16 +310,16 @@ def api_export_odds(since, limit=20000):
                 continue
             if not cols:
                 continue
-            if tcol and tcol in cols:
-                rows = con.execute(
-                    'SELECT * FROM %s WHERE %s > ? ORDER BY %s LIMIT %d'
-                    % (tbl, tcol, tcol, limit), (since,)).fetchall()
-            else:
-                # 無時間欄：唔做增量，交俾專用 endpoint（暫不回傳，避免全表 dump）
-                continue
+            rows = con.execute(
+                'SELECT rowid, * FROM %s WHERE rowid > ? '
+                'ORDER BY rowid LIMIT %d' % (tbl, limit),
+                (after_rowid,)).fetchall()
             if rows:
-                out['tables'][tbl] = {'cols': cols, 'rows': rows,
-                                      'time_col': tcol}
+                max_rid = max(r[0] for r in rows)
+                out['tables'][tbl] = {
+                    'cols': cols,
+                    'rows': [r[1:] for r in rows],   # 剝走 rowid
+                    'max_rowid': max_rid}
     finally:
         con.close()
     return out
@@ -5340,10 +5340,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == '/api/export/odds':
             q = parse_qs(u.query)
-            since = (q.get('since') or [''])[0]
+            after = int((q.get('after_rowid') or ['0'])[0] or 0)
             limit = int((q.get('limit') or ['20000'])[0] or 20000)
             try:
-                self._send(200, json.dumps(api_export_odds(since, limit),
+                self._send(200, json.dumps(api_export_odds(after, limit),
                                            ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'error': str(e)},
