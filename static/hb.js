@@ -109,9 +109,8 @@
     var ou = d.ou || {};
     if (ou.pick) {
       lean.textContent = '⭐精選' + ou.pick.side + ' ' + ou.pick.best + '%';
-      lean.className = 'lean big';
+      lean.className = 'lean ' + (ou.pick.side === '大' ? 'big' : 'small');
       lean.style.borderColor = 'var(--gold)';
-      lean.style.color = 'var(--gold2)';
       return;
     }
     if (ou.lean) {
@@ -121,10 +120,14 @@
         (ou.n_voted != null ? '｜' + ou.n_voted + '項' : '');
       lean.className = 'lean ' + (ou.lean === '大' ? 'big' : 'small');
     } else if (ou.strongest && ou.strongest.rate >= 0.58 && ou.line != null) {
-      lean.textContent = '最強訊號' + ou.strongest.side + ' ' +
-        Math.round(ou.strongest.rate * 100) + '%（n=' + ou.strongest.n + '）';
-      lean.className = 'lean';
-      lean.style.color = 'var(--gold2)';
+      /* 大字/細字擺最前面＋色碼（大=金、細=綠），一眼睇到方向，唔使撳入去
+       * （2026-10-11 用戶：「61% 即係大定細？」——舊版「最強訊號細 61%」
+       *   個方向字埋喺中間唔夠显眼） */
+      var side = ou.strongest.side;
+      lean.innerHTML = '<b>' + side + '</b> ' +
+        Math.round(ou.strongest.rate * 100) + '%' +
+        '<small>（最強訊號 n=' + ou.strongest.n + '）</small>';
+      lean.className = 'lean ' + (side === '大' ? 'big' : 'small');
     } else if (ou.line != null) {
       lean.textContent = '觀望（共識不足）';
       lean.className = 'lean';
