@@ -168,7 +168,19 @@
       h += gi('尾盤線', ou.line + ' 球');
       h += gi('水位', '大 ' + (ou.over_odds != null ? ou.over_odds : '—') +
                   '｜細 ' + (ou.under_odds != null ? ou.under_odds : '—'));
-      h += gi('預測', (ou.lean === '大' ? '<span class="pct-over">大球</span>' : '<span class="pct-under">細球</span>') +
+      /* 預測方向：有共識先表態；冇共識（lean=null）一定要顯示「觀望」——
+       * 舊版跌落細球 fallback，同列表「最強訊號大」徽章並排出現「又大又細」
+       * （2026-10-11 用戶回報）。最強單項同共識方向唔同時，照實標明邊個為準。 */
+      var leanTxt = ou.lean === '大' ? '<span class="pct-over">大球</span>'
+                  : ou.lean === '細' ? '<span class="pct-under">細球</span>'
+                  : '<span style="color:var(--dim)">觀望（共識不足）</span>';
+      var st = ou.strongest;
+      if (st && (!ou.lean || st.side !== ou.lean)) {
+        leanTxt += '<br><small style="color:var(--dim)">最強單項訊號：' + st.side + ' ' +
+          Math.round(st.rate * 100) + '%（n=' + st.n + '）' +
+          (ou.lean ? '｜同共識相反，以共識為準' : '｜單項訊號，票數唔夠表態') + '</small>';
+      }
+      h += gi('預測', leanTxt +
                   (ou.confidence ? '（信心' + ou.confidence + '）' : ''));
       h += gi('場均入球 λ', ou.lambda + '<br><small>主 ' + ou.lambda_home + '｜客 ' + ou.lambda_away + '</small>');
       h += gi('預期比分', ou.expected_score ? ou.expected_score[0] + ' - ' + ou.expected_score[1] : '—');
