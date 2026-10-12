@@ -180,7 +180,8 @@ async function refreshUpdInfo(){
     }
     if (w.running) t += `｜⚡${w.window_name || ''}更新中 ${w.done}/${w.total}`;
     else if (w.error) t += `｜⚡窗口更新失敗：${w.error}`;
-    else if (w.last) t += `｜⚡上次窗口更新：成 ${w.ok || 0}／敗 ${w.fail || 0}`;
+    else if (w.last) t += `｜⚡上次窗口更新（${w.window_name || ''}）：成 ${w.ok || 0}／敗 ${w.fail || 0}` +
+      (!w.total ? '（呢個時段冇即將開賽場次）' : `／共 ${w.total} 場`);
     $('#updInfo').textContent = t;
     $$('#btnUpdate,#btnWin24,#btnWin30,#btnWin10').forEach(b => {
       b.disabled = !!(s.running || w.running);
