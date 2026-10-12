@@ -744,15 +744,21 @@ async function winUpdate(win){
    手機直爬模式（雲端伺服器＋Android APP）：由手機經原生接口逐場直爬 titan007；
    伺服器模式（本機）：伺服器端批量（代理池） */
 let fbPoll = null;
+function serverFetchBatch(btn){
+  /* 伺服器通道（代理池／chrome 指紋）：雲端 0.5C 都實測 52/52 成功
+   * （2026-10-12）——手機直爬俾 titan007 封 IP 時嘅正式後備 */
+  btn.disabled = true;
+  jpost('/api/fetch-batch', {hours: +($('#hoursSel').value || 0)})
+    .then(function(r){
+      if (r.error && !r.running) { toast(r.error); btn.disabled = false; return; }
+      pollFbatch();
+    })
+    .catch(function(e){ toast('即時更新失敗：' + e.message); btn.disabled = false; });
+}
 $('#btnOddsNow').onclick = async function(){
   if (this.disabled) return;
   if (window.PhoneCrawl && PhoneCrawl.modeOn) { phoneBatchAll(this); return; }
-  this.disabled = true;
-  try {
-    const r = await jpost('/api/fetch-batch', {hours: +($('#hoursSel').value || 0)});
-    if (r.error && !r.running) { toast(r.error); this.disabled = false; return; }
-    pollFbatch();
-  } catch (e) { toast('即時更新失敗：' + e.message); this.disabled = false; }
+  serverFetchBatch(this);
 };
 async function phoneBatchAll(btn){
   btn.disabled = true;
@@ -766,14 +772,15 @@ async function phoneBatchAll(btn){
     $('#updInfo').textContent = `📱 直爬自測緊（${PhoneCrawl.VERSION || '?'}）…`;
     const nt = await PhoneCrawl.netTest();
     if (!nt.ok) {
-      const hint = /Timeout|Connect|timed|refused|Socket/i.test(nt.err || '')
-        ? '——你部手機而家嘅網絡（多數係 WiFi）連唔到 titan007，佢哋 IP 層封鎖。請轉用流動數據再撳。'
-        : '——請檢查網絡或更新 APK。';
+      /* 2026-10-12 修正（用戶：「完全 UPDATE 唔到盤口同賠率」）：自測失敗
+       * 唔再齋報錯就走——自動轉用伺服器通道（代理池）照樣更新到落庫，
+       * 唔使用戶轉網絡／重裝 APK。手機直爬只係顯示加速通道，唔係唯一通道。 */
       $('#updInfo').textContent =
-        `📱 直爬自測失敗（${nt.err || '無回應'}${nt.ms ? '・' + nt.ms + 'ms' : ''}）${hint}` +
-        ` 賽事盤口會繼續用伺服器數據顯示。`;
-      toast('直爬自測失敗：' + (nt.err || '無回應') + '——轉流動數據再試');
+        `📱 直爬通道唔通（${nt.err || '無回應'}${nt.ms ? '・' + nt.ms + 'ms' : ''}，` +
+        `titan007 封咗你而家嘅網絡 IP）——自動改用伺服器通道更新…`;
+      toast('手機直爬唔通，轉用伺服器通道');
       btn.disabled = false;
+      serverFetchBatch(btn);
       return;
     }
   }
@@ -795,6 +802,12 @@ async function phoneBatchAll(btn){
     }
     $('#updInfo').textContent = msg;
     loadHome();
+    /* 自測過咗但爬落嚟全部失敗（網絡中途轉死／被封）——都係自動轉伺服器通道，
+     * 唔使用戶白撳（2026-10-12） */
+    if (!r.stopped && r.ok === 0 && r.fail > 0) {
+      toast('手機直爬全部失敗，自動改用伺服器通道');
+      serverFetchBatch(btn);
+    }
   } finally {
     btn.disabled = false;
   }
