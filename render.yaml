@@ -28,9 +28,9 @@ services:
       # 爬完寫 /data/football.db——手機 API 即刻有新數據，本機經
       # /api/export/odds pull 返去 merge。 worker 服務冇獨立硬碟，
       # 所以嵌入 web 進程（佢有 /data 永久碟），零額外成本。
-      # CRAWL_THREADS 收緊做 4：512MB 實例，8 線 + export 風 storm 會 OOM
-      # 冧機（2026-10-12 05:45 實測）
+      # CRAWL_THREADS：export 減載（5000行/頁）後 4→6——之前 20k/頁 export
+      # 風 storm + 8 線曾經 OOM 冧機（2026-10-12 05:45 實測）
       - key: ENABLE_CLOUD_CRAWL
         value: "1"
       - key: CRAWL_THREADS
-        value: "4"
+        value: "6"

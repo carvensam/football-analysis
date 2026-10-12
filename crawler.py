@@ -617,7 +617,9 @@ class Fetcher:
 
     def _load_good(self):
         """由 good_proxies.log 讀各進程共享嘅「生產驗證過」代理（攞到真頁先記錄）。
-        有呢個名單就唔使次次喺成池假代理入面抽獎（每個任務慳 15-25 秒）。"""
+        有呢個名單就唔使次次喺成池假代理入面抽獎（每個任務慳 15-25 秒）。
+        2026-10-12 提速：上限 60→250——驗證池經一日生產已儲起幾千個長命 IP，
+        60 個位太浪費；名單愈長，每個任務撞中活代理機率愈高。"""
         path = os.path.join(ROOT_DIR, 'logs', 'good_proxies.log')
         try:
             m = os.path.getmtime(path)
@@ -627,13 +629,13 @@ class Fetcher:
             return
         try:
             with open(path, encoding='utf-8', errors='replace') as f:
-                lines = f.readlines()[-300:]
+                lines = f.readlines()[-1200:]
             pool = []
             for ln in lines:
                 p = ln.strip()
                 if p and p not in pool:
                     pool.append(p)
-            self._good_pool = pool[-60:]
+            self._good_pool = pool[-250:]
             self._good_mtime = m
         except OSError:
             pass
@@ -643,7 +645,7 @@ class Fetcher:
         if proxy in self._good_pool:
             self._good_pool.remove(proxy)
         self._good_pool.insert(0, proxy)
-        del self._good_pool[60:]
+        del self._good_pool[250:]
         try:
             with open(os.path.join(ROOT_DIR, 'logs', 'good_proxies.log'),
                       'a', encoding='utf-8') as f:

@@ -287,7 +287,7 @@ def api_probe_hosts():
 
 
 _EXPORT_TABLES = ('odds_asian', 'odds_ou', 'odds_1x2_all', 'odds_corner',
-                  'hkjc_ou')
+                  'hkjc_asian', 'hkjc_ou', 'match_goals', 'match_corners')
 
 
 def api_export_odds(after_rowid=0, limit=5000):

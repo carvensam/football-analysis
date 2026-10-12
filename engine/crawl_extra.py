@@ -661,17 +661,47 @@ def task_odds_page(conn, fetcher, match_id, kickoff, market):
 # 抓 overunder.aspx（行 task_odds_page 同一條寫庫路徑，initial→closing 七時點），
 # 每場每 20 分鐘最多刷新一次，直至開賽。開賽後舊隊列照舊補全歷史時點。
 _UPCOMING_OU_LAST = {}        # match_id -> epoch，今次行程內嘅節流表
-UPCOMING_OU_INTERVAL = 900    # 15 分鐘（2026-10-08 加速：尾盤貼率更新加密一倍；
-                              # titan007 開賽前變盤好密，20 分鐘窗口會漏中段變化）
+UPCOMING_OU_INTERVAL = 480    # 8 分鐘（2026-10-12 好波 OU 提速：睇門狗並行 4 線+
+                              # 單一選舉後每輪實際容量大 4 倍，節流收緊——舊制
+                              # 15 分鐘係順序行嘅樽頸妥協，而家唔使）
 UPCOMING_OU_WINDOW_H = 60     # 60 小時：48h 顯示窗口外圍再加緩衝——舊版 36h，
                               # 第 37-48 小時嘅場次（如今晚嘅 3024480）冇人預抓，
                               # OU 線要等到開賽前一日先出現（2026-10-08）
 
 
+OU_WATCHDOG_LOCK = os.path.join(BASE_DIR, 'engine', 'ou_watchdog.lock')
+
+
+def _ou_watchdog_elect():
+    """睇門狗單一選舉（2026-10-12 好波 OU 提速 4 倍措施）：舊制每個 worker
+    進程各跑一條睇門狗線程——5 條一齊刷同一批臨場場次，代理配額燒 5 重複。
+    而家每輪選舉一次：鎖冇人持有／持有人死咗 → 自己搶；否則今輪罷工。
+    持有人中途冧 → 下一輪自動由其他線道接手。"""
+    import ctypes
+    try:
+        if os.path.exists(OU_WATCHDOG_LOCK):
+            pid = int(open(OU_WATCHDOG_LOCK).read().strip())
+            if pid > 0:
+                h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+                if h:
+                    ctypes.windll.kernel32.CloseHandle(h)
+                    return False        # 有人做緊
+    except (ValueError, OSError):
+        pass
+    try:
+        tmp = OU_WATCHDOG_LOCK + '.tmp'
+        with open(tmp, 'w') as fp:
+            fp.write(str(os.getpid()))
+        os.replace(tmp, OU_WATCHDOG_LOCK)
+        return True
+    except OSError:
+        return False
+
+
 def _ou_watchdog(cfg, state):
     """好波 APP OU 預抓看門狗（獨立線程）：每 60 秒一循環，為未來 36 小時內
-    開賽嘅未開賽場次預抓/刷新大小球盤，逐場 20 分鐘節流。與任務線程完全獨立，
-    歷史積壓幾大都唔影響臨場 OU 線更新。"""
+    開賽嘅未開賽場次預抓/刷新大小球盤。2026-10-12 提速：單一選舉（見
+    _ou_watchdog_elect）+ 4 線並行取盤 + 節流收緊到 8 分鐘。"""
     conn = db_connect(cfg)
     fetcher = ExtraFetcher(conn, cfg, state_prefix='extra:ouwatch:')
     while not state['stop']:
@@ -679,13 +709,13 @@ def _ou_watchdog(cfg, state):
         if cmd == 'stop':
             break
         try:
-            if upcoming_ou_pending(conn):
-                n = refresh_upcoming_ou(conn, fetcher)
+            if _ou_watchdog_elect() and upcoming_ou_pending(conn):
+                n = refresh_upcoming_ou(conn, fetcher, cfg=cfg, threads=6)
                 if n:
                     log(conn, 'INFO', '預抓 OU（看門狗）：%d 場有更新' % n)
         except Exception:
             log(conn, 'WARN', 'OU 看門狗異常\n%s' % traceback.format_exc())
-        time.sleep(60)
+        time.sleep(40)
     try:
         conn.close()
     except Exception:
@@ -705,8 +735,24 @@ def upcoming_ou_pending(conn):
         return 0
 
 
-def refresh_upcoming_ou(conn, fetcher):
-    """為即將開賽場次預抓/刷新大小球盤（逐場 20 分鐘節流）。回傳今輪成功幾多場。"""
+def _ou_refresh_one(cfg, mid, kickoff):
+    """並行取盤 worker：獨立 DB 連線 + Fetcher（同 shenbo 並行取盤同款）。
+    task_odds_page 回傳 True=有更新 / 'NO_DATA' / False。"""
+    c2 = db_connect(cfg)
+    f2 = ExtraFetcher(c2, cfg, state_prefix='extra:ouwatch:t%d:' % mid)
+    try:
+        ko = dt.datetime.strptime(kickoff, '%Y-%m-%d %H:%M')
+        return mid, task_odds_page(c2, f2, mid, ko, 'ou') is True
+    except Exception:
+        log(c2, 'WARN', '預抓 OU 失敗 %d\n%s' % (mid, traceback.format_exc()))
+        return mid, False
+    finally:
+        c2.close()
+
+
+def refresh_upcoming_ou(conn, fetcher, cfg=None, threads=1):
+    """為即將開賽場次預抓/刷新大小球盤（逐場節流）。回傳今輪成功幾多場。
+    2026-10-12：threads>1 時並行取盤（每線獨立連線），好波 OU 更新提速 4 倍。"""
     now = dt.datetime.now()
     hi = (now + dt.timedelta(hours=UPCOMING_OU_WINDOW_H)).strftime('%Y-%m-%d %H:%M')
     lo = (now - dt.timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M')
@@ -717,7 +763,7 @@ def refresh_upcoming_ou(conn, fetcher):
         ).fetchall()
     except sqlite3.OperationalError:
         return 0
-    did = 0
+    due = []
     t = time.time()
     for mid, kickoff in rows:
         if t - _UPCOMING_OU_LAST.get(mid, 0) < UPCOMING_OU_INTERVAL:
@@ -726,12 +772,31 @@ def refresh_upcoming_ou(conn, fetcher):
         if len(_UPCOMING_OU_LAST) > 3000:      # 節流表防無限膨脹
             _UPCOMING_OU_LAST.clear()
             _UPCOMING_OU_LAST[mid] = t
-        try:
-            ko = dt.datetime.strptime(kickoff, '%Y-%m-%d %H:%M')
-            if task_odds_page(conn, fetcher, mid, ko, 'ou') is True:
+        due.append((mid, kickoff))
+    if not due:
+        return 0
+    if threads <= 1 or cfg is None:
+        did = 0
+        for mid, kickoff in due:
+            try:
+                ko = dt.datetime.strptime(kickoff, '%Y-%m-%d %H:%M')
+                if task_odds_page(conn, fetcher, mid, ko, 'ou') is True:
+                    did += 1
+            except Exception:
+                log(conn, 'WARN', '預抓 OU 失敗 %d\n%s'
+                    % (mid, traceback.format_exc()))
+        return did
+    import concurrent.futures as cf
+    did = 0
+    with cf.ThreadPoolExecutor(max_workers=threads) as pool:
+        futs = [pool.submit(_ou_refresh_one, cfg, mid, ko_) for mid, ko_ in due]
+        for fut in cf.as_completed(futs):
+            try:
+                _, ok = fut.result()
+            except Exception:                     # noqa: BLE001
+                ok = False
+            if ok:
                 did += 1
-        except Exception:
-            log(conn, 'WARN', '預抓 OU 失敗 %d\n%s' % (mid, traceback.format_exc()))
     return did
 
 
