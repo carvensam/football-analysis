@@ -44,6 +44,11 @@
     var stopping = btn.className !== 'go';
     btn.disabled = true;
     btn.textContent = stopping ? '停止中…' : '啟動中…';
+    /* 手機直爬一併停：server 爬蟲停唔到手機網絡嗰條線（2026-10-12 用戶：
+     * 「停止掣無用」——其實淨係停咗伺服器嗰邊，手機仲繼續逐場試紧） */
+    if (stopping && window.PhoneCrawl && window.PhoneCrawl.running) {
+      window.PhoneCrawl.stop();
+    }
     fetch(stopping ? '/api/crawl/stop' : '/api/crawl/run',
           { method: 'POST' })
       .then(function (r) { return r.json(); })

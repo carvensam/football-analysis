@@ -759,16 +759,41 @@ async function phoneBatchAll(btn){
   /* 即將開賽全部 ＋ 進行中（已開賽未有賽果）——後者尾盤即最新參考盤 */
   const list = homeData.upcoming.concat(homeData.played.filter(m => !m.score));
   if (!list.length) { toast('冇可更新場次'); btn.disabled = false; return; }
+  /* 開爬前網絡自測：WiFi IP 俾 titan007 封嗰陣，舊版會傻更更逐場白等 20 秒
+   * 逾時爬成十幾分鐘先發現全滅（2026-10-11/12 連續兩日 ✗N 嘅元兇）。
+   * 自測唔過即刻講清楚原因，唔爬。 */
+  if (PhoneCrawl.netTest) {
+    $('#updInfo').textContent = `📱 直爬自測緊（${PhoneCrawl.VERSION || '?'}）…`;
+    const nt = await PhoneCrawl.netTest();
+    if (!nt.ok) {
+      const hint = /Timeout|Connect|timed|refused|Socket/i.test(nt.err || '')
+        ? '——你部手機而家嘅網絡（多數係 WiFi）連唔到 titan007，佢哋 IP 層封鎖。請轉用流動數據再撳。'
+        : '——請檢查網絡或更新 APK。';
+      $('#updInfo').textContent =
+        `📱 直爬自測失敗（${nt.err || '無回應'}${nt.ms ? '・' + nt.ms + 'ms' : ''}）${hint}` +
+        ` 賽事盤口會繼續用伺服器數據顯示。`;
+      toast('直爬自測失敗：' + (nt.err || '無回應') + '——轉流動數據再試');
+      btn.disabled = false;
+      return;
+    }
+  }
   $('#updInfo').textContent =
-    `📱 裝置 ${PhoneCrawl.device} 開始直爬 ${list.length} 場（手機網絡 → titan007）…`;
+    `📱 裝置 ${PhoneCrawl.device}（${PhoneCrawl.VERSION || '?'}）開始直爬 ${list.length} 場（手機網絡 → titan007）…`;
   try {
     const r = await PhoneCrawl.crawlAll(list, st => {
       $('#updInfo').textContent =
-        `📱 手機直爬緊 ${st.done} 場（✓${st.ok} ✗${st.fail} 未開盤${st.noOdds}）…`;
+        `📱 手機直爬緊 ${st.done}/${list.length} 場（✓${st.ok} ✗${st.fail} 未開盤${st.noOdds}）…` +
+        (window.PhoneCrawl && PhoneCrawl._stop ? '（停止緊，下一場退出）' : '');
     }, m => m.line || null);
-    $('#updInfo').textContent =
-      `📱 手機直爬完成：更新 ${r.ok}｜失敗 ${r.fail}｜未開盤 ${r.noOdds}——` +
-      `已即時顯示＋同步雲端（裝置 ${PhoneCrawl.device}）`;
+    let msg = r.stopped
+      ? `📱 手機直爬已按要求停止（做到 ${r.done} 場：✓${r.ok} ✗${r.fail}）`
+      : `📱 手機直爬完成：更新 ${r.ok}｜失敗 ${r.fail}｜未開盤 ${r.noOdds}——` +
+        `已即時顯示＋同步雲端（裝置 ${PhoneCrawl.device}）`;
+    if (r.fail > 0) {
+      msg += `｜錯誤範例：${(r.errs || []).join('；') || '無回應'}` +
+        '。全部場次都失敗＝手機而家嘅網絡連唔到 titan007（多數係 WiFi IP 俾封）——轉用流動數據再撳一次；盤口會繼續用伺服器數據顯示。';
+    }
+    $('#updInfo').textContent = msg;
     loadHome();
   } finally {
     btn.disabled = false;

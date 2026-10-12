@@ -106,6 +106,7 @@
   /* ---- 模組主體 ---- */
   const PhoneCrawl = {
     avail: typeof window !== 'undefined' && !!window.AndroidFetch,
+    VERSION: 'pc5.2.2',         // 顯示喺批量狀態行——截圖即知手機行緊邊版 JS
     modeOn: false,              // 伺服器 crawl_mode='cloud' 且原生接口可用
     running: false,
     done: 0, ok: 0, fail: 0, noOdds: 0,
@@ -119,6 +120,22 @@
       }
       return d;
     })(),
+    /* 診斷回報：原生錯誤/頁首傳返伺服器 crawl_log（2026-10-12 擴充：
+     * catch 分支都報——前版淨係 ERR:/noOdds 兩路報，titanGet 直接抛例外
+     * 嗰陣靜靜哋失蹤，搞到連續兩日 ✗N 零記錄）。sendBeacon 優先（頁面跳轉
+     * 都送得走），fetch 做後備；失敗都唔准影響主流程。 */
+    _dbg(payload) {
+      try {
+        const body = JSON.stringify(Object.assign({ device: this.device },
+                                                  payload));
+        if (navigator.sendBeacon &&
+            navigator.sendBeacon('/api/phone-odds-debug', body)) return;
+        fetch('/api/phone-odds-debug', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body,
+        }).catch(() => {});
+      } catch (e) {}
+    },
     /* 撳掣入口：爬一場。srv（可選）＝伺服器嘅現行盤口 {v, ho, ao}，
      * 用嚟「核對」：同雲端（本機鏡像）比較，agree=true/false/null（冇本機數據）。
      * 只係核對＋自己熒幕顯示——**唔寫入任何庫**（2026-10-02 用戶定調：
@@ -126,6 +143,17 @@
      * 做記錄（工作記錄見到），但伺服器唔會照單全收。） */
     crawlOne(mid, kickoff, srv) {
       return new Promise((resolve) => {
+        /* APK 太舊冇 titanGet（接口名唔同/未注入）——單獨標記，同網絡錯誤分開 */
+        if (typeof window === 'undefined' ||
+            !window.AndroidFetch ||
+            typeof window.AndroidFetch.titanGet !== 'function') {
+          this.res[mid] = { err: 'native-method-missing' };
+          this.fail++;
+          this._dbg({ id: mid, err: 'native-method-missing',
+                      ua: (navigator.userAgent || '').slice(0, 120) });
+          resolve(this.res[mid]);
+          return;
+        }
         let txt = null;
         try {
           txt = window.AndroidFetch.titanGet(
@@ -134,20 +162,15 @@
         } catch (e) {
           this.res[mid] = { err: String(e) };
           this.fail++;
+          this._dbg({ id: mid, err: 'thrown:' + String(e).slice(0, 120),
+                      ua: (navigator.userAgent || '').slice(0, 120) });
           resolve(this.res[mid]);
           return;
         }
         if (!txt || txt.indexOf('ERR:') === 0) {
           this.res[mid] = { err: txt || '無回應' };
           this.fail++;
-          /* 診斷（2026-10-10）：回報原生層錯誤，追查手機直爬全部失敗 */
-          try {
-            fetch('/api/phone-odds-debug', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ id: mid, device: this.device,
-                                     err: (txt || 'empty').slice(0, 120) }),
-            }).catch(() => {});
-          } catch (e) {}
+          this._dbg({ id: mid, err: (txt || 'empty').slice(0, 120) });
           resolve(this.res[mid]);
           return;
         }
@@ -155,15 +178,9 @@
         if (!snaps) {
           this.res[mid] = { noOdds: true };
           this.noOdds++;
-          /* 診斷（2026-10-10）：解析不到盤口時回報實際頁面內容——
+          /* 診斷：解析不到盤口時回報實際頁面內容——
            * 用嚟分辨係 titan007 改咗頁面定係手機 IP 俾人 serving 空殼頁 */
-          try {
-            fetch('/api/phone-odds-debug', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ id: mid, device: this.device,
-                                     len: txt.length, head: txt.slice(0, 600) }),
-            }).catch(() => {});
-          } catch (e) {}
+          this._dbg({ id: mid, len: txt.length, head: txt.slice(0, 600) });
           resolve(this.res[mid]);
           return;
         }
@@ -192,15 +209,52 @@
     async crawlAll(list, onTick, srvOf) {
       if (this.running) return { running: true };
       this.running = true;
+      this._stop = false;
       this.done = 0; this.ok = 0; this.fail = 0; this.noOdds = 0;
+      const errs = [];
       for (const m of list) {
+        if (this._stop) break;              // 「■ 停止」即斷，唔等下一場
         await this.crawlOne(m.id, m.kickoff, srvOf ? srvOf(m) : null);
+        const rr = this.res[m.id];
+        if (rr && rr.err && errs.length < 5 && errs.indexOf(rr.err) === -1)
+          errs.push(rr.err);
         this.done++;
         if (onTick) onTick(this);
         await new Promise(r => setTimeout(r, 900));
       }
       this.running = false;
-      return { done: true, ok: this.ok, fail: this.fail, noOdds: this.noOdds };
+      return { done: true, ok: this.ok, fail: this.fail, noOdds: this.noOdds,
+               errs, stopped: this._stop };
+    },
+    /* 停止掣（右下角「■ 停止」共用）：叫 crawlAll 喺下一場前退出 */
+    stop() { this._stop = true; },
+    /* 開爬前自測：原生接口試抓 titan007 一頁（id=1 轻量頁）。
+     * 回 {ok, ms, err}——唔通就即刻提示轉流動數據，唔會傻更更爬 40 場先發現。
+     * （2026-10-12 連續兩日 ✗N：WiFi 網絡 IP 層俾 titan007 封，每場白等
+     *   20 秒逾時，用户以為 app 死咗。） */
+    netTest() {
+      return new Promise((resolve) => {
+        if (typeof window === 'undefined' ||
+            !window.AndroidFetch ||
+            typeof window.AndroidFetch.titanGet !== 'function') {
+          resolve({ ok: false, ms: 0, err: 'native-method-missing' });
+          return;
+        }
+        const t0 = Date.now();
+        try {
+          const txt = window.AndroidFetch.titanGet(
+            'https://vip.titan007.com/changeDetail/handicap.aspx?id=1&companyid=12');
+          const ms = Date.now() - t0;
+          if (!txt || txt.indexOf('ERR:') === 0) {
+            resolve({ ok: false, ms, err: (txt || 'empty').slice(0, 80) });
+          } else {
+            resolve({ ok: true, ms, len: txt.length });
+          }
+        } catch (e) {
+          resolve({ ok: false, ms: Date.now() - t0,
+                    err: 'thrown:' + String(e).slice(0, 100) });
+        }
+      });
     },
     /* 畫面合併：有手機直爬結果就用佢（📱），否則 null 用返伺服器數據 */
     lineFor(mid) {
