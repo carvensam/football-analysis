@@ -5266,8 +5266,10 @@ def _fw8s_settle(conn):
 
 
 def api_fw8s_full(hours=72, force=False):
-    """精選8s 主頁：未來場次掃描（入選＋觀望）＋每聯賽歷史統計。"""
+    """精選8s 主頁：未來場次掃描（入選＋觀望）＋每聯賽歷史統計。
+    寫入（記錄入選＋結算）放背景執行——爬蟲長寫交易鎖庫，同步寫會 500。"""
     import fw8s_engine
+    import threading
     now = time.time()
     if (not force and _FW8S_CACHE['data'] is not None
             and _FW8S_CACHE['hours'] == hours
@@ -5276,7 +5278,6 @@ def api_fw8s_full(hours=72, force=False):
     conn = db()
     try:
         picks, watched, stats = fw8s_engine.scan_upcoming(conn, hours)
-        settled = _fw8s_settle(conn)
         rules = fw8s_engine.load_rules()
         modes = {'direct': 0, 'refine': 0, 'watch': 0}
         for r in rules.values():
@@ -5288,14 +5289,34 @@ def api_fw8s_full(hours=72, force=False):
                             'direct_leagues': modes.get('direct', 0),
                             'refine_leagues': modes.get('refine', 0),
                             'watch_leagues': modes.get('watch', 0)},
-                'settled_now': settled,
+                'settled_now': 0,
                 'updated': time.strftime('%Y-%m-%d %H:%M:%S')}
         _FW8S_CACHE['data'] = data
         _FW8S_CACHE['ts'] = now
         _FW8S_CACHE['hours'] = hours
-        return data
     finally:
         conn.close()
+
+    def _bg(recs):
+        for attempt in range(6):
+            try:
+                c2 = db()
+                try:
+                    fw8s_engine.log_picks(c2, recs)
+                    _fw8s_settle(c2)
+                finally:
+                    c2.close()
+                return
+            except sqlite3.OperationalError:
+                time.sleep(5)
+            except Exception:
+                return
+    try:
+        threading.Thread(target=_bg, args=(list(picks),),
+                         daemon=True).start()
+    except Exception:
+        pass
+    return data
 
 
 def api_fw8s_rules():
@@ -5355,7 +5376,10 @@ def api_fw8s_history():
     """精選8s 過往入選紀錄（已結算 W/L/P）。"""
     conn = db()
     try:
-        _fw8s_settle(conn)
+        try:
+            _fw8s_settle(conn)
+        except sqlite3.OperationalError:
+            pass  # 爬蟲鎖庫：今次略過，下次入嚟會再結算
         rows = conn.execute(
             'SELECT f.match_id, f.league, f.mode, f.conds, f.line, f.odds, '
             'f.added_at, f.result, f.settled_at, m.kickoff, m.home_score, '

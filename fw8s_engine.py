@@ -480,19 +480,19 @@ def scan_upcoming(conn, hours=72):
                     watched.append(rec)
                     continue
             picks.append(rec)
-            _log_pick(conn, rec)
         elif d == 'up':
             watched.append(rec)
     stats = league_stats(conn)
     return picks, watched, stats
 
 
-def _log_pick(conn, rec):
-    try:
-        conn.execute('''CREATE TABLE IF NOT EXISTS fw8s_log(
-            match_id INTEGER PRIMARY KEY, league TEXT, direction TEXT,
-            mode TEXT, conds TEXT, line TEXT, odds TEXT,
-            added_at TEXT, result TEXT, settled_at TEXT)''')
+def log_picks(conn, recs):
+    """記低入選場次（背景執行；寫鎖由 app 層重試）。"""
+    conn.execute('''CREATE TABLE IF NOT EXISTS fw8s_log(
+        match_id INTEGER PRIMARY KEY, league TEXT, direction TEXT,
+        mode TEXT, conds TEXT, line TEXT, odds TEXT,
+        added_at TEXT, result TEXT, settled_at TEXT)''')
+    for rec in recs:
         conn.execute(
             'INSERT INTO fw8s_log(match_id, league, direction, mode, conds, '
             'line, odds, added_at) VALUES(?,?,?,?,?,?,?,?) '
@@ -502,9 +502,7 @@ def _log_pick(conn, rec):
             (rec['id'], rec['league'], 'up', rec['mode'],
              json.dumps(rec.get('conds') or [], ensure_ascii=False),
              rec.get('line'), rec.get('odds'), rec['scanned_at']))
-        conn.commit()
-    except Exception:
-        pass
+    conn.commit()
 
 
 def league_stats(conn):
