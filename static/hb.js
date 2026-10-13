@@ -87,16 +87,32 @@
     var row = listEl.querySelector('.mrow[data-mid="' + mid + '"]');
     if (!row) return Promise.resolve(null);
     if (row._pred && !force) return Promise.resolve(row._pred);
+    return _predictFetch(row, mid, 0);
+  }
+
+  /* 2026-10-14：失敗自動重試一次（伺服器好波預測已改背景快取，理論上
+   * 唔會再 502；萬一撞正冷計算／維護，重試一次後先放棄，唔使慘情咁「—」） */
+  function _predictFetch(row, mid, tried) {
     return fetch('/api/hb/predict?id=' + mid)
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (!r.ok && tried < 1) {
+          return new Promise(function (res) { setTimeout(res, 1500); })
+            .then(function () { return _predictFetch(row, mid, tried + 1); });
+        }
+        return r.json();
+      })
       .then(function (d) {
-        if (d.error) throw new Error(d.error);
+        if (d && d.error) throw new Error(d.error);
         row._pred = d;
         fillLean(row, d);
         if (row.classList.contains('open')) fillBody(row, d);
         return d;
       })
       .catch(function () {
+        if (tried < 1) {
+          return new Promise(function (res) { setTimeout(res, 1500); })
+            .then(function () { return _predictFetch(row, mid, tried + 1); });
+        }
         var lean = row.querySelector('[data-lean]');
         if (lean) lean.textContent = '—';
         return null;

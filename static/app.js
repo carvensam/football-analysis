@@ -575,6 +575,88 @@ $('#betShare').onclick = () => {
   shareText(BetSlip.txt(true));
   BetSlip.close();
 };
+/* ---------- 👯 搵孖生（2026-10-13） ----------
+ * 主頁每場「👯搵孖生」掣 → /api/twin → 全庫＋同聯賽各搵歷史上
+ * 六項盤口完全相同（盤口 100% 同、賠率 ±0.03）嘅完場場次，
+ * 展示上/下/走盤%。條件：上仗對賽盤口＋贏盤方、初盤、開賽前四小時、
+ * 尾盤、尾盤大小球（盤口＋大細賠率）。
+ */
+const Twin = {
+  btn(m, label){
+    const d = esc(JSON.stringify({id: m.id, ko: m.kickoff || '',
+                                  lg: m.league || '', h: m.home || '',
+                                  a: m.away || ''}));
+    return `<button class="twin-btn" data-twin="${d}" title="全資料庫＋同聯賽，搵盤口完全相同嘅孖生場次">👯${label || '搵孖生'}</button>`;
+  },
+  async open(d){
+    $('#twinMeta').textContent =
+      `${(d.ko || '').slice(5, 16)}　${d.lg}　${d.h} vs ${d.a}`;
+    $('#twinBody').innerHTML =
+      '<div class="note">⏳ 搵緊孖生…（全資料庫掃描，約需幾秒）</div>';
+    $('#twinModal').classList.add('on');
+    let r;
+    try {
+      r = await jget('/api/twin?id=' + d.id);
+    } catch (e) {
+      $('#twinBody').innerHTML = `<div class="note">⚠ 查詢失敗：${esc(e.message)}</div>`;
+      return;
+    }
+    if (!r || r.error) {
+      $('#twinBody').innerHTML =
+        `<div class="note">⚠ ${esc((r && r.error) || '未知錯誤')}</div>`;
+      return;
+    }
+    const crit = (r.criteria || []).map(c =>
+      `<div class="twin-crit">・${esc(c)}</div>`).join('');
+    $('#twinBody').innerHTML =
+      `<div class="twin-crit-t">孖生條件（全部相同）</div>${crit}` +
+      `<div class="twin-cards">${this._card('🌍 全資料庫', r.all)}` +
+      `${this._card('🏆 同聯賽・杯賽（' + (r.league || '') + '）', r.league_stat)}</div>` +
+      this._list(r.list || [], r.list_total || 0);
+  },
+  _card(title, s){
+    if (!s || !s.n) {
+      return `<div class="twin-card"><h4>${esc(title)}</h4>` +
+             `<div class="note">0 場孖生</div></div>`;
+    }
+    const u = s.up_pct, dn = s.down_pct, p = s.push_pct;
+    return `<div class="twin-card"><h4>${esc(title)}　<b>${s.n}場</b></h4>` +
+      `<div class="twin-pct">` +
+      (u > 0 ? `<span class="up" style="width:${u}%">上${u}%</span>` : '') +
+      (p > 0 ? `<span class="pw" style="width:${p}%">走${p}%</span>` : '') +
+      (dn > 0 ? `<span class="dn" style="width:${dn}%">下${dn}%</span>` : '') +
+      `</div>` +
+      `<div class="twin-nums">上盤 ${s.up} 場・下盤 ${s.down} 場・走盤 ${s.push} 場</div>` +
+      `</div>`;
+  },
+  _list(list, total){
+    if (!total) return '';
+    const badge = {A: '<span class="twin-r r-up">上</span>',
+                   B: '<span class="twin-r r-down">下</span>',
+                   P: '<span class="twin-r r-pw">走</span>'};
+    const rows = list.map(t =>
+      `<div class="twin-row${t.same_lg ? ' same' : ''}">` +
+      `<span class="ko">${esc((t.ko || '').slice(0, 16))}</span>` +
+      `<span class="lg">${esc(t.lg)}${t.same_lg ? ' 🏆' : ''}</span>` +
+      `<span class="tm">${esc(t.h)} <span class="vs">vs</span> ${esc(t.a)}</span>` +
+      `<span class="sc">${esc(t.score)}</span>${badge[t.r] || ''}</div>`).join('');
+    const more = total > list.length
+      ? `<div class="note">…仲有 ${total - list.length} 場（只列最近 ${list.length} 場）</div>` : '';
+    return `<div class="twin-crit-t">孖生場次（最近 ${Math.min(list.length, total)} 場・🏆=同聯賽）</div>` +
+           `<div class="twin-list">${rows}</div>${more}`;
+  },
+  close(){ $('#twinModal').classList.remove('on'); },
+};
+document.addEventListener('click', ev => {
+  const b = ev.target.closest('[data-twin]');
+  if (!b) return;
+  ev.stopPropagation();
+  try { Twin.open(JSON.parse(b.dataset.twin)); } catch (e) {}
+});
+$('#twinClose').onclick = () => Twin.close();
+$('#twinModal').addEventListener('click', ev => {
+  if (ev.target.id === 'twinModal') Twin.close();
+});
 function _mrow(m, playedSec){
   const pc = window.PhoneCrawl ? PhoneCrawl.lineFor(m.id) : null;
   const pcMark = pc ? (pc.agree === true ? ' <span style="color:var(--up);font-size:10px">✓同本機</span>'
@@ -600,7 +682,7 @@ function _mrow(m, playedSec){
     <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
     <span class="lg">${esc(m.league)}</span>
     <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}</span>
-    ${_stateTag(m.state)}${sc}${line}${oud}${od}${at}${rfb}${BetSlip.btn(m)}</div>`;
+    ${_stateTag(m.state)}${sc}${line}${oud}${od}${at}${rfb}${BetSlip.btn(m)}${Twin.btn(m)}</div>`;
 }
 /* 同賽事盤口模型：主頁球隊旁展示上/下盤%（oupred = upcoming() 每場自帶） */
 function _oupredBadge(m, p){
@@ -673,7 +755,11 @@ function renderHome(){
     h += _mrow(m, true);
   }
   $('#homeList').innerHTML = h;
-  $$('#homeList .mrow').forEach(r => r.onclick = () => openDetail(+r.dataset.mid));
+  // 2026-10-13：撳「🎯投注」/「👯搵孖生」（document 委託）時唔好連帶開詳情頁
+  $$('#homeList .mrow').forEach(r => r.onclick = ev => {
+    if (ev.target.closest('[data-bet],[data-twin]')) return;
+    openDetail(+r.dataset.mid);
+  });
   // 每場「⟳」掣：手機直爬模式由手機經原生接口直接抓；否則經伺服器
   $$('#homeList .rfb').forEach(b => b.onclick = async ev => {
     ev.stopPropagation();

@@ -198,6 +198,33 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
 .bet-btns{display:flex;gap:8px;flex-wrap:wrap}
 .bet-betbtn{background:none;border:1px solid var(--gold);color:var(--gold2);border-radius:6px;padding:2px 8px;font-size:12px;cursor:pointer;white-space:nowrap}
 .bet-betbtn:hover{background:#241d0a}
+/* 👯 搵孖生（2026-10-13） */
+.twin-btn{flex:none;background:none;border:1px solid var(--accent);color:var(--accent);border-radius:6px;padding:2px 8px;font-size:12px;cursor:pointer;white-space:nowrap}
+.twin-btn:hover{background:#12202e}
+.twin-crit-t{font-size:12px;color:var(--dim);margin:8px 0 4px}
+.twin-crit{font-size:12px;color:var(--tx);line-height:1.7}
+.twin-cards{display:flex;gap:10px;flex-wrap:wrap;margin:10px 0}
+.twin-card{flex:1;min-width:220px;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.twin-card h4{font-size:13px;color:var(--gold2);margin-bottom:6px}
+.twin-pct{display:flex;height:24px;border-radius:6px;overflow:hidden;font-size:11px;font-weight:700;color:#fff}
+.twin-pct span{display:flex;align-items:center;justify-content:center;min-width:0;overflow:hidden;white-space:nowrap}
+.twin-pct .up{background:#2c5c3c}
+.twin-pct .dn{background:#7a2e2e}
+.twin-pct .pw{background:#555}
+.twin-nums{font-size:12px;color:var(--dim);margin-top:4px}
+.twin-list{max-height:32vh;overflow:auto;border:1px solid var(--line);border-radius:8px}
+.twin-row{display:flex;gap:8px;align-items:center;padding:5px 8px;font-size:12px;border-bottom:1px solid var(--line)}
+.twin-row:last-child{border-bottom:none}
+.twin-row.same{background:rgba(201,162,39,.07)}
+.twin-row .ko{color:var(--dim);min-width:88px}
+.twin-row .lg{color:var(--gold2);min-width:80px}
+.twin-row .tm{flex:1;min-width:150px}
+.twin-row .tm .vs{color:var(--dim)}
+.twin-row .sc{font-weight:700;color:var(--gold2)}
+.twin-r{display:inline-block;min-width:20px;text-align:center;border-radius:5px;font-size:11px;font-weight:700;padding:1px 3px;color:#fff}
+.twin-r.r-up{background:#2c5c3c}
+.twin-r.r-down{background:#7a2e2e}
+.twin-r.r-pw{background:#555}
 </style>
 </head>
 <body>
@@ -470,8 +497,19 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     </div>
   </div>
 </div>
+<!-- 👯 搵孖生：全庫／同聯賽 搵歷史上六項盤口完全相同嘅完場場次 -->
+<div class="bet-modal" id="twinModal">
+  <div class="bet-sheet">
+    <h3>👯 搵孖生</h3>
+    <div class="b-meta" id="twinMeta"></div>
+    <div id="twinBody"></div>
+    <div class="bet-btns" style="margin-top:10px">
+      <button class="btn" id="twinClose">關閉</button>
+    </div>
+  </div>
+</div>
 <script src="/static/phone_crawl.js?v=5.3.0"></script>
-<script src="/static/app.js?v=5.3.6"></script>
+<script src="/static/app.js?v=5.3.8"></script>
 <script src="/static/crawlbtn.js?v=5.2.0"></script>
 </body>
 </html>

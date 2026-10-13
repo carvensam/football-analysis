@@ -142,7 +142,7 @@ _HEAVY_GET_PREFIXES = (
     '/api/htft_rules',
     '/api/predstats',
     '/api/results', '/api/htft', '/api/picks', '/api/screen',
-    '/api/upcoming', '/api/lgpred', '/api/oupred',
+    '/api/upcoming', '/api/lgpred', '/api/oupred', '/api/twin',
 )
 
 
@@ -161,7 +161,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.2.0'
+SERVER_VERSION = '5.2.1'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -364,6 +364,12 @@ def _migrate_db():
             conn.commit()
             print('[boot] odds_asian 已升級：新增 fetched_at（賠率最後更新時間）',
                   flush=True)
+        # 2026-10-12：孖生查詢/盤口統計用——label+handicap 索引，冇佢就要成表掃描
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_oa_label_hc '
+                     'ON odds_asian(label, company_id, handicap, giver)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_ou_label_line '
+                     'ON odds_ou(label, company_id, total_line)')
+        conn.commit()
     finally:
         conn.close()
 
@@ -4018,6 +4024,15 @@ def api_hitrate(kind, mid):
 # ============ 好波（2026-10-05）：大小球＋半全場 ============
 _hb_ctx = {'ctx': None, 'ts': 0}
 HB_CTX_TTL = 3600
+_hb_ctx_lock = threading.Lock()
+# 好波預測結果快取（2026-10-14 502 風暴修復）：一頁 81 場同時打 81 個重型
+# predict，並行 pandas 喺 512MB 免費實例直接 OOM／CPU 飽和，頁面成版 502
+# 「用唔到」。改為伺服器端背景預先計算＋快取：用戶請求=讀快取（毫秒級），
+# 計算全部由背景線程串行吸收；賠率變（sig）或資料池重建（gen +1）先失效。
+_hb_pre = {}                 # mid -> {'ts', 'sig', 'gen', 'data'}
+_hb_pre_lock = threading.Lock()
+_hb_pre_gen = [0]            # 資料池世代：重建 +1，全快取作廢
+_HB_PRE_MAX = 500
 
 
 def _hb_context():
@@ -4025,14 +4040,18 @@ def _hb_context():
     now = time.time()
     if _hb_ctx['ctx'] is not None and now - _hb_ctx['ts'] < HB_CTX_TTL:
         return _hb_ctx['ctx']
-    conn = db()
-    try:
-        ctx = haobao_engine.HB(conn)
-    finally:
-        conn.close()
-    _hb_ctx['ctx'] = ctx
-    _hb_ctx['ts'] = now
-    return ctx
+    with _hb_ctx_lock:       # 兩個請求同時撞冷池：只准一個 build，其餘等
+        now = time.time()
+        if _hb_ctx['ctx'] is not None and now - _hb_ctx['ts'] < HB_CTX_TTL:
+            return _hb_ctx['ctx']
+        conn = db()
+        try:
+            ctx = haobao_engine.HB(conn)
+        finally:
+            conn.close()
+        _hb_ctx['ctx'] = ctx
+        _hb_ctx['ts'] = time.time()
+        return ctx
 
 
 def api_hb_list(hours=72):
@@ -4074,7 +4093,37 @@ def api_hb_list(hours=72):
 
 
 def api_hb_predict(mid):
-    """好波單場：大小球 49 項分析＋共識＋精選＋半全場＋關係。"""
+    """好波單場（快取版）：命中快取毫秒回；miss 先計，計完入快取。
+    快取有效期：賠率 signature 不變＋資料池世代不變。錯誤結果不入快取。"""
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT total_line, over_odds, under_odds FROM odds_ou "
+            "WHERE match_id=? AND company_id=12 AND label='closing'",
+            (mid,)).fetchone()
+    finally:
+        conn.close()
+    sig = tuple(row) if row else None
+    gen = _hb_pre_gen[0]
+    with _hb_pre_lock:
+        e = _hb_pre.get(mid)
+        if e is not None and e['sig'] == sig and e['gen'] == gen:
+            return e['data']
+    data = _hb_predict_compute(mid)
+    if data and not data.get('error'):
+        with _hb_pre_lock:
+            _hb_pre[mid] = {'ts': time.time(), 'sig': sig, 'gen': gen,
+                            'data': data}
+            if len(_hb_pre) > _HB_PRE_MAX:
+                cutoff = time.time() - 6 * 3600
+                for k in [k for k, v in _hb_pre.items()
+                          if v['ts'] < cutoff]:
+                    _hb_pre.pop(k, None)
+    return data
+
+
+def _hb_predict_compute(mid):
+    """好波單場真正計算（無快取）：大小球 49 項分析＋共識＋精選＋半全場＋關係。"""
     conn = db()
     try:
         r = conn.execute(
@@ -4111,6 +4160,65 @@ def api_hb_predict(mid):
                     'ah_line': screen_engine.fmt_line(ahc, agv)
                     if ahc is not None else None}
     return res
+
+
+def _hb_precompute_worker():
+    """好波預測背景預熱（2026-10-14 502 風暴修復）：
+    ① 資料池到期前 15 分鐘先重建（用戶請求永不捱冷 build）＋預熱 49 項
+      引擎（HBItems build 一次 ~20s，lazy 會喺首次 predict 路上爆）；
+    ② 每 4 分鐘幫即將開赛场次 top-up 預測快取（每輪上限 25 場，串行，
+      唔搶 CPU）——用戶開頁＝全部即時有得睇，唔再 81 個請求打爆 512MB。"""
+    time.sleep(40)
+    while True:
+        try:
+            _hb_precompute_cycle()
+        except Exception as e:
+            print(f'[hb-pre] 循環錯誤：{e}', flush=True)
+        time.sleep(240)
+
+
+def _hb_precompute_cycle():
+    now = time.time()
+    if (_hb_ctx['ctx'] is None
+            or now - _hb_ctx['ts'] > HB_CTX_TTL - 900):
+        with _hb_ctx_lock:
+            now = time.time()
+            stale = (_hb_ctx['ctx'] is None
+                     or now - _hb_ctx['ts'] > HB_CTX_TTL - 900)
+            if stale:
+                import haobao_engine
+                conn = db()
+                try:
+                    ctx = haobao_engine.HB(conn)
+                finally:
+                    conn.close()
+                try:
+                    import hb_items
+                    ctx.items_engine = hb_items.HBItems(ctx.df)
+                except Exception:
+                    import traceback
+                    traceback.print_exc()
+                _hb_ctx['ctx'] = ctx
+                _hb_ctx['ts'] = time.time()
+                _hb_pre_gen[0] += 1
+                print('[hb-pre] 好波池已重建＋49項引擎預熱完成 '
+                      f'(gen={_hb_pre_gen[0]})', flush=True)
+    try:
+        matches = api_hb_list(72).get('matches', [])
+    except Exception:
+        return
+    gen = _hb_pre_gen[0]
+    todo = []
+    with _hb_pre_lock:
+        for m in matches:
+            e = _hb_pre.get(m['id'])
+            if e is None or e['gen'] != gen:
+                todo.append(m['id'])
+    for mid in todo[:25]:
+        try:
+            api_hb_predict(mid)
+        except Exception as ex:
+            print(f'[hb-pre] {mid} 預測失敗：{ex}', flush=True)
 
 
 # ============ 12BET 優先政策（用戶 2026-09-29 指示） ============
@@ -4842,6 +4950,184 @@ def _attach_oupred(out):
             pass
 
 
+def api_twin(mid):
+    """👯 搵孖生（2026-10-13）：全庫／同聯賽 搵歷史上盤口完全相同嘅完場場次。
+    六項條件全部相同先算孖生：
+      1. 上一次對賽尾盤讓球盤（讓球數＋讓球方）100% 同
+      2. 上一次對賽贏盤方（上/下/走）相同
+      3. 初盤（讓球＋讓球方 100% 同；主、客水位各 ±0.03）
+      4. 開賽前四小時盤口（同上）
+      5. 尾盤（同上）
+      6. 尾盤大小球（總入球線 100% 同；大、細賠率各 ±0.03）
+    盤口來源同主頁一致：易胜博(12)，無則 Crown(3)；大小球用易胜博(12)。
+    只計已完場（有比分）且開賽時間早過目標場次嘅孖生。"""
+    conn = db()
+    try:
+        t = conn.execute(
+            "SELECT m.kickoff, m.home_id, m.away_id, c.titan_id, c.req_name, "
+            "ht.name_tc, at.name_tc FROM matches m "
+            "JOIN seasons s ON s.id=m.season_id "
+            "JOIN competitions c ON c.titan_id=s.titan_id "
+            "JOIN teams ht ON ht.titan_id=m.home_id "
+            "JOIN teams at ON at.titan_id=m.away_id WHERE m.id=?", (mid,)).fetchone()
+        if not t:
+            return {'error': '找不到賽事'}
+        tko, thid, taid, tcomp, tlg, thn, tan = t
+
+        def snap(label):
+            # 易胜博(12) 優先，Crown(3) 後備——同主頁盤口顯示邏輯
+            r = conn.execute(
+                'SELECT handicap, giver, home_odds, away_odds FROM odds_asian '
+                'WHERE match_id=? AND company_id=12 AND label=?',
+                (mid, label)).fetchone()
+            if r is None:
+                r = conn.execute(
+                    'SELECT handicap, giver, home_odds, away_odds FROM odds_asian '
+                    'WHERE match_id=? AND company_id=3 AND label=?',
+                    (mid, label)).fetchone()
+            return r
+
+        init, h4, close = snap('initial'), snap('pre_4h'), snap('closing')
+        ou = conn.execute(
+            'SELECT total_line, over_odds, under_odds FROM odds_ou '
+            'WHERE match_id=? AND company_id=12 AND label=?', (mid, 'closing')
+        ).fetchone()
+        lack = []
+        if init is None:
+            lack.append('初盤')
+        if h4 is None:
+            lack.append('開賽前四小時盤口')
+        if close is None:
+            lack.append('尾盤')
+        if ou is None:
+            lack.append('尾盤大小球')
+        if lack:
+            return {'error': '該場仲未有' + '、'.join(lack) + '資料，齊咗先可以搵孖生'}
+
+        def prev_h2h(hid, aid, before, excl):
+            # 兩隊上一次交鋒（完場、有尾盤讓球盤），主客次序唔計
+            return conn.execute(
+                "SELECT m.home_score, m.away_score, "
+                "COALESCE(o12.handicap, o3.handicap), "
+                "COALESCE(o12.giver, o3.giver) FROM matches m "
+                "LEFT JOIN odds_asian o12 ON o12.match_id=m.id "
+                "AND o12.company_id=12 AND o12.label='closing' "
+                "LEFT JOIN odds_asian o3 ON o3.match_id=m.id "
+                "AND o3.company_id=3 AND o3.label='closing' "
+                "WHERE m.home_score IS NOT NULL AND m.kickoff < ? AND m.id != ? "
+                "AND ((m.home_id=? AND m.away_id=?) OR (m.home_id=? AND m.away_id=?)) "
+                "ORDER BY m.kickoff DESC LIMIT 1",
+                (before, excl, hid, aid, aid, hid)).fetchone()
+
+        th = prev_h2h(thid, taid, tko, mid)
+        if th is None or th[2] is None:
+            return {'error': '搵唔到兩隊上一次對賽（或對賽無尾盤盤口），對賽條件用唔到，搵唔到孖生'}
+        t_hc, t_gv = th[2], th[3]
+        t_hres = pick_result(t_hc, t_gv, th[0], th[1])
+
+        rows = conn.execute(
+            "SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc, "
+            "m.home_id, m.away_id, m.home_score, m.away_score "
+            "FROM matches m "
+            "JOIN seasons s ON s.id=m.season_id "
+            "JOIN competitions c ON c.titan_id=s.titan_id "
+            "JOIN teams ht ON ht.titan_id=m.home_id "
+            "JOIN teams at ON at.titan_id=m.away_id "
+            "LEFT JOIN odds_asian oc12 ON oc12.match_id=m.id "
+            "AND oc12.company_id=12 AND oc12.label='closing' "
+            "LEFT JOIN odds_asian oc3 ON oc3.match_id=m.id "
+            "AND oc3.company_id=3 AND oc3.label='closing' "
+            "LEFT JOIN odds_asian oi12 ON oi12.match_id=m.id "
+            "AND oi12.company_id=12 AND oi12.label='initial' "
+            "LEFT JOIN odds_asian oi3 ON oi3.match_id=m.id "
+            "AND oi3.company_id=3 AND oi3.label='initial' "
+            "LEFT JOIN odds_asian o412 ON o412.match_id=m.id "
+            "AND o412.company_id=12 AND o412.label='pre_4h' "
+            "LEFT JOIN odds_asian o43 ON o43.match_id=m.id "
+            "AND o43.company_id=3 AND o43.label='pre_4h' "
+            "JOIN odds_ou ou ON ou.match_id=m.id "
+            "AND ou.company_id=12 AND ou.label='closing' "
+            "WHERE m.home_score IS NOT NULL AND m.kickoff < ? AND m.id != ? "
+            "AND COALESCE(oc12.handicap, oc3.handicap) = ? "
+            "AND COALESCE(oc12.giver, oc3.giver) IS ? "
+            "AND ABS(COALESCE(oc12.home_odds, oc3.home_odds) - ?) <= 0.030000001 "
+            "AND ABS(COALESCE(oc12.away_odds, oc3.away_odds) - ?) <= 0.030000001 "
+            "AND COALESCE(oi12.handicap, oi3.handicap) = ? "
+            "AND COALESCE(oi12.giver, oi3.giver) IS ? "
+            "AND ABS(COALESCE(oi12.home_odds, oi3.home_odds) - ?) <= 0.030000001 "
+            "AND ABS(COALESCE(oi12.away_odds, oi3.away_odds) - ?) <= 0.030000001 "
+            "AND COALESCE(o412.handicap, o43.handicap) = ? "
+            "AND COALESCE(o412.giver, o43.giver) IS ? "
+            "AND ABS(COALESCE(o412.home_odds, o43.home_odds) - ?) <= 0.030000001 "
+            "AND ABS(COALESCE(o412.away_odds, o43.away_odds) - ?) <= 0.030000001 "
+            "AND ou.total_line = ? "
+            "AND ABS(ou.over_odds - ?) <= 0.030000001 AND ABS(ou.under_odds - ?) <= 0.030000001",
+            (tko, mid,
+             close[0], close[1], close[2], close[3],
+             init[0], init[1], init[2], init[3],
+             h4[0], h4[1], h4[2], h4[3],
+             ou[0], ou[1], ou[2])).fetchall()
+
+        names = {r[0]: r[1] for r in conn.execute(
+            'SELECT titan_id, name_tc FROM teams')}
+        all_cnt = {'A': 0, 'B': 0, 'P': 0}
+        lg_cnt = {'A': 0, 'B': 0, 'P': 0}
+        twins = []
+        for (cid, cko, clg, chn, can, chid, caid, chs, cas) in rows:
+            ch = prev_h2h(chid, caid, cko, cid)
+            if ch is None or ch[2] is None:
+                continue
+            if not (ch[2] == t_hc and (ch[3] == t_gv or (ch[3] is None
+                                                         and t_gv is None))):
+                continue
+            if pick_result(ch[2], ch[3], ch[0], ch[1]) != t_hres:
+                continue
+            res = pick_result(close[0], close[1], chs, cas)
+            same_lg = None
+            ccomp = conn.execute(
+                'SELECT c.titan_id FROM matches m JOIN seasons s ON s.id=m.season_id '
+                'JOIN competitions c ON c.titan_id=s.titan_id WHERE m.id=?',
+                (cid,)).fetchone()
+            same_lg = bool(ccomp and ccomp[0] == tcomp)
+            all_cnt[res] += 1
+            if same_lg:
+                lg_cnt[res] += 1
+            twins.append({'id': cid, 'ko': cko, 'lg': clg,
+                          'h': names.get(chid, ''), 'a': names.get(caid, ''),
+                          'score': f'{chs}-{cas}', 'r': res, 'same_lg': same_lg})
+
+        def _stat(cnt):
+            n = cnt['A'] + cnt['B'] + cnt['P']
+            return {'n': n, 'up': cnt['A'], 'down': cnt['B'], 'push': cnt['P'],
+                    'up_pct': round(100 * cnt['A'] / n, 1) if n else 0,
+                    'down_pct': round(100 * cnt['B'] / n, 1) if n else 0,
+                    'push_pct': round(100 * cnt['P'] / n, 1) if n else 0}
+
+        def _fmt(hc, gv, ho, ao):
+            return (screen_engine.fmt_line(hc, gv)
+                    + (f'　主{ho:.2f}/客{ao:.2f}'
+                       if ho is not None and ao is not None else ''))
+
+        hres_txt = {'A': '上盤贏', 'B': '下盤贏', 'P': '走盤'}[t_hres]
+        twins.sort(key=lambda x: x['ko'], reverse=True)
+        return {'ok': True,
+                'league': tlg,
+                'criteria': [
+                    f'上一次對賽尾盤：{screen_engine.fmt_line(t_hc, t_gv)}（{hres_txt}）',
+                    f'初盤：{_fmt(*init)}',
+                    f'開賽前四小時：{_fmt(*h4)}',
+                    f'尾盤：{_fmt(*close)}',
+                    f'尾盤大小球：{ou[0]:g}　大{ou[1]:.2f}/細{ou[2]:.2f}'],
+                'all': _stat(all_cnt), 'league_stat': _stat(lg_cnt),
+                'list': twins[:80], 'list_total': len(twins)}
+    finally:
+        conn.close()
+
+
+_twin_cache = {}
+_twin_cache_ttl = 120
+
+
 def _oupred_backtest():
     """回查資料庫命中%：用 2026 前嘅表，對 2026 年完場場次逐場預測再對賽果。"""
     c = _oupred_tables()
@@ -5130,6 +5416,14 @@ def _feat_hourly_tick():
         return
     _feat_hourly['running'] = True
     try:
+        # 2026-10-12：每小時截斷 WAL。教訓：WAL 曾膨脹至 519MB（夜間崩潰殘留），
+        # 令全部查詢慢到癱瘓、Heavy-GET 塞滿、app 假死（seizure）。截斷後即時復原。
+        try:
+            _c = db()
+            _c.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+            _c.close()
+        except Exception:
+            pass
         ts = time.strftime('%Y-%m-%d %H:%M')
         # 1) 先記錄（保證一定有紀錄，掃描幾慢都唔會空窗）
         # 用戶爬蟲＋定時更新長事務成日鎖 DB：成段 retry 最多 20 次×8 秒
@@ -5400,6 +5694,23 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/oupred/history':
             try:
                 self._send(200, json.dumps(_oupred_history(), ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/twin':
+            # 👯 搵孖生：全庫／同聯賽 搵歷史上六項盤口完全相同嘅完場場次
+            try:
+                q = parse_qs(u.query)
+                mid = int(q.get('id', ['0'])[0])
+                now = time.time()
+                hit = _twin_cache.get(mid)
+                if hit and now - hit[0] < _twin_cache_ttl:
+                    self._send(200, hit[1])
+                    return
+                body = json.dumps(api_twin(mid), ensure_ascii=False)
+                _twin_cache[mid] = (now, body)
+                self._send(200, body)
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
@@ -6953,6 +7264,13 @@ if __name__ == '__main__':
             # 精選兩張 full 表預熱（順便填 60 秒快取＋完成自動結算）
             get_featured_full()
             get_v1_featured_full()
+        except Exception:
+            pass
+        try:
+            # 好波預測背景預熱（2026-10-14）：池提早重建＋49項引擎預熱
+            # ＋逐場預測 top-up 入快取——用戶開好波頁全部即時顯示，
+            # 唔再 81 個並行 predict 打爆 512MB 免費實例（成版 502）。
+            threading.Thread(target=_hb_precompute_worker, daemon=True).start()
         except Exception:
             pass
         try:
