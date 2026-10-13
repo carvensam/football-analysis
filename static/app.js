@@ -220,6 +220,10 @@ function goto(pg){
       const f = $('#hbFrame');
       if (f && !f.src) f.src = '/haobao/';
     },
+    fw8s: () => {
+      const f = $('#fw8sFrame');
+      if (f && !f.src) f.src = '/fw8s';
+    },
     v1: () => loadV1(),
     settings: () => loadSettings(),
     home: () => loadHome()}[pg] || (() => {}))();

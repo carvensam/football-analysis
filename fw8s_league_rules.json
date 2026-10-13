@@ -1,0 +1,253 @@
+{
+ "丹麥超級聯賽": {
+  "hist_n": 11,
+  "hist_up_r": 0.8182,
+  "mode": "direct"
+ },
+ "俄羅斯超級聯賽": {
+  "hist_n": 28,
+  "hist_up_r": 0.75,
+  "mode": "direct"
+ },
+ "南美俱樂部盃": {
+  "hist_n": 1,
+  "hist_up_r": 1.0,
+  "mode": "watch"
+ },
+ "南美解放者杯": {
+  "hist_n": 13,
+  "hist_up_r": 0.6923,
+  "mode": "direct"
+ },
+ "南韓K2聯賽": {
+  "hist_n": 24,
+  "hist_up_r": 0.75,
+  "mode": "direct"
+ },
+ "南韓K聯賽": {
+  "hist_n": 12,
+  "hist_up_r": 0.6667,
+  "mode": "direct"
+ },
+ "墨西哥甲組聯賽": {
+  "hist_n": 13,
+  "hist_up_r": 0.6154,
+  "mode": "watch"
+ },
+ "墨西哥超級聯賽": {
+  "hist_n": 15,
+  "hist_up_r": 0.6,
+  "mode": "refine",
+  "conds": [
+   "S30→S0盤不變"
+  ],
+  "refine": {
+   "train": {
+    "up_r": 0.75,
+    "n": 8
+   },
+   "val": {
+    "up_r": 0.6667,
+    "n": 3
+   },
+   "pooled": {
+    "up_r": 0.7273,
+    "n": 11
+   },
+   "holdout": {
+    "up_r": 0.3333,
+    "n": 3
+   }
+  }
+ },
+ "奧地利甲組聯賽": {
+  "hist_n": 4,
+  "hist_up_r": 1.0,
+  "mode": "watch"
+ },
+ "巴西乙級聯賽": {
+  "hist_n": 22,
+  "hist_up_r": 0.7727,
+  "mode": "direct"
+ },
+ "巴西甲組聯賽": {
+  "hist_n": 26,
+  "hist_up_r": 0.8077,
+  "mode": "direct"
+ },
+ "德國乙組聯賽": {
+  "hist_n": 34,
+  "hist_up_r": 0.7647,
+  "mode": "direct"
+ },
+ "德國甲組聯賽": {
+  "hist_n": 45,
+  "hist_up_r": 0.7778,
+  "mode": "direct"
+ },
+ "意大利甲組聯賽": {
+  "hist_n": 47,
+  "hist_up_r": 0.7021,
+  "mode": "direct"
+ },
+ "挪威超級聯賽": {
+  "hist_n": 21,
+  "hist_up_r": 0.7619,
+  "mode": "direct"
+ },
+ "日本職業聯賽J1": {
+  "hist_n": 26,
+  "hist_up_r": 0.5769,
+  "mode": "watch"
+ },
+ "日本職業聯賽J2": {
+  "hist_n": 23,
+  "hist_up_r": 0.8696,
+  "mode": "direct"
+ },
+ "日本職業聯賽盃": {
+  "hist_n": 4,
+  "hist_up_r": 0.5,
+  "mode": "watch"
+ },
+ "智利甲组聯賽": {
+  "hist_n": 15,
+  "hist_up_r": 0.8667,
+  "mode": "direct"
+ },
+ "智利盃": {
+  "hist_n": 1,
+  "hist_up_r": 1.0,
+  "mode": "watch"
+ },
+ "歐洲聯賽冠軍盃賽": {
+  "hist_n": 21,
+  "hist_up_r": 0.8571,
+  "mode": "direct"
+ },
+ "歐足聯協會聯賽( 盃賽)": {
+  "hist_n": 1,
+  "hist_up_r": 1.0,
+  "mode": "watch"
+ },
+ "歐霸盃": {
+  "hist_n": 10,
+  "hist_up_r": 0.7,
+  "mode": "direct"
+ },
+ "比利時甲組聯賽": {
+  "hist_n": 45,
+  "hist_up_r": 0.7333,
+  "mode": "direct"
+ },
+ "法國乙組聯賽": {
+  "hist_n": 24,
+  "hist_up_r": 0.6667,
+  "mode": "direct"
+ },
+ "法國甲組聯賽": {
+  "hist_n": 33,
+  "hist_up_r": 0.8788,
+  "mode": "direct"
+ },
+ "澳大利亞足球超級聯賽": {
+  "hist_n": 10,
+  "hist_up_r": 0.8,
+  "mode": "direct"
+ },
+ "澳洲足總盃": {
+  "hist_n": 7,
+  "hist_up_r": 1.0,
+  "mode": "watch"
+ },
+ "烏拉圭甲組聯賽": {
+  "hist_n": 16,
+  "hist_up_r": 0.8125,
+  "mode": "direct"
+ },
+ "瑞典盃": {
+  "hist_n": 2,
+  "hist_up_r": 0.5,
+  "mode": "watch"
+ },
+ "瑞典超級聯賽": {
+  "hist_n": 31,
+  "hist_up_r": 0.7742,
+  "mode": "direct"
+ },
+ "瑞士超級聯賽": {
+  "hist_n": 21,
+  "hist_up_r": 0.8095,
+  "mode": "direct"
+ },
+ "美國冠軍聯賽": {
+  "hist_n": 41,
+  "hist_up_r": 0.7317,
+  "mode": "direct"
+ },
+ "美國職業大聯盟聯賽": {
+  "hist_n": 21,
+  "hist_up_r": 0.8095,
+  "mode": "direct"
+ },
+ "芬蘭超級聯賽": {
+  "hist_n": 1,
+  "hist_up_r": 1.0,
+  "mode": "watch"
+ },
+ "英格蘭乙組聯賽": {
+  "hist_n": 21,
+  "hist_up_r": 0.6667,
+  "mode": "direct"
+ },
+ "英格蘭冠軍聯賽": {
+  "hist_n": 32,
+  "hist_up_r": 0.7812,
+  "mode": "direct"
+ },
+ "英格蘭甲組聯賽": {
+  "hist_n": 54,
+  "hist_up_r": 0.7593,
+  "mode": "direct"
+ },
+ "英格蘭超級聯賽": {
+  "hist_n": 33,
+  "hist_up_r": 0.7879,
+  "mode": "direct"
+ },
+ "荷蘭乙組聯賽": {
+  "hist_n": 28,
+  "hist_up_r": 0.7857,
+  "mode": "direct"
+ },
+ "荷蘭甲組聯賽": {
+  "hist_n": 28,
+  "hist_up_r": 0.7857,
+  "mode": "direct"
+ },
+ "葡萄牙超級聯賽": {
+  "hist_n": 30,
+  "hist_up_r": 0.8,
+  "mode": "direct"
+ },
+ "蘇格蘭超級聯賽": {
+  "hist_n": 11,
+  "hist_up_r": 0.7273,
+  "mode": "direct"
+ },
+ "西班牙乙組聯賽": {
+  "hist_n": 30,
+  "hist_up_r": 0.6667,
+  "mode": "direct"
+ },
+ "西班牙甲組聯賽": {
+  "hist_n": 57,
+  "hist_up_r": 0.7719,
+  "mode": "direct"
+ },
+ "阿根廷甲級聯賽": {
+  "hist_n": 8,
+  "hist_up_r": 0.75,
+  "mode": "watch"
+ }
+}

@@ -137,6 +137,7 @@ _HEAVY_GET_SEM = threading.Semaphore(2 if _RAM_GB < 2.5 else 6)
 _HEAVY_GET_TIMEOUT = 45
 _HEAVY_GET_PREFIXES = (
     '/api/hb/predict', '/api/featured', '/api/v1/featured',
+    '/api/fw8s',
     '/api/v2/', '/api/v3/', '/api/check', '/api/fwcheck', '/api/fwgrid',
     '/api/ou_rules',
     '/api/htft_rules',
@@ -5233,6 +5234,154 @@ def _oupred_history():
         conn.close()
 
 
+# ============ 精選8s（2026-10-14）：專搵上盤嘅篩選工具 ============
+# 基礎訊號：check 格共識方向=上 → 全庫 75.9%（2021–26 逐年 70–82%，
+# 前後半段 77/75%）。每聯賽獨立公式（fw8s_league_rules.json）：
+# direct 直選／refine 精煉／watch 觀望。引擎詳情見 fw8s_engine.py。
+_FW8S_CACHE = {'ts': 0.0, 'data': None, 'hours': 72}
+_FW8S_RULES_CACHE = {'ts': 0.0, 'data': None}
+
+
+def _fw8s_settle(conn):
+    """幫 fw8s_log 未結算場次結算（上盤方向='up'：A=贏 B=輸 P=走）。"""
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    rows = conn.execute(
+        'SELECT f.match_id, m.home_score, m.away_score, o.handicap, o.giver '
+        'FROM fw8s_log f JOIN matches m ON m.id=f.match_id '
+        'LEFT JOIN odds_asian o ON o.match_id=f.match_id '
+        "AND o.label='closing' AND o.company_id=12 "
+        'WHERE f.result IS NULL AND m.home_score IS NOT NULL').fetchall()
+    for mid, hs, aws, hc, gv in rows:
+        r = pick_result(hc, gv, hs, aws)
+        res = 'P' if r == 'P' else ('W' if r == 'A' else 'L')
+        conn.execute('UPDATE fw8s_log SET result=?, settled_at=? '
+                     'WHERE match_id=?', (res, now, mid))
+    if rows:
+        conn.commit()
+    return len(rows)
+
+
+def api_fw8s_full(hours=72, force=False):
+    """精選8s 主頁：未來場次掃描（入選＋觀望）＋每聯賽歷史統計。"""
+    import fw8s_engine
+    now = time.time()
+    if (not force and _FW8S_CACHE['data'] is not None
+            and _FW8S_CACHE['hours'] == hours
+            and now - _FW8S_CACHE['ts'] < 600):
+        return _FW8S_CACHE['data']
+    conn = db()
+    try:
+        picks, watched, stats = fw8s_engine.scan_upcoming(conn, hours)
+        settled = _fw8s_settle(conn)
+        rules = fw8s_engine.load_rules()
+        modes = {'direct': 0, 'refine': 0, 'watch': 0}
+        for r in rules.values():
+            modes[r.get('mode', 'watch')] = modes.get(r.get('mode', 'watch'), 0) + 1
+        data = {'ok': True, 'picks': picks, 'watched': watched,
+                'stats': stats,
+                'summary': {'hours': hours, 'picks': len(picks),
+                            'watched': len(watched),
+                            'direct_leagues': modes.get('direct', 0),
+                            'refine_leagues': modes.get('refine', 0),
+                            'watch_leagues': modes.get('watch', 0)},
+                'settled_now': settled,
+                'updated': time.strftime('%Y-%m-%d %H:%M:%S')}
+        _FW8S_CACHE['data'] = data
+        _FW8S_CACHE['ts'] = now
+        _FW8S_CACHE['hours'] = hours
+        return data
+    finally:
+        conn.close()
+
+
+def api_fw8s_rules():
+    """每聯賽公式＋分段回查：整體／逐年命中率（check_rows 口徑）。"""
+    now = time.time()
+    if _FW8S_RULES_CACHE['data'] is not None \
+            and now - _FW8S_RULES_CACHE['ts'] < 3600:
+        return _FW8S_RULES_CACHE['data']
+    import fw8s_engine
+    conn = db()
+    try:
+        rules = fw8s_engine.load_rules()
+        rows = conn.execute("""
+            SELECT c.req_name, m.kickoff, cr.res FROM check_rows cr
+            JOIN matches m ON m.id=cr.match_id
+            JOIN seasons s ON s.id=m.season_id
+            JOIN competitions c ON c.titan_id=s.titan_id
+            WHERE cr.direction='up'""").fetchall()
+        per = {}
+        for lg, ko, res in rows:
+            e = per.setdefault(lg, {'A': 0, 'B': 0, 'P': 0, 'years': {}})
+            e[res] = e.get(res, 0) + 1
+            y = (ko or '????')[:4]
+            ye = e['years'].setdefault(y, {'A': 0, 'B': 0})
+            if res in ('A', 'B'):
+                ye[res] += 1
+        out = []
+        for lg, e in per.items():
+            eff = e['A'] + e['B']
+            r = rules.get(lg, {})
+            years = {y: {'n': v['A'] + v['B'],
+                         'up_r': round(v['A'] / (v['A'] + v['B']), 4)
+                         if v['A'] + v['B'] else None}
+                     for y, v in sorted(e['years'].items())}
+            out.append({'league': lg, 'n': eff,
+                        'up_r': round(e['A'] / eff, 4) if eff else None,
+                        'mode': r.get('mode', 'watch'),
+                        'conds': r.get('conds'),
+                        'refine': r.get('refine'),
+                        'years': years})
+        out.sort(key=lambda x: -x['n'])
+        tot_a = sum(e['A'] for e in per.values())
+        tot_b = sum(e['B'] for e in per.values())
+        data = {'ok': True, 'rows': out,
+                'total': {'n': tot_a + tot_b,
+                          'up_r': round(tot_a / (tot_a + tot_b), 4)
+                          if tot_a + tot_b else None},
+                'updated': time.strftime('%Y-%m-%d %H:%M:%S')}
+        _FW8S_RULES_CACHE['data'] = data
+        _FW8S_RULES_CACHE['ts'] = now
+        return data
+    finally:
+        conn.close()
+
+
+def api_fw8s_history():
+    """精選8s 過往入選紀錄（已結算 W/L/P）。"""
+    conn = db()
+    try:
+        _fw8s_settle(conn)
+        rows = conn.execute(
+            'SELECT f.match_id, f.league, f.mode, f.conds, f.line, f.odds, '
+            'f.added_at, f.result, f.settled_at, m.kickoff, m.home_score, '
+            'm.away_score, ht.name_tc, at.name_tc '
+            'FROM fw8s_log f JOIN matches m ON m.id=f.match_id '
+            'JOIN teams ht ON ht.titan_id=m.home_id '
+            'JOIN teams at ON at.titan_id=m.away_id '
+            'ORDER BY m.kickoff DESC LIMIT 200').fetchall()
+        out = []
+        for (mid, lg, mode, conds, line, odds, added, res, settled, ko,
+             hs, aws, h, a) in rows:
+            out.append({'id': mid, 'league': lg, 'mode': mode,
+                        'conds': json.loads(conds) if conds else None,
+                        'line': line, 'odds': odds, 'added_at': added,
+                        'result': res, 'settled_at': settled,
+                        'kickoff': ko,
+                        'score': f'{hs}-{aws}' if hs is not None else None,
+                        'home': h, 'away': a})
+        n = len(out)
+        w = sum(1 for r in out if r['result'] == 'W')
+        l = sum(1 for r in out if r['result'] == 'L')
+        p = sum(1 for r in out if r['result'] == 'P')
+        eff = w + l
+        return {'ok': True, 'rows': out,
+                'stats': {'n': n, 'w': w, 'l': l, 'p': p,
+                          'hit_r': round(w / eff * 100, 1) if eff else None}}
+    finally:
+        conn.close()
+
+
 def api_oupred_panel():
     """規則說明＋回查命中%＋每聯賽獨立因子（n 最大嘅 15 個聯賽嘅盤口因子示例）。"""
     bt = _oupred_backtest()
@@ -5711,6 +5860,38 @@ class Handler(BaseHTTPRequestHandler):
                 body = json.dumps(api_twin(mid), ensure_ascii=False)
                 _twin_cache[mid] = (now, body)
                 self._send(200, body)
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/fw8s':
+            with open(os.path.join(STATIC_DIR, 'fw8s.html'), 'rb') as f:
+                self._send(200, f.read(), 'text/html; charset=utf-8')
+            return
+        if u.path == '/api/fw8s/full':
+            # 精選8s：未來場次上盤入選＋觀望＋每聯賽統計（10分鐘快取）
+            try:
+                q = parse_qs(u.query)
+                hours = int(q.get('hours', ['72'])[0])
+                force = q.get('force', ['0'])[0] == '1'
+                self._send(200, json.dumps(api_fw8s_full(hours, force),
+                                           ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/fw8s/rules':
+            # 精選8s：每聯賽公式＋逐年分段回查
+            try:
+                self._send(200, json.dumps(api_fw8s_rules(), ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/fw8s/history':
+            # 精選8s：過往入選紀錄（自動結算）
+            try:
+                self._send(200, json.dumps(api_fw8s_history(), ensure_ascii=False))
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
