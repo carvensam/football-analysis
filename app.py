@@ -5245,6 +5245,10 @@ _FW8S_RULES_CACHE = {'ts': 0.0, 'data': None}
 def _fw8s_settle(conn):
     """幫 fw8s_log 未結算場次結算（上盤方向='up'：A=贏 B=輸 P=走）。"""
     now = time.strftime('%Y-%m-%d %H:%M:%S')
+    conn.execute('''CREATE TABLE IF NOT EXISTS fw8s_log(
+        match_id INTEGER PRIMARY KEY, league TEXT, direction TEXT,
+        mode TEXT, conds TEXT, line TEXT, odds TEXT,
+        added_at TEXT, result TEXT, settled_at TEXT)''')
     rows = conn.execute(
         'SELECT f.match_id, m.home_score, m.away_score, o.handicap, o.giver '
         'FROM fw8s_log f JOIN matches m ON m.id=f.match_id '
