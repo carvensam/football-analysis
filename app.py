@@ -5336,9 +5336,31 @@ def _fw8s_settle(conn):
 
 def api_fw8s_full(hours=72, force=False):
     """精選8s 主頁：未來場次掃描（入選＋觀望）＋每聯賽歷史統計。
-    寫入（記錄入選＋結算）放背景執行——爬蟲長寫交易鎖庫，同步寫會 500。"""
+    寫入（記錄入選＋結算）放背景執行——爬蟲長寫交易鎖庫，同步寫會 500。
+    force=1（人手「重新整理」）：先觸發「即時更新全部」重抓盤口賠率，
+    等佢搞掂（上限 70 秒）先重新篩選——唔係齋跳過快取。"""
     import fw8s_engine
     now = time.time()
+    refreshed = None
+    if force:
+        st = do_fetch_batch(hours=min(int(hours or 6), 24))
+        if st.get('started'):
+            t0 = time.time()
+            while (time.time() - t0 < 70
+                   and _fbatch_state['running']
+                   and not _fbatch_state.get('error')):
+                time.sleep(2)
+            refreshed = {'ok': _fbatch_state.get('ok', 0),
+                         'fail': _fbatch_state.get('fail', 0),
+                         'total': _fbatch_state.get('total', 0),
+                         'done': (not _fbatch_state['running']),
+                         'err': _fbatch_state.get('error')}
+        elif st.get('running'):
+            refreshed = {'busy': True}
+        elif st.get('disabled'):
+            refreshed = {'disabled': True}
+        else:
+            refreshed = {'err': st.get('error')}
     if (not force and _FW8S_CACHE['data'] is not None
             and _FW8S_CACHE['hours'] == hours
             and now - _FW8S_CACHE['ts'] < 600):
@@ -5358,6 +5380,7 @@ def api_fw8s_full(hours=72, force=False):
                             'refine_leagues': modes.get('refine', 0),
                             'watch_leagues': modes.get('watch', 0)},
                 'settled_now': 0,
+                'refreshed': refreshed,
                 'updated': time.strftime('%Y-%m-%d %H:%M:%S')}
         _FW8S_CACHE['data'] = data
         _FW8S_CACHE['ts'] = now

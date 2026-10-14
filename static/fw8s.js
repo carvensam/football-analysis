@@ -23,10 +23,19 @@
     clearTimeout(toast._h);
     toast._h = setTimeout(function () { t.style.display = 'none'; }, 2600);
   }
-  function jfetch(url) {
+  function jfetch(url, tries) {
+    tries = tries == null ? 2 : tries;
     return fetch(url).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
+      if (!r.ok) throw { status: r.status, msg: 'HTTP ' + r.status };
       return r.json();
+    }).catch(function (e) {
+      var st = e && e.status;
+      if (tries > 0 && (st === 502 || st === 503 || st === 504 || st == null)) {
+        /* 502/503/504（Render 閘道／部屬緊／無回應）同網絡斷線：自動重試，唔好一撳就話失敗 */
+        return new Promise(function (res) { setTimeout(res, 2000); })
+          .then(function () { return jfetch(url, tries - 1); });
+      }
+      throw new Error(e && e.msg ? e.msg : String(e));
     });
   }
 
@@ -159,13 +168,24 @@
   }
 
   /* ---------- 載入 ---------- */
+  function refreshNote(d) {
+    var r = d.refreshed;
+    if (!r) return '';
+    if (r.busy) return '｜⚠️ 另一個更新進行緊，今次用現有數據';
+    if (r.disabled) return '｜⚠️ 雲端唔支援即時重抓';
+    if (r.err) return '｜⚠️ 重抓失敗：' + String(r.err).slice(0, 60);
+    return '｜✅ 已重抓 ' + (r.total || 0) + ' 場盤口（成 ' +
+      (r.ok != null ? r.ok : '?') + '／敗 ' + (r.fail != null ? r.fail : '?') + '）' +
+      (r.done ? '' : '，其餘繼續緊');
+  }
   function loadFull(force) {
-    status.textContent = '載入中…';
+    status.textContent = force ? '重抓最新盤口及賠率中…（約 30-70 秒）' : '載入中…';
     var h = hoursSel.value;
     return jfetch('/api/fw8s/full?hours=' + h + (force ? '&force=1' : ''))
       .then(function (d) {
         fullCache = d;
-        status.textContent = '更新於 ' + (d.updated || '') + '｜伺服器每 10 分鐘自動快取';
+        status.textContent = '更新於 ' + (d.updated || '') + refreshNote(d) +
+          '｜伺服器每 10 分鐘自動快取';
         renderSum(d);
         if (curTab === 'up') renderUp(d);
       })
@@ -205,7 +225,7 @@
   });
   hoursSel.addEventListener('change', function () { fullCache = null; loadFull(false); });
   $('#btnReload').addEventListener('click', function () {
-    toast('重新掃描中…（約 10-30 秒）');
+    toast('重新掃描中…先重抓盤口賠率，再重新篩選（約 30-70 秒）');
     fullCache = null;
     loadFull(true).then(function () { toast('已更新'); });
   });
