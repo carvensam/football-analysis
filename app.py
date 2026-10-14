@@ -308,6 +308,8 @@ def api_crawl_relay_state(body):
             'workers_total': int(body.get('workers_total') or 0),
             'workers': [str(w)[:10] for w in (body.get('workers') or [])][:10],
         }
+        if body.get('err'):
+            _PC_CRAWL_STATE['data']['err'] = str(body.get('err'))[:200]
         _PC_CRAWL_STATE['ts'] = time.time()
         return {'ok': True}
     except Exception as e:
