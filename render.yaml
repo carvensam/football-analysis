@@ -29,8 +29,11 @@ services:
       # /api/export/odds pull 返去 merge。 worker 服務冇獨立硬碟，
       # 所以嵌入 web 進程（佢有 /data 永久碟），零額外成本。
       # CRAWL_THREADS：export 減載（5000行/頁）後 4→6——之前 20k/頁 export
-      # 風 storm + 8 線曾經 OOM 冧機（2026-10-12 05:45 實測）
+      # 風 storm + 8 線曾經 OOM 冧機（2026-10-12 05:45 實測）。
+      # 2026-10-15 再下調 6→2：cloud_guard 日誌實測容器約每 90 分鐘 OOM 重啟
+      # 一次（502 storm 前兆），6 線爬取同 web 服務擠 512MB——落 2 線穩定性行先，
+      # 爬慢啲唔緊要，本機每日推送係數據主力
       - key: ENABLE_CLOUD_CRAWL
         value: "1"
       - key: CRAWL_THREADS
-        value: "6"
+        value: "2"
