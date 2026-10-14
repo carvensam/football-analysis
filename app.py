@@ -162,7 +162,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.2.1'
+SERVER_VERSION = '5.2.2'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -429,6 +429,12 @@ def _migrate_db():
                      'ON odds_asian(label, company_id, handicap, giver)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_ou_label_line '
                      'ON odds_ou(label, company_id, total_line)')
+        # 2026-10-15：matches 冇 kickoff 索引——/api/upcoming、/api/htftboard
+        # 呢啲時間窗查詢（ORDER BY kickoff LIMIT）每次都要全表掃 10 萬行；
+        # 爬蟲重寫期間磁盤繁忙，主頁列表同半全場板就係咁樣等到 timeout。
+        # 一勞永逸：kickoff 索引（一次性建立，秒級完成）。
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_matches_kickoff '
+                     'ON matches(kickoff)')
         conn.commit()
     finally:
         conn.close()
@@ -4863,6 +4869,7 @@ def api_lgpred():
 #  z = 0.45·logit(F1) + 0.20·logit(F2) + 0.35·logit(F3)，P(上盤) = σ(z)
 _oupred_cache = {'ts': 0, 'cur': None, 'prior26': None, 'prior10': None,
                  'bt': None, 'hist': None}
+_oupred_lock = threading.Lock()
 OUPRED_TTL = 3600
 
 
@@ -4917,16 +4924,33 @@ def _oupred_tables(force=False):
     if not force and _oupred_cache['cur'] is not None and \
             now - _oupred_cache['ts'] < OUPRED_TTL:
         return _oupred_cache
-    conn = db()
-    try:
-        cur = _build_ou_tables(conn)
-        prior26 = _build_ou_tables(conn, '2026-01-01 00:00')
-        prior10 = _build_ou_tables(conn, '2026-10-01 00:00')
-        _oupred_cache.update(ts=now, cur=cur, prior26=prior26, prior10=prior10,
-                             bt=None, hist=None)
-    finally:
-        conn.close()
-    return _oupred_cache
+    # 2026-10-15：一個先建、其他食舊錶。舊版冇鎖冇舊錶兜底——TTL 一到期，
+    # 所有並發請求同時落樓 rebuild（每次三次全庫掃描），互相搶 CPU/磁盤，
+    # 主頁 /api/v3/list、/api/upcoming 集體 hang 分鐘級（seizure_stacks
+    # 兩條線程同時卡在 _build_ou_tables 實證）；而家起樓期間請求照食舊錶，
+    # 用家永遠唔會等 rebuild。
+    if _oupred_lock.acquire(blocking=False):
+        try:
+            now = time.time()   # 入鎖後複查——可能上一個已經建好
+            if not force and _oupred_cache['cur'] is not None and \
+                    now - _oupred_cache['ts'] < OUPRED_TTL:
+                return _oupred_cache
+            conn = db()
+            try:
+                cur = _build_ou_tables(conn)
+                prior26 = _build_ou_tables(conn, '2026-01-01 00:00')
+                prior10 = _build_ou_tables(conn, '2026-10-01 00:00')
+                _oupred_cache.update(ts=now, cur=cur, prior26=prior26,
+                                     prior10=prior10, bt=None, hist=None)
+            finally:
+                conn.close()
+        finally:
+            _oupred_lock.release()
+        return _oupred_cache
+    if _oupred_cache['cur'] is not None:
+        return _oupred_cache        # 有人起緊樓：舊錄照食
+    with _oupred_lock:              # 首次啟動冇舊錶，先等佢起完
+        return _oupred_cache
 
 
 def _logit(p):

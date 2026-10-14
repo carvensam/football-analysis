@@ -35,10 +35,15 @@
   }
 
   function poll() {
-    fetch('/api/crawl/state').then(function (r) { return r.json(); })
+    /* 2026-10-15：12 秒硬逾時——凍網／雲端死透時唔會一直「爬取…」卡住個掣 */
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, 12000);
+    fetch('/api/crawl/state', { signal: ctl.signal })
+      .then(function (r) { return r.json(); })
       .then(render).catch(function () {
         btn.textContent = '■ 停止'; btn.className = 'halt'; btn.disabled = false;
-      });
+      })
+      .finally(function () { clearTimeout(timer); });
   }
 
   btn.onclick = function () {

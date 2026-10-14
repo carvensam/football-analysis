@@ -23,12 +23,32 @@
   }
 
   /* ---------- 賽事清單 ---------- */
+  /* 2026-10-15：統一請求層——20 秒硬逾時＋502/503/504 同斷線自動重試。
+   * 冇逾時時網絡凍結會 hang 到天地老（「撳極無反應」元兇）。 */
+  function _hfetch(url, tries) {
+    tries = tries == null ? 1 : tries;
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, 20000);
+    return fetch(url, { signal: ctl.signal }).then(function (r) {
+      clearTimeout(timer);
+      if (!r.ok) throw { status: r.status };
+      return r.json();
+    }).catch(function (e) {
+      clearTimeout(timer);
+      var st = e && e.status;
+      if (tries > 0 && (st === 502 || st === 503 || st === 504 || st == null)) {
+        return new Promise(function (res) { setTimeout(res, 2000); })
+          .then(function () { return _hfetch(url, tries - 1); });
+      }
+      throw e;
+    });
+  }
+
   function loadList() {
     var hours = $('#hoursSel').value;
     statusEl.textContent = '載入緊賽事…';
     listEl.innerHTML = '<div class="note">載入中…</div>';
-    fetch('/api/hb/list?hours=' + hours)
-      .then(function (r) { return r.json(); })
+    _hfetch('/api/hb/list?hours=' + hours, 2)
       .then(function (d) {
         if (!d.matches || !d.matches.length) {
           listEl.innerHTML = '<div class="note">呢個時段冇即將開賽嘅賽事。</div>';
@@ -93,14 +113,9 @@
   /* 2026-10-14：失敗自動重試一次（伺服器好波預測已改背景快取，理論上
    * 唔會再 502；萬一撞正冷計算／維護，重試一次後先放棄，唔使慘情咁「—」） */
   function _predictFetch(row, mid, tried) {
-    return fetch('/api/hb/predict?id=' + mid)
-      .then(function (r) {
-        if (!r.ok && tried < 1) {
-          return new Promise(function (res) { setTimeout(res, 1500); })
-            .then(function () { return _predictFetch(row, mid, tried + 1); });
-        }
-        return r.json();
-      })
+    /* 2026-10-15：經 _hfetch（20 秒硬逾時＋失敗自動重試一次）——
+     * 凍網時唔再 hang；外層 tried 重試邏輯照舊。 */
+    return _hfetch('/api/hb/predict?id=' + mid, 1)
       .then(function (d) {
         if (d && d.error) throw new Error(d.error);
         row._pred = d;

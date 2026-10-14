@@ -13,17 +13,24 @@ function toast(msg){
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { t.style.display = 'none'; }, 2500);
 }
-async function _jf(url, opt, tries){
+async function _jf(url, opt, tries, timeoutMs){
   /* 伺服器更新緊／重啟中會吐 HTML 維護頁——檢查 Content-Type／首字元 '<'，
      指數退避重試，最後先抛人話錯誤（2026-09-29 修復「Unexpected token '<'」）。
      2026-09-30：GET 重試加碼至 4 次（2+4+8+16+32≈62 秒）——Render 免費版
      閒置瞓著後冷啟動要 30-60 秒，舊預算 6 秒內就放棄，搞到每次開 APP
-     精選都「載入失敗」；POST 維持 1 次避免雙重提交。 */
+     精選都「載入失敗」；POST 維持 1 次避免雙重提交。
+     2026-10-15：每個嘗試加硬逾時（AbortController）——手機網絡凍結／雲端容器
+     死透時，fetch 可以無限期 hang（「撳極無反應」元兇）；逾時當網絡故障
+     行原有退避重試。POST 全部係「觸發背景作業即回」型（狀態另輪詢），
+     120 秒頂天夠晒；GET 30 秒。 */
   let backoff = 2000;
   const maxTries = tries ?? 4;
+  const TO = timeoutMs ?? 30000;
   for (let i = 0; ; i++) {
+    const ctl = new AbortController();
+    const timer = TO > 0 ? setTimeout(() => ctl.abort(), TO) : null;
     try {
-      const r = await fetch(url, opt);
+      const r = await fetch(url, Object.assign({}, opt, {signal: ctl.signal}));
       const ct = r.headers.get('Content-Type') || '';
       const looksHtml = ct.indexOf('json') === -1;
       if ((r.status >= 500 || looksHtml) && i < maxTries) {
@@ -42,19 +49,24 @@ async function _jf(url, opt, tries){
       }
     } catch (e) {
       markConnBad();
+      const timedOut = e && e.name === 'AbortError';
       if (i >= maxTries) {
+        if (timedOut)
+          throw new Error('伺服器回應逾時——佢可能重緊啟，請稍候再試（或撳頂部「🔧 修復」）');
         if (e instanceof TypeError)
           throw new Error('連唔到伺服器——請檢查網絡，或撳頂部「🔧 修復」掣');
         throw e;
       }
       await new Promise(x => setTimeout(x, backoff)); backoff *= 2;
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 }
-const jget = url => _jf(url, {}, 4);
+const jget = url => _jf(url, {}, 4, 30000);
 async function jpost(url, body){
   return _jf(url, {method:'POST', headers:{'Content-Type':'application/json'},
-                   body: JSON.stringify(body || {})}, 1);
+                   body: JSON.stringify(body || {})}, 1, 120000);
 }
 
 /* ---------- 狀態 ---------- */

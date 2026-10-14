@@ -24,18 +24,27 @@
     toast._h = setTimeout(function () { t.style.display = 'none'; }, 2600);
   }
   function jfetch(url, tries) {
+    /* 2026-10-15：每個嘗試 20 秒硬逾時（AbortController）——冇逾時時網絡凍結
+       會 hang 到天地老（「撳極無反應」元兇）；逾時同 502/503/504／斷線
+       一律退避重試，用盡先抛人話錯誤。 */
     tries = tries == null ? 2 : tries;
-    return fetch(url).then(function (r) {
+    var ctl = new AbortController();
+    var timer = setTimeout(function () { ctl.abort(); }, 20000);
+    return fetch(url, { signal: ctl.signal }).then(function (r) {
+      clearTimeout(timer);
       if (!r.ok) throw { status: r.status, msg: 'HTTP ' + r.status };
       return r.json();
     }).catch(function (e) {
+      clearTimeout(timer);
       var st = e && e.status;
+      var timedOut = e && e.name === 'AbortError';
       if (tries > 0 && (st === 502 || st === 503 || st === 504 || st == null)) {
-        /* 502/503/504（Render 閘道／部屬緊／無回應）同網絡斷線：自動重試，唔好一撳就話失敗 */
+        /* 502/503/504（Render 閘道／部屬緊／無回應）、網絡斷線同逾時：自動重試，唔好一撳就話失敗 */
         return new Promise(function (res) { setTimeout(res, 2000); })
           .then(function () { return jfetch(url, tries - 1); });
       }
-      throw new Error(e && e.msg ? e.msg : String(e));
+      throw new Error(timedOut ? '回應逾時，請稍候再試'
+                               : (e && e.msg ? e.msg : String(e)));
     });
   }
 
