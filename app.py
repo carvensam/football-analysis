@@ -231,21 +231,56 @@ def _spawn_crawl_worker(args):
         pass   # 雲端（Render Linux）冇本機 crawl_extra——spawn 失敗都照寫 run
 
 
+# ---------- 爬蟲控制中繼（2026-10-15）：APP 接雲端，但真正爬蟲喺本機 ----------
+# 問題：Render 上 _spawn_crawl_worker 路徑錯（PARENT_DIR=/）＋ 0.5C 根本唔應該爬，
+# 撳「▶ 繼續爬」launch 完即刻死，用戶以為掣壞。修正：雲端只做中繼——
+# stop/run 寫入待取指令，本機 crawl_relay.py（計劃任務每分鐘）攞走並套用，
+# 再將本機真實狀態推返上嚟；state 優先顯示本機嘅。
+_CRAWL_RELAY = {'cmd': None, 'ts': 0.0}       # 雲端待本機攞嘅指令（一次性）
+_PC_CRAWL_STATE = {'data': None, 'ts': 0.0}   # 本機推上嚟嘅真實狀態
+_PC_STATE_MAX_AGE = 150.0                      # 狀態幾秒內算新鮮
+
+
+def _cloud_relay():
+    """雲端（DISABLE_UPDATE）行中繼邏輯；本機照舊直接控制。"""
+    return DISABLE_UPDATE
+
+
 def api_crawl_state():
+    # 本機狀態新鮮 → 如實顯示本機爬蟲（APP 睇到嘅就係真正嗰部）
+    pc = _PC_CRAWL_STATE
+    if pc['data'] is not None and time.time() - pc['ts'] < _PC_STATE_MAX_AGE:
+        d = dict(pc['data'])
+        d['via'] = '本機'
+        d['pc_age'] = int(time.time() - pc['ts'])
+        return d
     alive = _crawl_workers_alive()
-    return {'cmd': _read_crawl_control(),
-            'workers_alive': len(alive), 'workers_total': len(_CRAWL_WORKERS),
-            'workers': alive}
+    d = {'cmd': _read_crawl_control(),
+         'workers_alive': len(alive), 'workers_total': len(_CRAWL_WORKERS),
+         'workers': alive}
+    if _cloud_relay():
+        d['via'] = '雲端（本機離線或未回報）'
+    return d
 
 
 def do_crawl_stop():
     _write_crawl_control('stop')
+    if _cloud_relay():
+        _CRAWL_RELAY['cmd'] = 'stop'
+        _CRAWL_RELAY['ts'] = time.time()
+        return {'ok': True, 'cmd': 'stop', 'relay': True,
+                'note': '已通知本機停止；本機完成手頭任務後陸續退出（約 1 分鐘內生效）'}
     return {'ok': True, 'cmd': 'stop',
             'note': '已停止派新任務；手頭任務完成後工人會陸續退出'}
 
 
 def do_crawl_run():
     _write_crawl_control('run')
+    if _cloud_relay():
+        _CRAWL_RELAY['cmd'] = 'run'
+        _CRAWL_RELAY['ts'] = time.time()
+        return {'ok': True, 'cmd': 'run', 'relay': True,
+                'note': '已通知本機開爬；約 1 分鐘內本機工人會陸續復工'}
     alive = set(_crawl_workers_alive())
     launched = []
     for wkey, args in _CRAWL_WORKERS.items():
@@ -255,6 +290,28 @@ def do_crawl_run():
         launched.append(wkey)
     return {'ok': True, 'cmd': 'run', 'launched': launched,
             'already_running': sorted(alive)}
+
+
+def api_crawl_relay_fetch():
+    """本機輪詢攞指令（一次性：攞完即清，避免重複套用）。"""
+    cmd = _CRAWL_RELAY['cmd']
+    _CRAWL_RELAY['cmd'] = None
+    return {'ok': True, 'cmd': cmd, 'ts': _CRAWL_RELAY['ts']}
+
+
+def api_crawl_relay_state(body):
+    """本機推送真實爬蟲狀態上雲端。"""
+    try:
+        _PC_CRAWL_STATE['data'] = {
+            'cmd': str(body.get('cmd'))[:10],
+            'workers_alive': int(body.get('workers_alive') or 0),
+            'workers_total': int(body.get('workers_total') or 0),
+            'workers': [str(w)[:10] for w in (body.get('workers') or [])][:10],
+        }
+        _PC_CRAWL_STATE['ts'] = time.time()
+        return {'ok': True}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}
 
 
 def api_probe_hosts():
@@ -3254,11 +3311,12 @@ def get_v3_featlog():
 # 8 格＝1I、1O、3A、3I、7、19、21、25（驗證期下盤70.0%，531場合格）
 # 12 格＝全部 12 格（驗證期樣本太少，命中率參考為主）
 _fw_grid_scan = {g: {'running': False, 'done': 0, 'total': 0, 'added': 0,
-                     'last': None, 'error': None} for g in ('7', '8', '12')}
-GRID_NAMES = {'7': '精選7', '8': '精選8', '12': '精選12'}
+                     'last': None, 'error': None} for g in ('7', '8', '12', '8s')}
+GRID_NAMES = {'7': '精選7', '8': '精選8', '12': '精選12', '8s': '精選8s'}
 GRID_DEFS = {'7': '1I、3A、3I、7、19、21、25',
              '8': '1I、1O、3A、3I、7、19、21、25',
-             '12': '1A、1G、1I、1O、3A、3G、3I、3O、7、19、21、25（全部12格）'}
+             '12': '1A、1G、1I、1O、3A、3G、3I、3O、7、19、21、25（全部12格）',
+             '8s': '專搵上盤：6 個聯賽獨立公式（智利甲/美冠聯＝格共識；歐霸盃/澳維超/瑞典盃/歐國聯＝同向&客讓0.75）'}
 
 
 def _fw_grid_meta(rep):
@@ -3281,6 +3339,7 @@ def _fw_grid_scan_job(g):
     conn = db()
     try:
         import fw_grid_engine
+        import fw8s_engine
         import v3_engine
         conn.execute('''CREATE TABLE IF NOT EXISTS fw_grid_featured(
             grid TEXT NOT NULL, match_id INTEGER NOT NULL, direction TEXT NOT NULL,
@@ -3301,7 +3360,8 @@ def _fw_grid_scan_job(g):
                 t = screen_engine.get_target(conn, mid)
                 if not t:
                     continue
-                rep = fw_grid_engine.grid_report(conn, t, g)
+                rep = (fw8s_engine.fw8s_report(conn, t) if g == '8s'
+                       else fw_grid_engine.grid_report(conn, t, g))
                 if rep.get('pass'):
                     d = rep['direction']
                     conn.execute(
@@ -3309,7 +3369,9 @@ def _fw_grid_scan_job(g):
                         'detail, added_at) VALUES(?,?,?,?,?) '
                         'ON CONFLICT(grid, match_id) DO UPDATE SET '
                         'direction=excluded.direction, detail=excluded.detail',
-                        (g, mid, d, _fw_grid_meta(rep),
+                        (g, mid, d,
+                         fw8s_engine.fw8s_meta(rep) if g == '8s'
+                         else _fw_grid_meta(rep),
                          time.strftime('%Y-%m-%d %H:%M:%S')))
                     conn.commit()
                     added += 1
@@ -3416,8 +3478,9 @@ def get_fw_grid_full(g):
 
 
 def do_fw_grid_refresh(mid, g):
-    """精選7/8/12 單場重新整理：重抓賠率→重算資格；唔再合→未結算移出。"""
+    """精選7/8/12/8s 單場重新整理：重抓賠率→重算資格；唔再合→未結算移出。"""
     import fw_grid_engine
+    import fw8s_engine
     st = do_fetch(mid, True)
     if not st.get('ok'):
         return {'ok': False, 'error': st.get('error', '抓取賠率失敗'), 'fetch': st}
@@ -3429,7 +3492,10 @@ def do_fw_grid_refresh(mid, g):
         with _v3_item_cache_lock:
             _v3_item_cache.clear()
         t = screen_engine.get_target(conn, mid)
-        rep = fw_grid_engine.grid_report(conn, t, g) if t else {'pass': False}
+        if g == '8s':
+            rep = fw8s_engine.fw8s_report(conn, t) if t else {'pass': False}
+        else:
+            rep = fw_grid_engine.grid_report(conn, t, g) if t else {'pass': False}
         row = conn.execute('SELECT result FROM fw_grid_featured '
                            'WHERE grid=? AND match_id=?', (g, mid)).fetchone()
         removed = False
@@ -3440,7 +3506,8 @@ def do_fw_grid_refresh(mid, g):
                 'detail, added_at) VALUES(?,?,?,?,?) '
                 'ON CONFLICT(grid, match_id) DO UPDATE SET '
                 'direction=excluded.direction, detail=excluded.detail',
-                (g, mid, d, _fw_grid_meta(rep),
+                (g, mid, d,
+                 fw8s_engine.fw8s_meta(rep) if g == '8s' else _fw_grid_meta(rep),
                  time.strftime('%Y-%m-%d %H:%M:%S')))
         elif row and row[0] is None:
             conn.execute('DELETE FROM fw_grid_featured WHERE grid=? AND match_id=?',
@@ -5269,7 +5336,6 @@ def api_fw8s_full(hours=72, force=False):
     """精選8s 主頁：未來場次掃描（入選＋觀望）＋每聯賽歷史統計。
     寫入（記錄入選＋結算）放背景執行——爬蟲長寫交易鎖庫，同步寫會 500。"""
     import fw8s_engine
-    import threading
     now = time.time()
     if (not force and _FW8S_CACHE['data'] is not None
             and _FW8S_CACHE['hours'] == hours
@@ -5296,6 +5362,8 @@ def api_fw8s_full(hours=72, force=False):
         _FW8S_CACHE['hours'] = hours
     finally:
         conn.close()
+
+    import threading
 
     def _bg(recs):
         for attempt in range(6):
@@ -5357,6 +5425,13 @@ def api_fw8s_rules():
                         'conds': r.get('conds'),
                         'refine': r.get('refine'),
                         'years': years})
+        # 公式聯賽但 check_rows 未有紀錄（如澳維超／歐國聯）：照列出，命中率待補
+        for rn, r in rules.items():
+            if rn not in per:
+                out.append({'league': rn, 'n': 0, 'up_r': None,
+                            'mode': r.get('mode', 'watch'),
+                            'conds': r.get('conds'),
+                            'refine': r.get('refine'), 'years': {}})
         out.sort(key=lambda x: -x['n'])
         tot_a = sum(e['A'] for e in per.values())
         tot_b = sum(e['B'] for e in per.values())
@@ -5801,6 +5876,10 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/crawl/state':
             self._send(200, json.dumps(api_crawl_state(), ensure_ascii=False))
             return
+        if u.path == '/api/crawl/relay':
+            self._send(200, json.dumps(api_crawl_relay_fetch(),
+                                       ensure_ascii=False))
+            return
         if u.path == '/api/probe':
             try:
                 self._send(200, json.dumps(api_probe_hosts(),
@@ -6173,8 +6252,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 q = parse_qs(u.query)
                 g = q.get('g', ['7'])[0]
-                if g not in ('7', '8', '12'):
-                    self._send(400, json.dumps({'error': 'g 只可以係 7/8/12'}))
+                if g not in ('7', '8', '12', '8s'):
+                    self._send(400, json.dumps({'error': 'g 只可以係 7/8/12/8s'}))
                     return
                 self._send(200, json.dumps(get_fw_grid_full(g), ensure_ascii=False))
             except Exception as e:
@@ -6298,6 +6377,16 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/crawl/run':
             try:
                 self._send(200, json.dumps(do_crawl_run(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
+        if u.path == '/api/crawl/relay-state':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(api_crawl_relay_state(body),
+                                           ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
                                            ensure_ascii=False))
@@ -6641,8 +6730,8 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 q = parse_qs(u.query)
                 g = q.get('g', ['7'])[0]
-                if g not in ('7', '8', '12'):
-                    self._send(400, json.dumps({'error': 'g 只可以係 7/8/12'}))
+                if g not in ('7', '8', '12', '8s'):
+                    self._send(400, json.dumps({'error': 'g 只可以係 7/8/12/8s'}))
                     return
                 self._send(200, json.dumps(get_fw_grid_full(g), ensure_ascii=False))
             except Exception as e:
@@ -6730,6 +6819,16 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/crawl/run':
             try:
                 self._send(200, json.dumps(do_crawl_run(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
+        if u.path == '/api/crawl/relay-state':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(api_crawl_relay_state(body),
+                                           ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
                                            ensure_ascii=False))
@@ -6890,8 +6989,8 @@ class Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(n) or b'{}')
             g = str(body.get('g') or '7')
-            if g not in ('7', '8', '12'):
-                self._send(400, json.dumps({'ok': False, 'error': 'g 只可以係 7/8/12'}))
+            if g not in ('7', '8', '12', '8s'):
+                self._send(400, json.dumps({'ok': False, 'error': 'g 只可以係 7/8/12/8s'}))
                 return
             try:
                 if not _fw_grid_scan[g]['running']:

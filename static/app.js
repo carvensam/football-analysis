@@ -75,6 +75,12 @@ async function pollReady(){
 function setStatus(t, isErr){
   const el = $('#status');
   el.innerHTML = isErr ? `<span class="err">${esc(t)}</span>` : esc(t);
+  /* 同步去開機喚醒畫面（2026-10-15） */
+  const wt = $('#wakeTxt');
+  if (wt) {
+    wt.textContent = t;
+    wt.style.color = isErr ? '#e05c5c' : '#e6b800';
+  }
 }
 /* ---------- 連線狀態列（2026-09-29）：🟢 正常／🟠 數據主機中斷／🔴 斷線 + 自行修復 ---------- */
 let _connState = 'ok';
@@ -362,6 +368,10 @@ async function loadHome(){
     renderHome();
     fillCheckSelect($('#ckMatch'), '— 揀場次 —');
     checkLgAlerts();
+    /* 精選8/8s 衝突徽章：快取未 ready 就後補油（2026-10-15） */
+    loadFwConflicts().then(map => {
+      if (Object.keys(map).length) paintFwConflicts();
+    });
   } catch (e) {
     $('#homeList').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>';
   }
@@ -685,9 +695,67 @@ function _mrow(m, playedSec){
   return `<div class="mrow" data-mid="${m.id}">
     <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
     <span class="lg">${esc(m.league)}</span>
-    <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}</span>
+    <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}${_fwConflictBadge(m)}</span>
     ${_stateTag(m.state)}${sc}${line}${oud}${od}${at}${rfb}${BetSlip.btn(m)}${Twin.btn(m)}</div>`;
 }
+/* ---------- 精選8 vs 精選8s 方向衝突（2026-10-15 用戶：主頁展示兩套規則打架嘅場次） ----------
+ * 精選8 = fw_grid '8'（12 格入面 7/19/21/25 必填＋共識方向）；精選8s = fw8s 引擎
+ * （每聯賽獨立公式，入選＝方向上盤）。一個下盤一個上盤＝衝突，喺主頁行尾出紫色徽章。 */
+let _fwConfCache = {ts: 0, map: {}};
+function loadFwConflicts(){
+  const now = Date.now();
+  if (now - _fwConfCache.ts < 300000) return Promise.resolve(_fwConfCache.map);
+  return Promise.all([
+    jget('/api/fwgrid/full?g=8').catch(() => null),
+    jget('/api/fw8s/full?hours=72').catch(() => null),
+  ]).then(([g8, s8]) => {
+    const map = {};
+    if (g8) for (const grp of ['pending', 'live']) {
+      for (const m of (g8[grp] || [])) {
+        if (m.direction === 'up' || m.direction === 'down') {
+          map[m.id] = Object.assign(map[m.id] || {}, {fw8: m.direction});
+        }
+      }
+    }
+    if (s8) for (const p of (s8.picks || [])) {
+      const mid = p.match_id || p.id;
+      if (mid) map[mid] = Object.assign(map[mid] || {}, {s8: 'up'});
+    }
+    _fwConfCache = {ts: now, map};
+    return map;
+  });
+}
+function _fwConflictBadge(m){
+  const c = _fwConfCache.map[m.id];
+  if (!c || !c.fw8 || !c.s8 || c.fw8 === c.s8) return '';
+  const t = (x) => x === 'down' ? '下' : '上';
+  return ` <span class="tag" style="background:#7a2ea6;color:#fff;font-size:10px" ` +
+    `title="精選8揀${t(c.fw8)}盤 vs 精選8s揀${t(c.s8)}盤——兩套規則方向衝突，落注前三思">` +
+    `⚔️8:${t(c.fw8)}|8s:${t(c.s8)}</span>`;
+}
+/* 首次載入（快取未 ready）後補油：喺現有行度直接插入徽章，唔成張重畫 */
+function paintFwConflicts(){
+  const map = _fwConfCache.map;
+  document.querySelectorAll('#homeList .mrow').forEach(row => {
+    const mid = +row.dataset.mid;
+    const tm = row.querySelector('.tm');
+    if (!tm) return;
+    let b = row.querySelector('[data-fwcon]');
+    const c = map[mid];
+    const show = c && c.fw8 && c.s8 && c.fw8 !== c.s8;
+    if (show && !b) {
+      const t = (x) => x === 'down' ? '下' : '上';
+      b = document.createElement('span');
+      b.dataset.fwcon = '1';
+      b.className = 'tag';
+      b.style.cssText = 'background:#7a2ea6;color:#fff;font-size:10px';
+      b.title = `精選8揀${t(c.fw8)}盤 vs 精選8s揀${t(c.s8)}盤——兩套規則方向衝突，落注前三思`;
+      b.textContent = `⚔️8:${t(c.fw8)}|8s:${t(c.s8)}`;
+      tm.appendChild(b);
+    } else if (!show && b) b.remove();
+  });
+}
+
 /* 同賽事盤口模型：主頁球隊旁展示上/下盤%（oupred = upcoming() 每場自帶） */
 function _oupredBadge(m, p){
   const cls = p.dir === 'up' ? 'r-up' : 'r-down';
@@ -2631,6 +2699,16 @@ async function shareText(txt){
 (async function boot(){
   loadSettings();
   const ok = await pollReady();
+  /* 喚醒完成先收起畫面入得主頁；失敗就留喺喚醒畫面俾用戶撳重試（2026-10-15） */
+  const ov = $('#wakeOv');
+  if (ok) {
+    if (ov) ov.style.display = 'none';
+  } else if (ov) {
+    ov.innerHTML = '<div style="font-size:44px">⚠️</div>' +
+      '<div style="margin-top:16px;font-size:16px;color:#e05c5c">伺服器喚醒超時</div>' +
+      '<div style="margin-top:8px;font-size:12px;color:#8b94a7">可能緊 rebuild 緊，等 2–3 分鐘再試</div>' +
+      '<button onclick="location.reload()" style="margin-top:18px;padding:12px 34px;font-size:16px;border-radius:12px;border:none;background:#c9a227;color:#000;font-weight:900">↻ 重新喚醒</button>';
+  }
   if (ok) {
     loadHome();
     refreshPicksMap();

@@ -228,6 +228,13 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
 </style>
 </head>
 <body>
+<!-- 開機喚醒畫面（2026-10-15）：Render 免費版凍咗之後冷啟動要幾十秒，
+     喚醒成功先入得主頁，唔再白畫面冇解釋 -->
+<div id="wakeOv" style="position:fixed;inset:0;background:#0d1117;z-index:999;display:flex;flex-direction:column;align-items:center;justify-content:center">
+  <div style="font-size:44px">⚽</div>
+  <div id="wakeTxt" style="margin-top:16px;font-size:16px;color:#e6b800;letter-spacing:.08em">喚醒緊伺服器…</div>
+  <div id="wakeSub" style="margin-top:8px;font-size:12px;color:#8b94a7">首次約 10–60 秒（Render 免費版休眠後冷啟動）</div>
+</div>
 <div class="gold-banner top">冷靜．最強念力</div>
 
 <div id="alertPanel" style="display:none;position:fixed;top:96px;right:8px;width:min(420px,92vw);max-height:60vh;overflow:auto;background:#141a24;border:2px solid var(--gold2,#c9a227);border-radius:10px;z-index:999;box-shadow:0 6px 24px rgba(0,0,0,.6)">
@@ -516,7 +523,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   </div>
 </div>
 <script src="/static/phone_crawl.js?v=5.3.0"></script>
-<script src="/static/app.js?v=5.3.8"></script>
-<script src="/static/crawlbtn.js?v=5.2.0"></script>
+<script src="/static/app.js?v=5.4.0"></script>
+<script src="/static/crawlbtn.js?v=5.3.0"></script>
 </body>
 </html>
