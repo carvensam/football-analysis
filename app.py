@@ -182,7 +182,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.2.3'
+SERVER_VERSION = '5.2.4'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -7276,9 +7276,10 @@ def _featured_cache_refresher():
                         cache[z].update(ts=time.time(), data=data)
                 except Exception:
                     pass
-        time.sleep(600)   # 2026-10-11：150s→600s——精選名單隨 2 小時掃描先變，
-        # 快取 10 分鐘新鮮度足夠；舊 150s 配 full-budget build 令 BUILD_POOL
-        # 長期飽和（殭屍任務堆積），HTTP 請求被餓死
+        # 2026-10-16：雲端（DISABLE_UPDATE）600s→3600s——新鮮 DB 26 場有盤後，
+        # 每 10 分鐘 4 個 full build 係 512MB OOM 死循環嘅週期性元兇；
+        # 精選名單本身隨 2 小時掃描先變，1 小時快取夠新鮮。本機維持 600s。
+        time.sleep(3600 if DISABLE_UPDATE else 600)
 
 
 
@@ -7680,7 +7681,10 @@ if __name__ == '__main__':
         init_picks()
         _seed_check_rows()
         _seed_v3_featured_import()
-        _auto_scans()
+        # 2026-10-16：_auto_scans（OU/HTFT 全庫掃等）推遲 4 分鐘——新鮮 DB 落碟後
+        # 開機即同 warmup/preheat 並行，512MB 實例實測 3-6 分鐘 OOM 死循環；
+        # 掃描係 cache 填充，遲 4 分鐘對用戶零影響
+        threading.Timer(240, _auto_scans).start()
     threading.Thread(target=_boot_init, daemon=True).start()
     threading.Thread(target=_warmup, daemon=True).start()
     threading.Thread(target=_featured_cache_refresher, daemon=True).start()
