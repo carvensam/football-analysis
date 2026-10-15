@@ -182,7 +182,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.2.5'
+SERVER_VERSION = '5.2.6'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -7264,9 +7264,15 @@ def _featured_cache_refresher():
     """後台每 150 秒重建 V1/V2 featured 兩個 z 槽——頁面請求永遠讀快取、
     唔使等 build（2026-10-08 深夜：TTL 過期連環請求 stacking build 再現
     30 秒逾時；反正精選掃描本身都係週期性工作，搬入後台做最乾淨）。"""
-    # 2026-10-16：雲端首輪延遲 15 分鐘——開機 +60s 就 4 個 full build 同
-    # warmup/preheat 疊加係 OOM 溫床；遲啲開工，第一個精選頁請求自然會觸發 build。
-    time.sleep(900 if DISABLE_UPDATE else 60)
+    # 2026-10-16（第三擊）：雲端直接唔開後台刷新——兩次實測容器都係喺
+    # boot+15 分鐘（即呢度第一輪 4 個 full build）嗰陣 OOM 冧機，時間差
+    # 唔到 1 分鐘。雲端改為純 lazy：第一個精選頁請求用 build_lock 單個建，
+    # 之後靠頁面 TTL。本機（8GB）維持後台每 600s 刷新。
+    if DISABLE_UPDATE:
+        print('[featured-refresh] 雲端：後台刷新停用（512MB 首輪 build 實測 '
+              'OOM），改為頁面請求先建', flush=True)
+        return
+    time.sleep(60)
     while True:
         for impl, cache in ((_get_featured_full_impl, _featured_full_cache),
                             (_get_v1_featured_full_impl,
@@ -7278,10 +7284,7 @@ def _featured_cache_refresher():
                         cache[z].update(ts=time.time(), data=data)
                 except Exception:
                     pass
-        # 2026-10-16：雲端（DISABLE_UPDATE）600s→3600s——新鮮 DB 26 場有盤後，
-        # 每 10 分鐘 4 個 full build 係 512MB OOM 死循環嘅週期性元兇；
-        # 精選名單本身隨 2 小時掃描先變，1 小時快取夠新鮮。本機維持 600s。
-        time.sleep(3600 if DISABLE_UPDATE else 600)
+        time.sleep(600)
 
 
 
