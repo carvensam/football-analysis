@@ -182,7 +182,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.2.4'
+SERVER_VERSION = '5.2.5'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -7264,7 +7264,9 @@ def _featured_cache_refresher():
     """後台每 150 秒重建 V1/V2 featured 兩個 z 槽——頁面請求永遠讀快取、
     唔使等 build（2026-10-08 深夜：TTL 過期連環請求 stacking build 再現
     30 秒逾時；反正精選掃描本身都係週期性工作，搬入後台做最乾淨）。"""
-    time.sleep(60)   # 等 preheat 行完先接手，唔好同開機搶 BUILD_POOL
+    # 2026-10-16：雲端首輪延遲 15 分鐘——開機 +60s 就 4 個 full build 同
+    # warmup/preheat 疊加係 OOM 溫床；遲啲開工，第一個精選頁請求自然會觸發 build。
+    time.sleep(900 if DISABLE_UPDATE else 60)
     while True:
         for impl, cache in ((_get_featured_full_impl, _featured_full_cache),
                             (_get_v1_featured_full_impl,
@@ -7693,10 +7695,15 @@ if __name__ == '__main__':
     # 30 秒後 background 先算半全場快取，跟住建好波池；用戶撳到即刻有，
     # 亦避免冷啟動超過 Render proxy 60 秒逾時
     def _preheat_all():
-        try:
-            api_htftboard()
-        except Exception:
-            pass
+        # 2026-10-16：雲端（DISABLE_UPDATE）skip htftboard＋精選 full 預熱——
+        # 兩個都係 512MB 上嘅大型 build（htftboard 冷 build 56 秒），開機 +30s
+        # 同 warmup 池疊加係新鮮 DB 後 OOM 死循環嘅元兇；改為第一次請求先建
+        # （用戶捱一次冷啟動，好過成個容器冧機）。本機（8GB）維持預熱。
+        if not DISABLE_UPDATE:
+            try:
+                api_htftboard()
+            except Exception:
+                pass
         try:
             conn = db()
             try:
@@ -7718,12 +7725,13 @@ if __name__ == '__main__':
                 conn.close()
         except Exception:
             pass
-        try:
-            # 精選兩張 full 表預熱（順便填 60 秒快取＋完成自動結算）
-            get_featured_full()
-            get_v1_featured_full()
-        except Exception:
-            pass
+        if not DISABLE_UPDATE:
+            try:
+                # 精選兩張 full 表預熱（順便填 60 秒快取＋完成自動結算）
+                get_featured_full()
+                get_v1_featured_full()
+            except Exception:
+                pass
         try:
             # 好波預測背景預熱（2026-10-14）：池提早重建＋49項引擎預熱
             # ＋逐場預測 top-up 入快取——用戶開好波頁全部即時顯示，
