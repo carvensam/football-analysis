@@ -133,8 +133,28 @@ _scan_gate = {'busy': False}
 # 512MB 雲端（baseline ~300MB）一撞就 OOM——Render 事件「Ran out of memory
 # used over 512MB」一日四單。低記憶體機同時間最多 2 個重型請求，其餘排隊
 # 最多 45 秒，排唔到回 429 叫前端重試；輕端點（health/靜態/status）唔過閘。
-_HEAVY_GET_SEM = threading.Semaphore(2 if _RAM_GB < 2.5 else 6)
+# 2026-10-15 第二輪 debug：512MB 實例並發閘 2→1（兩個重型請求同時 build 池
+# 嘅瞬間峰值先係 OOM 元兇），再加 RSS 軟上限——過線即刻 429 卸載，唔等佢撞爆
+# 512MB 俾 Render 成個容器殺咗（每次 OOM = 全體 502 十幾分鐘，好過逐個 429）。
+_HEAVY_GET_SEM = threading.Semaphore(
+    1 if _RAM_GB < 1.0 else (2 if _RAM_GB < 2.5 else 6))
 _HEAVY_GET_TIMEOUT = 45
+
+
+def _rss_mb():
+    """目前進程 RSS（MB）；Linux 讀 /proc/self/status，其他平台返 0（閘唔生效）。"""
+    try:
+        with open('/proc/self/status', encoding='ascii') as f:
+            for line in f:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) / 1024.0
+    except OSError:
+        pass
+    return 0.0
+
+
+_MEM_GUARD = _RAM_GB < 2.5          # 低記憶體機（Render 512MB）先啟用
+_MEM_SOFT_MB = 430.0                 # 超過：重型 GET 直接 429，畀在途請求留 80MB 緩衝
 _HEAVY_GET_PREFIXES = (
     '/api/hb/predict', '/api/featured', '/api/v1/featured',
     '/api/fw8s',
@@ -162,7 +182,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.2.2'
+SERVER_VERSION = '5.2.3'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -3655,6 +3675,8 @@ def get_htft_rules_full():
 # （上盤）。用戶揀嘅場次對「揀嗰刻」影低嘅 pick 線結算。
 _PREDSTATS_TTL = 120
 _PREDSTATS_CACHE = {'key': None, 'ts': 0.0, 'data': None}
+
+_predstats_lock = threading.Lock()
 # source key → 中文名（前端 stat chip 同表頭共用）
 _PREDSTATS_SOURCES = (
     ('main', '上下盤'), ('v2', '精選V2'), ('v1', 'V1'), ('v3', '精選W'),
@@ -3705,6 +3727,28 @@ def _ps_htft_cell(hh, ha, hs, aws):
 
 
 def get_predstats(days=30, lg=''):
+    """鎖＋舊錄兜底（2026-10-15 第二輪 debug）——同 _oupred_tables 同款：
+    TTL 到期時一個先建，其他人食舊錄，唔再 N 線程同時全庫掃描互搶。
+    起緊樓期間帶新參數嘅請求會暫食舊 key 嘅錄（好過排隊假死）。"""
+    now = time.time()
+    days = int(days or 30)
+    lg = (lg or '').strip()
+    key = (days, lg)
+    c = _PREDSTATS_CACHE
+    if c['data'] is not None and c['key'] == key             and now - c['ts'] < _PREDSTATS_TTL:
+        return c['data']
+    if _predstats_lock.acquire(blocking=False):
+        try:
+            return _predstats_build(days, lg)   # 內部有 cache 複查
+        finally:
+            _predstats_lock.release()
+    if c['data'] is not None:
+        return c['data']
+    with _predstats_lock:
+        return _predstats_build(days, lg)
+
+
+def _predstats_build(days=30, lg=''):
     """完場場次（近 days 日，lg 前綴過濾，最多 500 場 desc）逐來源結算。
     days<=0 ＝全部；lg 為空 ＝全部聯賽。"""
     now = time.time()
@@ -4439,6 +4483,8 @@ def api_htft():
 # 「同類」定義＝同聯賽（req_name）＋同尾盤（讓球,讓球方）；比例＝四種半場領先被
 # 逆轉／追和嘅歷史出現率；進行中場次另附「同半場領先」嘅全場走勢（守和/被追和/被逆轉）。
 _HTFTB_CACHE = {'ts': 0.0, 'data': None}
+
+_htftb_lock = threading.Lock()
 _HTFT_STALE_LAST = 0.0   # 上次「進行中死場」觸發補抓嘅時間（5 分鐘防重複）
 _HTFTB_CACHE_X = {}      # 帶篩選參數嘅回查快取：(fin_hours, fin_cat) -> (ts, data)
 
@@ -4458,6 +4504,31 @@ def _htft_cat(hh, ha, hs, aws):
 
 
 def api_htftboard(fin_hours=None, fin_cat=None):
+    """鎖＋舊錄兜底（2026-10-15 第二輪 debug）——同上：一個先建其他人食舊錄。"""
+    now = time.time()
+    custom = fin_hours is not None or bool(fin_cat)
+    if custom:
+        ck = _HTFTB_CACHE_X.get((fin_hours, fin_cat))
+        if ck and now - ck[0] < 300:
+            return ck[1]
+    elif _HTFTB_CACHE['data'] is not None             and now - _HTFTB_CACHE['ts'] < 300:
+        return _HTFTB_CACHE['data']
+    if _htftb_lock.acquire(blocking=False):
+        try:
+            return _htftboard_build(fin_hours, fin_cat)   # 內部有 cache 複查
+        finally:
+            _htftb_lock.release()
+    if custom:
+        ck = _HTFTB_CACHE_X.get((fin_hours, fin_cat))
+        if ck:
+            return ck[1]
+    if _HTFTB_CACHE['data'] is not None:
+        return _HTFTB_CACHE['data']
+    with _htftb_lock:
+        return _htftboard_build(fin_hours, fin_cat)
+
+
+def _htftboard_build(fin_hours=None, fin_cat=None):
     """fin_hours/fin_cat：已完結區域回查篩選（2026-10-10 用戶要求 Period／
     聯賽杯賽類 filter，二選一或二選二）。帶參數用獨立 5 分鐘快取，唔污染主快取。"""
     now = time.time()
@@ -5893,8 +5964,14 @@ class Handler(BaseHTTPRequestHandler):
         # 直接改寫 u.path，後面成條 dispatch 鏈自動用 stripped 版
         if u.path != '/' and u.path.endswith('/'):
             u = u._replace(path=u.path.rstrip('/'))
-        # 重型 GET 並發閘（2026-10-06 記憶體審計）：超額請求排隊，排唔到回 429
+        # 重型 GET 並發閘（2026-10-06 記憶體審計）：超額請求排隊，排唔到回 429。
+        # 2026-10-15：入閘前再過 RSS 軟上限——記憶體緊絀時直接卸載，
+        # 阻止在途請求疊加峰值撞爆 512MB（OOM 殺容器 = 全體 502 十幾分鐘）。
         if u.path.startswith(_HEAVY_GET_PREFIXES):
+            if _MEM_GUARD and _rss_mb() > _MEM_SOFT_MB:
+                self._send(429, json.dumps(
+                    {'error': '系統繁忙，請 30 秒後重試'}, ensure_ascii=False))
+                return
             if not _HEAVY_GET_SEM.acquire(timeout=_HEAVY_GET_TIMEOUT):
                 self._send(429, json.dumps(
                     {'error': '系統繁忙，請 30 秒後重試'}, ensure_ascii=False))
@@ -7546,8 +7623,21 @@ if __name__ == '__main__':
         if os.environ.get('DB_PATH'):
             need_copy = not os.path.exists(DB_PATH)
             if not need_copy:
-                need_copy = not _db_ok(DB_PATH) \
-                    or os.path.getmtime(seed) > os.path.getmtime(DB_PATH)
+                # 2026-10-16：改以 DB_TAG（映像焗入嘅 release 標籤）判斷種子新唔新——
+                # 舊邏輯用 mtime，但雲端背景爬蟲成日寫 /data 庫，mtime 永遠新過種子，
+                # 結果每日新種子從未落到硬碟（10-12 起雲端數據停更嘅元兇）。
+                _tag = os.environ.get('DB_TAG')
+                if _tag:
+                    _applied = None
+                    try:
+                        with open(DB_PATH + '.tag', encoding='ascii') as tf:
+                            _applied = tf.read().strip()
+                    except OSError:
+                        pass
+                    need_copy = (_applied != _tag) or not _db_ok(DB_PATH)
+                else:
+                    need_copy = not _db_ok(DB_PATH) \
+                        or os.path.getmtime(seed) > os.path.getmtime(DB_PATH)
         if need_copy:
             for ext in ('-wal', '-shm', '-journal'):
                 junk = DB_PATH + ext
@@ -7562,6 +7652,13 @@ if __name__ == '__main__':
                 except OSError:
                     pass
             shutil.copy(seed, DB_PATH)
+            # 記低已套用嘅 release tag——下次開機 tag 一樣就唔使再複製
+            if os.environ.get('DB_TAG'):
+                try:
+                    with open(DB_PATH + '.tag', 'w', encoding='ascii') as tf:
+                        tf.write(os.environ['DB_TAG'])
+                except OSError:
+                    pass
             print('[boot] 硬碟數據庫冇/損壞/過舊，已由映像種子重新複製到 '
                   f'{DB_PATH}', flush=True)
     port = int(os.environ.get('PORT') or (sys.argv[1] if len(sys.argv) > 1 else 7100))

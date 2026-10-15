@@ -25,6 +25,8 @@ COPY . .
 # 公開數據，直接寫死 URL（Render 不支援 build-args；寫死最穩陣）。
 # 更新數據＝上新 release asset，改下面呢條 URL，push 後重新部署。
 ENV DB_URL=https://github.com/carvensam/football-analysis/releases/download/db-20261016/football.db
+# release 標籤（app.py 開機靠佢判斷種子新唔新——mtime 唔得，雲端爬蟲會令硬碟庫 mtime 永遠最新）
+ENV DB_TAG=db-20261016
 RUN echo "Downloading database from $DB_URL" && \
       curl -fL --retry 3 -o /app/football.db "$DB_URL" && \
       ls -lh /app/football.db
