@@ -23,18 +23,17 @@ services:
       # 閂咗雲端自動更新免得主機每 30 秒白探＋頂部常駐「更新失敗」警告（2026-09-30）
       - key: DISABLE_UPDATE
         value: "1"
-      # 2026-10-12 分工爬取：開機探測 titan007 各主機，通咗嘅市場喺本進程
-      # 背景線程爬（本機 IP 被硬封鎖行代理池；雲端節點 IP 直達唔使代理）。
-      # 爬完寫 /data/football.db——手機 API 即刻有新數據，本機經
-      # /api/export/odds pull 返去 merge。 worker 服務冇獨立硬碟，
-      # 所以嵌入 web 進程（佢有 /data 永久碟），零額外成本。
-      # CRAWL_THREADS：export 減載（5000行/頁）後 4→6——之前 20k/頁 export
-      # 風 storm + 8 線曾經 OOM 冧機（2026-10-12 05:45 實測）。
-      # 2026-10-15 再下調 6→2：cloud_guard 日誌實測容器約每 90 分鐘 OOM 重啟
-      # 一次（502 storm 前兆），6 線爬取同 web 服務擠 512MB——落 2 線穩定性行先，
-      # 爬慢啲唔緊要，本機每日推送係數據主力
+      # 2026-10-17 用戶拍板新架構：雲端爬蟲節點完全閂閉——512MB 全部留俾
+      # web app，負荷大減、操作流暢。數據流改為：
+      #  ① 本機（此電腦）定時定點爬取全量盤口/賠率（代理池+6 worker+fast_curl）
+      #  ② 手機開 APP／手動⚡掣時直爬（PhoneCrawl，手機 IP 未被 titan007 封）
+      #  ③ 賽事完畢後本機爬賽果→更新大數據庫＋各樣預測結果
+      #  ④ 本機每日推送（更新雲端數據.py → GitHub Release → Render 重部署）
+      # 舊制（10-12~10-16：雲端節點嵌入 web 進程爬）已廢——即使限時輪班
+      # 都仍然同 web 服務擠 RAM/CPU/DB 鎖（90 分鐘 OOM 一次嘅元凶）。
+      # ENABLE_CLOUD_CRAWL=0 閂死；下面三個 env 留低紀錄，想重開先至有用。
       - key: ENABLE_CLOUD_CRAWL
-        value: "1"
+        value: "0"
       - key: CRAWL_THREADS
         value: "2"
       # 10-16：每輪爬取限時 20 分鐘（cloud_crawl 寫 control stop 收爐）——
