@@ -508,6 +508,11 @@ def upcoming(hours=48):
         _attach_oupred(out)
     except Exception:
         pass
+    # 10-16 用戶：主頁三欄——精選8／精選8s／好波大細
+    try:
+        _attach_preds3(out)
+    except Exception:
+        pass
     conn.close()
     return out
 
@@ -4152,7 +4157,11 @@ _hb_ctx_lock = threading.Lock()
 _hb_pre = {}                 # mid -> {'ts', 'sig', 'gen', 'data'}
 _hb_pre_lock = threading.Lock()
 _hb_pre_gen = [0]            # 資料池世代：重建 +1，全快取作廢
-_HB_PRE_MAX = 500
+# 10-16：上限改環境可調——512MB 雲端經常 OOM（render.yaml 設 HB_PRE_MAX=250），
+# 本機 8GB 維持 500。每個 entry 連 items 陣列約 50-100KB，250 vs 500 差 ~20MB；
+# 超額淘汰最舊（6h 時限本來都會清），對精確零影響、對速度影響微乎其微
+# （precompute 每 4 分鐘補返最近場次）。
+_HB_PRE_MAX = int(os.environ.get('HB_PRE_MAX', '500'))
 
 
 def _hb_context():
@@ -5113,6 +5122,82 @@ def _attach_oupred(out):
                 rec['oupred'] = pr
         except Exception:
             pass
+
+
+_FW8S_WARMING = {'on': False}
+
+
+def _attach_preds3(out):
+    """主頁三欄（2026-10-16 用戶）：精選8／精選8s／好波大細。
+    精選8 行 fw_grid_featured（格掃描寫入；雲端舊庫缺表當冇紀錄）。
+    精選8s 兩源合併：fw8s_log（入選紀錄，direction 空預設 up——8s 專搵上盤）
+    ＋ _FW8S_CACHE（8s 頁同款 scan_upcoming 快取）；快取舊過 600s 就背景
+    刷新一次（_FW8S_WARMING 防重疊，唔阻塞主頁）。
+    好波大細讀 _hb_pre 背景快取——同好波頁徽章完全同一優先次序
+    （精選＞共識＞最強單項≥52%），快取未命中唔顯示（precompute 會補），
+    唔阻塞主頁、唔加重即時計算。"""
+    ids = [r['id'] for r in out]
+    if not ids:
+        return
+    ph = ','.join('?' * len(ids))
+    conn = db()
+    try:
+        _tbls = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        f8 = f8s = {}
+        if 'fw_grid_featured' in _tbls:
+            f8 = {r[0]: r[1] for r in conn.execute(
+                "SELECT match_id, direction FROM fw_grid_featured "
+                "WHERE grid='8' AND match_id IN (" + ph + ")", ids)}
+        if 'fw8s_log' in _tbls:
+            f8s = {r[0]: (r[1] or 'up') for r in conn.execute(
+                "SELECT f.match_id, f.direction FROM fw8s_log f "
+                "JOIN matches m ON m.id=f.match_id "
+                "WHERE m.home_score IS NULL AND f.result IS NULL "
+                "AND f.match_id IN (" + ph + ")", ids)}
+    finally:
+        conn.close()
+    # 8s 快取補完＋背景保鮮（快取舊就 trigger 一次 scan_upcoming，下一輪有數）
+    try:
+        c8 = _FW8S_CACHE.get('data')
+        if c8:
+            for p in c8.get('picks') or []:
+                f8s.setdefault(p.get('match_id'), 'up')
+        if (time.time() - _FW8S_CACHE.get('ts', 0) > 600
+                and not _FW8S_WARMING.get('on')):
+            _FW8S_WARMING['on'] = True
+
+            def _warm():
+                try:
+                    api_fw8s_full(72)
+                except Exception:
+                    pass
+                finally:
+                    _FW8S_WARMING['on'] = False
+            threading.Thread(target=_warm, daemon=True).start()
+    except Exception:
+        pass
+    for rec in out:
+        mid = rec['id']
+        if mid in f8:
+            rec['f8'] = ('上' if f8[mid] == 'up'
+                         else ('下' if f8[mid] == 'down' else f8[mid]))
+        if mid in f8s:
+            rec['f8s'] = ('上' if f8s[mid] == 'up'
+                          else ('下' if f8s[mid] == 'down' else f8s[mid]))
+        with _hb_pre_lock:
+            e = _hb_pre.get(mid)
+        ou = ((e or {}).get('data') or {}).get('ou') or {}
+        pick = ou.get('pick')
+        lean = ou.get('lean')
+        st = ou.get('strongest') or {}
+        if pick:
+            rec['hb_ou'] = '⭐精選' + str(pick.get('side'))
+        elif lean in ('大', '細'):
+            rec['hb_ou'] = str(lean)
+        elif st.get('rate', 0) >= 0.52 and ou.get('line') is not None:
+            rec['hb_ou'] = (str(st.get('side')) + ' '
+                            + str(round(st['rate'] * 100)) + '%')
 
 
 def api_twin(mid):

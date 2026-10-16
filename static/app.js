@@ -27,6 +27,7 @@ async function _jf(url, opt, tries, timeoutMs){
   const maxTries = tries ?? 4;
   const TO = timeoutMs ?? 30000;
   for (let i = 0; ; i++) {
+    if (window._jfRetryHook) { try { window._jfRetryHook(i + 1); } catch (_) {} }
     const ctl = new AbortController();
     const timer = TO > 0 ? setTimeout(() => ctl.abort(), TO) : null;
     try {
@@ -373,7 +374,12 @@ async function loadHome(){
     if (playedCat !== 'all') q += '&fin_cat=' + encodeURIComponent(playedCat);
   }
   try {
+    window._jfRetryHook = n => {
+      $('#homeList').innerHTML = '<div class="note">⏳ 伺服器重啟緊／網絡不穩，自動重試中（第 '
+        + n + ' 次，最長約 90 秒）…</div>';
+    };
     const d = await jget(q);
+    window._jfRetryHook = null;
     homeData = d;
     jget('/api/lgpred').then(p => { lgPred = p.predictions || {}; renderHome(); })
       .catch(() => {});
@@ -385,6 +391,7 @@ async function loadHome(){
       if (Object.keys(map).length) paintFwConflicts();
     });
   } catch (e) {
+    window._jfRetryHook = null;
     $('#homeList').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>';
   }
 }
@@ -683,6 +690,30 @@ $('#twinClose').onclick = () => Twin.close();
 $('#twinModal').addEventListener('click', ev => {
   if (ev.target.id === 'twinModal') Twin.close();
 });
+/* 主頁三欄（2026-10-16）：精選8／精選8s／好波大細。好波同好波頁徽章同口径
+ * （精選＞共識＞最強單項≥52%），三個來源各自獨立——冇入選/冇快取就唔顯示。 */
+function _pred3Badge(m){
+  if (!m) return '';
+  const st = 'display:inline-block;font-size:10px;line-height:16px;padding:0 4px;' +
+             'border-radius:3px;margin-left:4px;vertical-align:middle;';
+  const parts = [];
+  if (m.f8)
+    parts.push('<span style="' + st + 'background:rgba(212,175,55,.15);color:var(--gold2);' +
+               'border:1px solid rgba(212,175,55,.4)" title="精選8（格共識入選方向）">8·' +
+               esc(m.f8) + '</span>');
+  if (m.f8s)
+    parts.push('<span style="' + st + 'background:rgba(80,140,255,.12);color:#7ea8ff;' +
+               'border:1px solid rgba(80,140,255,.35)" title="精選8s（上盤公式入選方向）">8s·' +
+               esc(m.f8s) + '</span>');
+  if (m.hb_ou){
+    const big = String(m.hb_ou).indexOf('大') >= 0;
+    parts.push('<span style="' + st + 'background:' +
+               (big ? 'rgba(220,80,80,.12);color:var(--up);border:1px solid rgba(220,80,80,.35)'
+                    : 'rgba(80,200,120,.10);color:var(--down);border:1px solid rgba(80,200,120,.35)') +
+               '" title="好波大小（同好波頁徽章同口径）">波·' + esc(String(m.hb_ou)) + '</span>');
+  }
+  return parts.join('');
+}
 function _mrow(m, playedSec){
   const pc = window.PhoneCrawl ? PhoneCrawl.lineFor(m.id) : null;
   const pcMark = pc ? (pc.agree === true ? ' <span style="color:var(--up);font-size:10px">✓同本機</span>'
@@ -707,7 +738,7 @@ function _mrow(m, playedSec){
   return `<div class="mrow" data-mid="${m.id}">
     <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
     <span class="lg">${esc(m.league)}</span>
-    <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}${_fwConflictBadge(m)}</span>
+    <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}${_fwConflictBadge(m)}${_pred3Badge(m)}</span>
     ${_stateTag(m.state)}${sc}${line}${oud}${od}${at}${rfb}${BetSlip.btn(m)}${Twin.btn(m)}</div>`;
 }
 /* ---------- 精選8 vs 精選8s 方向衝突（2026-10-15 用戶：主頁展示兩套規則打架嘅場次） ----------

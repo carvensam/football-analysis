@@ -37,3 +37,12 @@ services:
         value: "1"
       - key: CRAWL_THREADS
         value: "2"
+      # 10-16：每輪爬取限時 20 分鐘（cloud_crawl 寫 control stop 收爐）——
+      # 舊版一輪冇限時，積壓大時變相 24/7 霸 512MB 同 web 服務擠（OOM
+      # 約 90 分鐘一次嘅元兇）。限時輪班後 web 有喘息窗；爬慢唔影響推算。
+      - key: CRAWL_ROUND_MINUTES
+        value: "20"
+      # 10-16：好波預測快取上限 512MB 雲端減半（每 entry 50-100KB）——
+      # 精確零影響，precompute 每 4 分鐘補返最近場次。
+      - key: HB_PRE_MAX
+        value: "250"

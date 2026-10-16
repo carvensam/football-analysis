@@ -80,6 +80,14 @@ def main():
     cfg = json.load(open(os.path.join(ROOT, 'config.json'), encoding='utf-8'))
     cfg['proxy_direct'] = True        # 本節點 IP 直達（繞過代理池邏輯）
     cfg['crawl_threads'] = int(os.environ.get('CRAWL_THREADS', '8'))
+    # 10-16：每輪限時（預設 20 分鐘，CRAWL_ROUND_MINUTES=0 閂限時=舊行為）。
+    # 舊版一輪 = 「ce.run 掃到隊列清晒為止」——雲端積壓以萬計，2 線爬變相
+    # 24/7 霸住 web 進程嘅 RAM/CPU（512MB 同 HTTP 服務擠逼、約每 90 分鐘
+    # OOM 重啟嘅主要元兇之一）。限時到就 ce.write_control('stop')（ce worker
+    # 做完手頭任務就退，乾淨收爐），finally 寫返 'run' 確保下一輪唔會被停。
+    # 精確/速度零影響（爬取只係保鮮；推算用嘅池唔經呢條路）。
+    import threading
+    round_min = int(os.environ.get('CRAWL_ROUND_MINUTES', '20'))
     while True:
         reach = probe()
         log('probe: %s' % json.dumps(reach))
@@ -89,12 +97,29 @@ def main():
             time.sleep(3600)
             continue
         log('本節點負責市場：%s' % ','.join(markets))
+        stopper = None
+        if round_min > 0:
+            def _halt():
+                try:
+                    ce.write_control('stop')
+                    log('本輪限時到（%d 分鐘），已寫 stop 收爐' % round_min)
+                except Exception:                     # noqa: BLE001
+                    pass
+            stopper = threading.Timer(round_min * 60, _halt)
+            stopper.start()
         try:
             ce.run(only=markets, worker=1)
             log('本輪完成，30 分鐘後重探+續跑')
         except Exception:                             # noqa: BLE001
             log('run 異常：\n%s' % __import__('traceback').format_exc())
             time.sleep(300)
+        finally:
+            if stopper is not None:
+                stopper.cancel()
+            try:
+                ce.write_control('run')
+            except Exception:                         # noqa: BLE001
+                pass
         time.sleep(1800)
 
 
