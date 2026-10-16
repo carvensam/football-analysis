@@ -5157,13 +5157,17 @@ def _attach_preds3(out):
                 "AND f.match_id IN (" + ph + ")", ids)}
     finally:
         conn.close()
-    # 8s 快取補完＋背景保鮮（快取舊就 trigger 一次 scan_upcoming，下一輪有數）
+    # 8s 快取補完＋背景保鮮（快取舊就 trigger 一次 scan_upcoming，下一輪有數）。
+    # 雲端（DISABLE_UPDATE）唔自動暖——scan_upcoming 入面 load_v3_pool 冷 build
+    # ~128MB，若撞正開機 preheat 嘅 build 會雙重疊加 OOM（512MB 實例）；
+    # 雲端 8s 快取靠用戶開 8s 頁刷新，主頁 f8s 欄照顯 fw8s_log 已有紀錄。
     try:
         c8 = _FW8S_CACHE.get('data')
         if c8:
             for p in c8.get('picks') or []:
                 f8s.setdefault(p.get('match_id'), 'up')
-        if (time.time() - _FW8S_CACHE.get('ts', 0) > 600
+        if (not DISABLE_UPDATE
+                and time.time() - _FW8S_CACHE.get('ts', 0) > 600
                 and not _FW8S_WARMING.get('on')):
             _FW8S_WARMING['on'] = True
 
