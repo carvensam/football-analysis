@@ -4288,7 +4288,133 @@ def _hb_predict_compute(mid):
                     'round': rd,
                     'ah_line': screen_engine.fmt_line(ahc, agv)
                     if ahc is not None else None}
+    # 10-17 用戶：記低好波方向選擇（供「同聯賽命中率」統計）——有方向先記
+    try:
+        _hb_log_pick(mid, lg, res.get('ou') or {})
+    except Exception:
+        pass
     return res
+
+
+def _hb_log_pick(mid, lg, ou):
+    """好波大小選擇落庫（hb_pick_log）——精選＞共識＞最強單項≥52% 同徽章
+    口径；完場後由 api_lg_hit_rates 懶結算。同場重算只更新方向，保留首次
+    加入時間。"""
+    pick = ou.get('pick')
+    lean = ou.get('lean')
+    st = ou.get('strongest') or {}
+    if pick:
+        side, rate = str(pick.get('side')), pick.get('best')
+    elif lean in ('大', '細'):
+        side, rate = lean, (ou.get('best_rates') or {}).get(lean)
+    elif st.get('rate', 0) >= 0.52 and ou.get('line') is not None:
+        side, rate = str(st.get('side')), round(st.get('rate', 0) * 100, 1)
+    else:
+        return
+    conn = db()
+    try:
+        conn.execute('''CREATE TABLE IF NOT EXISTS hb_pick_log(
+            match_id INTEGER PRIMARY KEY, league TEXT, side TEXT, rate REAL,
+            line REAL, added_at TEXT, result TEXT, settled_at TEXT)''')
+        conn.execute(
+            'INSERT INTO hb_pick_log(match_id,league,side,rate,line,added_at) '
+            'VALUES(?,?,?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+            'league=excluded.league, side=excluded.side, rate=excluded.rate, '
+            'line=excluded.line',
+            (mid, lg, side, rate, ou.get('line'),
+             time.strftime('%Y-%m-%d %H:%M:%S')))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+_LG_HIT_CACHE = {'ts': 0.0, 'data': None}
+_LG_HIT_TTL = 600
+
+
+def api_lg_hit_rates():
+    """同聯賽/杯賽命中率（2026-10-17 用戶）——六個來源逐聯賽計：
+    main＝主頁上下盤（check_rows）、feat_v1/feat_v2＝精選、
+    f7/f8/f12/f8s＝精選格組合（fw_grid_featured）、hb＝好波大小（hb_pick_log，
+    10-17 起記錄，n<10 顯示—）。回傳 {lg: {src: [命中, 已結算n]}}，600s 快取。"""
+    now = time.time()
+    if _LG_HIT_CACHE['data'] is not None \
+            and now - _LG_HIT_CACHE['ts'] < _LG_HIT_TTL:
+        return _LG_HIT_CACHE['data']
+    conn = db()
+    out = {}
+    try:
+        # 好波選擇懶結算（走＝P 唔計入命中率分母）
+        try:
+            conn.execute('''CREATE TABLE IF NOT EXISTS hb_pick_log(
+                match_id INTEGER PRIMARY KEY, league TEXT, side TEXT, rate REAL,
+                line REAL, added_at TEXT, result TEXT, settled_at TEXT)''')
+            conn.execute(
+                "UPDATE hb_pick_log AS h SET result = CASE "
+                "WHEN m.home_score + m.away_score = h.line THEN 'P' "
+                "WHEN (m.home_score + m.away_score > h.line) = (h.side = '大') "
+                "THEN 'W' ELSE 'L' END, "
+                "settled_at = datetime('now','localtime') "
+                "FROM matches m "
+                "WHERE h.match_id = m.id AND m.home_score IS NOT NULL "
+                "AND h.result IS NULL")
+            conn.commit()
+        except sqlite3.Error:
+            pass
+
+        def _add(src, rows):
+            for lg, n, w in rows:
+                if not lg:
+                    continue
+                out.setdefault(lg, {})[src] = [int(w or 0), int(n)]
+
+        base = ('FROM matches m JOIN seasons s ON s.id=m.season_id '
+                'JOIN competitions c ON c.titan_id=s.titan_id ')
+        try:
+            _add('main', conn.execute(
+                'SELECT c.req_name, COUNT(*), SUM((cr.res = \'A\') = '
+                "(cr.direction = 'up')) " + base.replace(
+                    'FROM matches m', 'FROM check_rows cr JOIN matches m '
+                    'ON m.id = cr.match_id') +
+                "WHERE cr.res IN ('A','B') GROUP BY c.req_name").fetchall())
+        except sqlite3.Error:
+            pass
+        for tbl, src in (('v1_featured', 'feat_v1'),
+                         ('featured', 'feat_v2')):
+            try:
+                _add(src, conn.execute(
+                    'SELECT c.req_name, COUNT(*), SUM(f.result = \'W\') '
+                    'FROM %s f ' % tbl + base.replace(
+                        'FROM matches m', 'JOIN matches m ON m.id=f.match_id')
+                    + "WHERE f.result IN ('W','L') GROUP BY c.req_name"
+                    ).fetchall())
+            except sqlite3.Error:
+                pass
+        try:
+            rows = conn.execute(
+                "SELECT f.grid, c.req_name, COUNT(*), SUM(f.result = 'W') "
+                'FROM fw_grid_featured f JOIN matches m ON m.id = f.match_id '
+                'JOIN seasons s ON s.id = m.season_id '
+                'JOIN competitions c ON c.titan_id = s.titan_id '
+                "WHERE f.result IN ('W','L') GROUP BY f.grid, c.req_name"
+            ).fetchall()
+            for g, lg, n, w in rows:
+                if lg:
+                    out.setdefault(lg, {})['f' + g] = [int(w or 0), int(n)]
+        except sqlite3.Error:
+            pass
+        try:
+            _add('hb', conn.execute(
+                "SELECT league, COUNT(*), SUM(result = 'W') FROM hb_pick_log "
+                "WHERE result IN ('W','L') GROUP BY league").fetchall())
+        except sqlite3.Error:
+            pass
+    finally:
+        conn.close()
+    data = {'lg': out, 'ts': time.strftime('%Y-%m-%d %H:%M:%S')}
+    _LG_HIT_CACHE['ts'] = now
+    _LG_HIT_CACHE['data'] = data
+    return data
 
 
 def _hb_precompute_worker():
@@ -6236,6 +6362,9 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/lg_hit_rates':
+            self._send(200, json.dumps(api_lg_hit_rates(), ensure_ascii=False))
+            return
         if u.path == '/api/upcoming':
             q = parse_qs(u.query)
             hours = int(q.get('hours', ['48'])[0])
@@ -6713,6 +6842,9 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/lg_hit_rates':
+            self._send(200, json.dumps(api_lg_hit_rates(), ensure_ascii=False))
             return
         if u.path == '/api/upcoming':
             q = parse_qs(u.query)

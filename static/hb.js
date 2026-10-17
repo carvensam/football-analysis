@@ -44,6 +44,21 @@
     });
   }
 
+  /* 10-17 用戶：好波大小「同聯賽/杯賽命中率」——hb_pick_log 10-17 起記錄，
+   * n<10 顯示累積中；detail 用 slot，load 完自動填。 */
+  var _lgRatesHb = null;
+  function _hbLgRateTxt(lg) {
+    var v = _lgRatesHb && _lgRatesHb[lg] && _lgRatesHb[lg].hb;
+    if (v && v[1] >= 10) return Math.round(v[0] / v[1] * 100) + '%（n=' + v[1] + '）';
+    return '<span style="color:var(--dim)">—（記錄緊，n=' + (v ? v[1] : 0) + '）</span>';
+  }
+  _hfetch('/api/lg_hit_rates', 1).then(function (d) {
+    _lgRatesHb = (d && d.lg) || {};
+    Array.prototype.forEach.call(document.querySelectorAll('[data-hblgr]'), function (el) {
+      el.innerHTML = _hbLgRateTxt(el.getAttribute('data-hblgr'));
+    });
+  }).catch(function () {});
+
   function loadList() {
     var hours = $('#hoursSel').value;
     statusEl.textContent = '載入緊賽事…';
@@ -203,17 +218,41 @@
       h += gi('尾盤線', ou.line + ' 球');
       h += gi('水位', '大 ' + (ou.over_odds != null ? ou.over_odds : '—') +
                   '｜細 ' + (ou.under_odds != null ? ou.under_odds : '—'));
-      /* 預測方向：有共識先表態；冇共識（lean=null）一定要顯示「觀望」——
-       * 舊版跌落細球 fallback，同列表「最強訊號大」徽章並排出現「又大又細」
-       * （2026-10-11 用戶回報）。最強單項同共識方向唔同時，照實標明邊個為準。 */
-      var leanTxt = ou.lean === '大' ? '<span class="pct-over">大球</span>'
-                  : ou.lean === '細' ? '<span class="pct-under">細球</span>'
-                  : '<span style="color:var(--dim)">觀望（共識不足）</span>';
-      var st = ou.strongest;
-      if (st && (!ou.lean || st.side !== ou.lean)) {
-        leanTxt += '<br><small style="color:var(--dim)">最強單項訊號：' + st.side + ' ' +
-          Math.round(st.rate * 100) + '%（n=' + st.n + '）' +
-          (ou.lean ? '｜同共識相反，以共識為準' : '｜單項訊號，票數唔夠表態') + '</small>';
+      /* 2026-10-16：同列表徽章完全同一優先次序（精選＞共識＞最強單項≥52%＞觀望）。
+       * 舊版淨係顯示共識——85% 場次共識不足時，列表話「細 64%」、詳情話
+       * 「觀望」，用戶回報「列表同詳情唔一致」。最強單項做主打時照實標明
+       * 來源同「共識不足」，等用戶知邊個為準。 */
+      var leanTxt;
+      if (ou.pick) {
+        leanTxt = '<span style="color:var(--gold2)">⭐精選' + ou.pick.side + '</span>' +
+                  '（最高單項 ' + ou.pick.best + '%）' +
+                  (ou.lean && ou.lean !== ou.pick.side
+                    ? '<br><small style="color:var(--dim)">共識：' + ou.lean +
+                      '｜同精選相反，以精選為準</small>' : '');
+      } else if (ou.lean === '大' || ou.lean === '細') {
+        leanTxt = '<span class="' + (ou.lean === '大' ? 'pct-over' : 'pct-under') +
+                  '">' + (ou.lean === '大' ? '大球' : '細球') + '</span>';
+        if (ou.strongest && ou.strongest.side !== ou.lean) {
+          leanTxt += '<br><small style="color:var(--dim)">最強單項訊號：' +
+            ou.strongest.side + ' ' + Math.round(ou.strongest.rate * 100) +
+            '%（n=' + ou.strongest.n + '）｜同共識相反，以共識為準</small>';
+        }
+      } else if (ou.strongest && ou.strongest.rate >= 0.52 && ou.line != null) {
+        var s0 = ou.strongest.side;
+        var sstrong = ou.strongest.rate >= 0.58;
+        leanTxt = '<span class="' + (s0 === '大' ? 'pct-over' : 'pct-under') +
+                  '">' + (s0 === '大' ? '大球' : '細球') + ' ' +
+                  Math.round(ou.strongest.rate * 100) + '%</span>' +
+                  '<br><small style="color:var(--dim)">最強單項訊號 n=' +
+                  ou.strongest.n + (sstrong ? '' : '，弱') +
+                  '｜共識不足，以單項訊號顯示（同列表一致）</small>';
+      } else {
+        leanTxt = '<span style="color:var(--dim)">觀望（共識不足）</span>';
+        if (ou.strongest) {
+          leanTxt += '<br><small style="color:var(--dim)">最強單項訊號：' +
+            ou.strongest.side + ' ' + Math.round(ou.strongest.rate * 100) +
+            '%（n=' + ou.strongest.n + '）</small>';
+        }
       }
       h += gi('預測', leanTxt +
                   (ou.confidence ? '（信心' + ou.confidence + '）' : ''));
@@ -238,6 +277,7 @@
         gi('走盤', pct(ou.push_r)) +
         gi('聯賽實證大球', (ou.empirical_over != null ? ou.empirical_over + '%' : '—') +
            '<br><small>n=' + (ou.empirical_n || 0) + '</small>') +
+        gi('同聯賽命中', '<span data-hblgr="' + esc(mt.league || '') + '">—</span>') +
       '</div>';
     }
     if (ou.layers) {

@@ -714,6 +714,51 @@ function _pred3Badge(m){
   }
   return parts.join('');
 }
+/* ---------- 同聯賽/杯賽命中率（2026-10-17 用戶）：六源速查 ----------
+ * 後端 /api/lg_hit_rates（600s 快取）回 {lg: {src: [命中, n]}}。
+ * 渲染用 slot：先放空位，load 完一次過填——同步渲染同動態列表都合用。 */
+const LgHit = {
+  rates: null,
+  _p: null,
+  load(){
+    if (this._p) return this._p;
+    this._p = jget('/api/lg_hit_rates').then(d => {
+      this.rates = (d && d.lg) || {};
+      _fillLgSlots();
+      return this.rates;
+    }).catch(() => { this.rates = {}; return {}; });
+    return this._p;
+  },
+  fmt(v){ return (v && v[1] >= 5) ? Math.round(v[0] / v[1] * 100) + '%' : null; },
+  chips(lg, keys){
+    const r = (this.rates || {})[lg];
+    if (!r) return '';
+    const names = {main: '主', feat_v1: '精V1', feat_v2: '精V2',
+                   f7: '精7', f8: '精8', f12: '精12', f8s: '精8s', hb: '波'};
+    const parts = [];
+    for (const k of keys){
+      const v = r[k], f = v && this.fmt(v);
+      if (f) parts.push(names[k] + f + (v[1] < 20 ? '<small style="opacity:.65">·n' + v[1] + '</small>' : ''));
+    }
+    return parts.length
+      ? '<span style="font-size:10px;color:var(--gold2)" title="同聯賽/杯賽命中率（贏÷(贏+輸)，走唔計）">🏆 ' + parts.join('｜') + '</span>'
+      : '';
+  }
+};
+function _lgRateSlot(lg, keys){
+  return '<span class="lgr-slot" data-lg="' + esc(lg || '') + '" data-keys="' + keys.join(',') + '"></span>';
+}
+function _fillLgSlots(){
+  if (!LgHit.rates) return;
+  document.querySelectorAll('.lgr-slot').forEach(el => {
+    if (el._lgrDone) return;
+    const c = LgHit.chips(el.dataset.lg, (el.dataset.keys || '').split(','));
+    if (c){ el.innerHTML = c; el._lgrDone = true; }
+  });
+}
+LgHit.load();
+setInterval(() => { LgHit._p = null; LgHit.rates = null; LgHit.load(); }, 900000);
+
 function _mrow(m, playedSec){
   const pc = window.PhoneCrawl ? PhoneCrawl.lineFor(m.id) : null;
   const pcMark = pc ? (pc.agree === true ? ' <span style="color:var(--up);font-size:10px">✓同本機</span>'
@@ -738,7 +783,7 @@ function _mrow(m, playedSec){
   return `<div class="mrow" data-mid="${m.id}">
     <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
     <span class="lg">${esc(m.league)}</span>
-    <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}${_fwConflictBadge(m)}${_pred3Badge(m)}</span>
+    <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}${_fwConflictBadge(m)}${_pred3Badge(m)}${_lgRateSlot(m.league, ['main','feat_v2','f7','f8','hb'])}</span>
     ${_stateTag(m.state)}${sc}${line}${oud}${od}${at}${rfb}${BetSlip.btn(m)}${Twin.btn(m)}</div>`;
 }
 /* ---------- 精選8 vs 精選8s 方向衝突（2026-10-15 用戶：主頁展示兩套規則打架嘅場次） ----------
@@ -870,6 +915,7 @@ function renderHome(){
     h += _mrow(m, true);
   }
   $('#homeList').innerHTML = h;
+  _fillLgSlots();
   // 2026-10-13：撳「🎯投注」/「👯搵孖生」（document 委託）時唔好連帶開詳情頁
   $$('#homeList .mrow').forEach(r => r.onclick = ev => {
     if (ev.target.closest('[data-bet],[data-twin]')) return;
@@ -1900,6 +1946,7 @@ function _fwGridCard(p, g){
       <div class="teams">${esc(p.home)} <span class="vs">vs</span> ${esc(p.away)}${p.score ? ` <b>${esc(p.score)}</b>` : ''} ${resBadge}</div>
       <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
       <div class="gaprow"><span class="lab">本場</span>上盤＝<b>${esc(ud.up)}</b>｜下盤＝<b>${esc(ud.down)}</b>${ud.push ? '（平手盤：上盤＝平手主隊）' : ''}</div>
+      <div class="gaprow"><span class="lab">同聯賽</span>${_lgRateSlot(p.league, ['f' + g])}</div>
       <div class="grid6">${_fwgCellsHTML(p.cells, def.cells)}</div>
       ${_fwgStrict(p.strict)}
       <div class="hrb" data-kind="fw${g}" data-mid="${p.id}"></div>
@@ -1933,6 +1980,7 @@ async function loadFwGrid(g){
   if (d.played.length) h += `<div class="day-h">📼 已完場（${d.played.length} 場・最新排先・永久保留）</div>` + d.played.map(p => _fwGridCard(p, g)).join('');
   if (!h) h = `<div class="note">暫無精選${g}場次。撳「🔍 重新掃描精選${g}」即刻篩過。</div>`;
   listEl.innerHTML = h;
+  _fillLgSlots();
   _fillHrBlocks(listEl);
   [...listEl.querySelectorAll('.fcard')].forEach(c => {
     const mid = +c.dataset.mid;
@@ -2541,9 +2589,10 @@ function _udLegend2(line, home, away){
   if (!u) return '';
   return `<div class="note" style="margin:2px 0">本場：上盤＝<b>${esc(u.up)}</b>｜下盤＝<b>${esc(u.down)}</b>${u.push ? '（平手盤：上盤＝平手主隊）' : ''}</div>`;
 }
-function _v1Card(p, z){
+function _v1Card(p, z, tag){
   const b = p.brief || {};
   const dName = p.direction === 'up' ? '上盤' : '下盤';
+  const lgRateKey = tag === 'V2' ? 'feat_v2' : 'feat_v1';
   const res = !p.played ? '<span style="color:var(--dim)">未開賽</span>'
     : p.result === 'W' ? '<b class="r-up">✅ 命中</b>'
     : p.result === 'L' ? '<b class="r-down">❌ 未中</b>'
@@ -2572,6 +2621,7 @@ function _v1Card(p, z){
       </span>
     </div>
     <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
+    <div class="gaprow"><span class="lab">同聯賽</span>${_lgRateSlot(p.league, [lgRateKey])}</div>
     ${_udLegend2(p.line, p.home, p.away)}
     <div class="grid6">
       <div class="gi"><div class="t">① 同初盤及尾盤</div><div class="v">${_pairTxt(b.i1)}</div><div class="sub">＝V2 項目1</div></div>
@@ -2616,10 +2666,11 @@ async function loadV1(){
   $('#v1zStats').innerHTML = _v1StatsBar(dz.stats, true, 'V1精選Z');
   const render = (dd, el, z, tag, refreshUrl) => {
     let h = '';
-    if (dd.pending.length) h += `<div class="day-h">🔜 ${tag}${z ? '精選Z' : '精選'}・未開賽（${dd.pending.length} 場・順開賽時間）</div>` + dd.pending.map(p => _v1Card(p, z)).join('');
-    if (dd.played.length) h += `<div class="day-h">📼 ${tag}${z ? '精選Z' : '精選'}・已完場（${dd.played.length} 場・最新排先，永久保留）</div>` + dd.played.map(p => _v1Card(p, z)).join('');
+    if (dd.pending.length) h += `<div class="day-h">🔜 ${tag}${z ? '精選Z' : '精選'}・未開賽（${dd.pending.length} 場・順開賽時間）</div>` + dd.pending.map(p => _v1Card(p, z, tag)).join('');
+    if (dd.played.length) h += `<div class="day-h">📼 ${tag}${z ? '精選Z' : '精選'}・已完場（${dd.played.length} 場・最新排先，永久保留）</div>` + dd.played.map(p => _v1Card(p, z, tag)).join('');
     if (!h) h = `<div class="note">暫無 ${tag}${z ? '精選Z' : '精選'}場次。撳「🔍 重新掃描」即刻篩過。</div>`;
     el.innerHTML = h;
+    _fillLgSlots();
     [...el.querySelectorAll('.fcard')].forEach(c => {
       const mid = +c.dataset.mid;
       c.querySelector('.ft-refresh').onclick = async ev => {
