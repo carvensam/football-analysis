@@ -153,6 +153,13 @@
     var lean = row.querySelector('[data-lean]');
     if (!lean) return;
     var ou = d.ou || {};
+    if (ou.lg_rule) {
+      /* 10-17 同聯賽規律（礦工v3 雙重驗證）——規律 verdict 最優先 */
+      lean.textContent = '🎯規' + ou.lg_rule.side + ' ' + ou.lg_rule.rate + '%';
+      lean.className = 'lean ' + (ou.lg_rule.side === '大' ? 'big' : 'small');
+      lean.style.borderColor = 'var(--gold)';
+      return;
+    }
     if (ou.pick) {
       lean.textContent = '⭐精選' + ou.pick.side + ' ' + ou.pick.best + '%';
       lean.className = 'lean ' + (ou.pick.side === '大' ? 'big' : 'small');
@@ -223,7 +230,16 @@
        * 「觀望」，用戶回報「列表同詳情唔一致」。最強單項做主打時照實標明
        * 來源同「共識不足」，等用戶知邊個為準。 */
       var leanTxt;
-      if (ou.pick) {
+      if (ou.lg_rule) {
+        /* 10-17 同聯賽規律（礦工v3 雙重驗證 82.5% 閘）——最優先 verdict */
+        var _lr = ou.lg_rule;
+        leanTxt = '<span style="color:var(--gold2)">🎯同聯賽規律 ' +
+                  esc(String(_lr.side)) + ' ' + esc(String(_lr.rate)) + '%</span>' +
+                  '<br><small style="color:var(--dim)">' +
+                  esc(((_lr.conds || []).join('＋'))) +
+                  '｜同聯賽 n=' + esc(String(_lr.n_lg != null ? _lr.n_lg : '?')) +
+                  '・全庫 n=' + esc(String(_lr.n_all != null ? _lr.n_all : '?')) + '</small>';
+      } else if (ou.pick) {
         leanTxt = '<span style="color:var(--gold2)">⭐精選' + ou.pick.side + '</span>' +
                   '（最高單項 ' + ou.pick.best + '%）' +
                   (ou.lean && ou.lean !== ou.pick.side

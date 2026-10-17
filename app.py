@@ -4288,6 +4288,23 @@ def _hb_predict_compute(mid):
                     'round': rd,
                     'ah_line': screen_engine.fmt_line(ahc, agv)
                     if ahc is not None else None}
+    # 10-17 用戶：同聯賽規律（礦工 v3 雙重驗證規則，不同聯賽不同方法）——
+    # 中咗規律就將好波 verdict 交俾佢（前端顯示 🎯規；hb_pick_log 記 method=rule）
+    try:
+        import hb_ou_rules
+        c2 = db()
+        try:
+            _hit = hb_ou_rules.check_match(c2, mid)
+        finally:
+            c2.close()
+        if _hit:
+            _side, _rate, _rule = _hit
+            res.setdefault('ou', {})['lg_rule'] = {
+                'side': _side, 'rate': round(_rate * 100, 1),
+                'conds': _rule['conds'], 'n_lg': _rule.get('n_lg'),
+                'n_all': _rule.get('n_all')}
+    except Exception:
+        pass
     # 10-17 用戶：記低好波方向選擇（供「同聯賽命中率」統計）——有方向先記
     try:
         _hb_log_pick(mid, lg, res.get('ou') or {})
@@ -4297,13 +4314,17 @@ def _hb_predict_compute(mid):
 
 
 def _hb_log_pick(mid, lg, ou):
-    """好波大小選擇落庫（hb_pick_log）——精選＞共識＞最強單項≥52% 同徽章
-    口径；完場後由 api_lg_hit_rates 懶結算。同場重算只更新方向，保留首次
-    加入時間。"""
+    """好波大小選擇落庫（hb_pick_log）——同聯賽規律（method=rule）＞
+    精選＞共識＞最強單項≥52%；完場後由 api_lg_hit_rates 懶結算。
+    同場重算只更新方向，保留首次加入時間。"""
     pick = ou.get('pick')
     lean = ou.get('lean')
     st = ou.get('strongest') or {}
-    if pick:
+    lr = ou.get('lg_rule')
+    method = 'engine'
+    if lr:
+        side, rate, method = lr['side'], lr['rate'], 'rule'
+    elif pick:
         side, rate = str(pick.get('side')), pick.get('best')
     elif lean in ('大', '細'):
         side, rate = lean, (ou.get('best_rates') or {}).get(lean)
@@ -4316,13 +4337,18 @@ def _hb_log_pick(mid, lg, ou):
         conn.execute('''CREATE TABLE IF NOT EXISTS hb_pick_log(
             match_id INTEGER PRIMARY KEY, league TEXT, side TEXT, rate REAL,
             line REAL, added_at TEXT, result TEXT, settled_at TEXT)''')
+        try:
+            conn.execute('ALTER TABLE hb_pick_log ADD COLUMN method TEXT '
+                         "DEFAULT 'engine'")
+        except sqlite3.OperationalError:
+            pass
         conn.execute(
-            'INSERT INTO hb_pick_log(match_id,league,side,rate,line,added_at) '
-            'VALUES(?,?,?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+            'INSERT INTO hb_pick_log(match_id,league,side,rate,line,added_at,'
+            'method) VALUES(?,?,?,?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
             'league=excluded.league, side=excluded.side, rate=excluded.rate, '
-            'line=excluded.line',
+            'line=excluded.line, method=excluded.method',
             (mid, lg, side, rate, ou.get('line'),
-             time.strftime('%Y-%m-%d %H:%M:%S')))
+             time.strftime('%Y-%m-%d %H:%M:%S'), method))
         conn.commit()
     finally:
         conn.close()
@@ -5321,7 +5347,11 @@ def _attach_preds3(out):
         pick = ou.get('pick')
         lean = ou.get('lean')
         st = ou.get('strongest') or {}
-        if pick:
+        lr = ou.get('lg_rule')
+        if lr:
+            rec['hb_ou'] = ('🎯規' + str(lr.get('side')) + ' '
+                            + str(lr.get('rate')) + '%')
+        elif pick:
             rec['hb_ou'] = '⭐精選' + str(pick.get('side'))
         elif lean in ('大', '細'):
             rec['hb_ou'] = str(lean)
