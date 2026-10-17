@@ -7846,11 +7846,12 @@ if __name__ == '__main__':
         if not DISABLE_UPDATE:
             threading.Thread(target=_boot_auto_update, daemon=True).start()
     threading.Timer(30, _preheat_all).start()
-    # 賽果補抓：兩邊都開（雲端行代理池通道）。雲端節流 30 分鐘一次——
-    # 0.5C 實機 15 分鐘節奏會同請求搶 CPU，health check 超時反覆 restart
-    # （2026-10-06 Render 事件證實）。V2 每 2 小時窗口更新雲端唔開：70 場代理爬
-    # 喺 0.5C 要成個鐘，CPU 長期飽和；盤口保鮮靠每日推送＋用戶 ⚡（實測 47 秒）。
-    threading.Thread(target=_result_catchup_job, daemon=True).start()
+    # 賽果補抓：2026-10-17 新架構——本機（電腦）全權負責賽果爬取＋更新，
+    # 雲端補抓停用（remove 512MB 容器最後一個常駐網絡工作：代理逾時堆積
+    # 同不定期重啟嘅可疑元兇；13:49 單宗重啟前 18 分鐘正係補抓寫庫）。
+    # 雲端賽果同精選結算跟每日推送。本機 8 分鐘節奏照舊。
+    if not DISABLE_UPDATE:
+        threading.Thread(target=_result_catchup_job, daemon=True).start()
     if not DISABLE_UPDATE:
         threading.Thread(target=_v2_sched_job, daemon=True).start()
     else:
