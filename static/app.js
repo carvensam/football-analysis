@@ -3018,6 +3018,7 @@ async function loadX8(){
         <span style="color:var(--dim)">走 ${B.p}</span>
         <span>命中率 <b style="color:${bHr != null && bHr >= 0.5 ? '#3fb950' : '#f85149'};font-size:1.2em">${bHr == null ? '—' : (bHr * 100).toFixed(1) + '%'}</b>${bDec ? `（${B.w}/${bDec}）` : ''}</span>
         <span style="color:var(--dim);font-size:12px">更新於 ${esc(B.updated_at || '')}</span></div>
+        ${B.excl && B.excl.total ? `<div class="sub" style="margin-top:2px;color:var(--dim)">🚫 已剔除命中率&lt;50%：${B.excl.leagues.map(e => esc(e.league) + ' ' + e.hit_rate + '%').join('、')} → 餘下 <b>${B.excl.total}</b> 場，命中率 <b style="color:#3fb950;font-size:1.1em">${B.excl.hit_rate}%</b></div>` : ''}
         ${(B.by_league || []).length ? `<div style="margin-top:6px">${B.by_league.slice().sort((a, b) => {
           const ra = (a.w + a.l) ? a.w / (a.w + a.l) : -1;
           const rb = (b.w + b.l) ? b.w / (b.w + b.l) : -1;
