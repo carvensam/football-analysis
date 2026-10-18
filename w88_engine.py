@@ -46,6 +46,12 @@ def load_rules(force=False):
 
 
 def migrate(conn):
+    # 讀檢查先行：表已存在就唔使攞寫鎖（爬蟲長寫入時頁面載入唔會被阻塞）
+    have = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name IN ('w88_log', 'k3_log')")}
+    if 'w88_log' in have:
+        return
     conn.execute('''CREATE TABLE IF NOT EXISTS w88_log(
         match_id INTEGER, market TEXT, conds TEXT, league TEXT, label TEXT,
         ou_line REAL, hc REAL, giver TEXT,
@@ -184,7 +190,8 @@ def _ps_feats(feat):
 
 def scan(conn, hours=168, grace_min=10):
     """賽前掃描：未來 hours 小時、聯賽有方法庫、條件全中 → 記入 w88_log。
-    一場可以命中多條方法（每條一筆，PK 去重）。"""
+    兩段式：先讀取＋計算（唔攞寫鎖），最後先一次過短事務寫入——
+    爬蟲長寫入期間唔會長時間攞住寫鎖，鎖等待集中喺最後一刻。"""
     migrate(conn)
     rules = load_rules()
     if not rules:
@@ -198,9 +205,9 @@ def scan(conn, hours=168, grace_min=10):
         'AND c.req_name IN (%s) AND m.home_score IS NULL'
         % (grace_min, hours, ','.join('?' * len(rules))),
         tuple(rules.keys())).fetchall()
-    added = 0
     now = time.strftime('%Y-%m-%d %H:%M:%S')
     import fw8x
+    hits = []
     for mid, lg in rows:
         try:
             got = _odds_feats(conn, mid)
@@ -210,6 +217,7 @@ def scan(conn, hours=168, grace_min=10):
             psf = None  # 惰性：有方法用到 ps 條件先計一次
             for rule in rules.get(lg, []):
                 conds = rule['conds']
+                key = (mid, rule['market'], json.dumps(conds, ensure_ascii=False))
                 # 盤口條件先過（平）；全中而又有 ps 條件先計 ps 特徵（貴）
                 if not all(of.get(c) for c in conds if c not in PS_CONDS):
                     continue
@@ -219,18 +227,21 @@ def scan(conn, hours=168, grace_min=10):
                         psf = _ps_feats(info['feat']) if info else {}
                     if not all(psf.get(c) for c in conds if c in PS_CONDS):
                         continue
-                cur = conn.execute(
-                    'INSERT OR IGNORE INTO w88_log '
-                    '(match_id, market, conds, league, label, ou_line, hc, '
-                    ' giver, added_at) VALUES(?,?,?,?,?,?,?,?,?)',
-                    (mid, rule['market'],
-                     json.dumps(conds, ensure_ascii=False), lg,
-                     rule.get('label'),
-                     ou['total_line'] if ou else None,
-                     ah.get('handicap'), ah.get('giver'), now))
-                added += cur.rowcount
+                hits.append((key, (mid, rule['market'], key[2], lg,
+                                   rule.get('label'),
+                                   ou['total_line'] if ou else None,
+                                   ah.get('handicap'), ah.get('giver'), now)))
         except Exception:
             traceback.print_exc()
+    if not hits:
+        return 0
+    added = 0
+    for key, vals in hits:
+        cur = conn.execute(
+            'INSERT OR IGNORE INTO w88_log '
+            '(match_id, market, conds, league, label, ou_line, hc, '
+            ' giver, added_at) VALUES(?,?,?,?,?,?,?,?,?)', vals)
+        added += cur.rowcount
     conn.commit()
     return added
 
@@ -274,7 +285,7 @@ def _settle_one(market, hs, aws, hc, giver, ou_line):
 
 
 def settle(conn):
-    """賽後結算 w88_log。"""
+    """賽後結算 w88_log（兩段式：讀＋計算先行，短事務寫入）。"""
     migrate(conn)
     rows = conn.execute(
         'SELECT k.match_id, k.market, k.hc, k.giver, k.ou_line, '
@@ -282,17 +293,17 @@ def settle(conn):
         'JOIN matches m ON m.id=k.match_id '
         'WHERE k.result IS NULL AND m.home_score IS NOT NULL').fetchall()
     now = time.strftime('%Y-%m-%d %H:%M:%S')
-    n = 0
+    todo = []
     for mid, market, hc, giver, ou_line, hs, aws in rows:
         res = _settle_one(market, hs, aws, hc, giver, ou_line)
-        if res is None:
-            continue
+        if res is not None:
+            todo.append((res, now, mid, market))
+    for res, ts, mid, market in todo:
         conn.execute('UPDATE w88_log SET result=?, settled_at=? '
-                     'WHERE match_id=? AND market=?', (res, now, mid, market))
-        n += 1
-    if n:
+                     'WHERE match_id=? AND market=?', (res, ts, mid, market))
+    if todo:
         conn.commit()
-    return n
+    return len(todo)
 
 
 def _stats(conn):

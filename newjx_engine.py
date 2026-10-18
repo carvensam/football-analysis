@@ -40,6 +40,12 @@ def load_rules(force=False):
 
 
 def migrate(conn):
+    # 讀檢查先行：表已存在就唔使攞寫鎖（爬蟲長寫入時頁面載入唔會被阻塞）
+    r = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='newjx_log'").fetchone()
+    if r:
+        return
     conn.execute('''CREATE TABLE IF NOT EXISTS newjx_log(
         match_id INTEGER PRIMARY KEY, league TEXT, dir TEXT, conds TEXT,
         hc REAL, giver TEXT,
@@ -152,10 +158,8 @@ def scan(conn, hours=168, grace_min=10):
     added = 0
     now = time.strftime('%Y-%m-%d %H:%M:%S')
     import fw8x
+    hits = []
     for mid, lg in rows:
-        if conn.execute('SELECT 1 FROM newjx_log WHERE match_id=?',
-                        (mid,)).fetchone():
-            continue
         rule = rules.get(lg)
         if not rule:
             continue
@@ -172,27 +176,31 @@ def scan(conn, hours=168, grace_min=10):
                 psf = _ps_feats(info['feat']) if info else {}
                 if not all(psf.get(c) for c in conds if c in PS_CONDS):
                     continue
-            conn.execute(
-                'INSERT OR IGNORE INTO newjx_log VALUES(?,?,?,?,?,?,?,?,?)',
-                (mid, lg, rule['dir'],
-                 json.dumps(conds, ensure_ascii=False),
-                 ah.get('handicap'), ah.get('giver'), now, None, None))
-            added += 1
+            hits.append((mid, lg, rule['dir'],
+                         json.dumps(conds, ensure_ascii=False),
+                         ah.get('handicap'), ah.get('giver'), now))
         except Exception:
             traceback.print_exc()
-    conn.commit()
+    for vals in hits:
+        cur = conn.execute(
+            'INSERT OR IGNORE INTO newjx_log VALUES(?,?,?,?,?,?,?,?,?)',
+            vals + (None, None))
+        added += cur.rowcount
+    if hits:
+        conn.commit()
     return added
 
 
 def settle(conn):
-    """賽後結算：dir=up 上盤贏＝W；dir=down 下盤贏＝W；走盤＝P。"""
+    """賽後結算：dir=up 上盤贏＝W；dir=down 下盤贏＝W；走盤＝P。
+    兩段式：讀＋計算先行，短事務寫入。"""
     migrate(conn)
     rows = conn.execute(
         'SELECT k.match_id, k.dir, k.hc, k.giver, m.home_score, m.away_score '
         'FROM newjx_log k JOIN matches m ON m.id=k.match_id '
         'WHERE k.result IS NULL AND m.home_score IS NOT NULL').fetchall()
     now = time.strftime('%Y-%m-%d %H:%M:%S')
-    n = 0
+    todo = []
     for mid, d, hc, giver, hs, aws in rows:
         if hc is None:
             continue
@@ -207,12 +215,13 @@ def settle(conn):
         else:
             win = mg > 0 if d == 'up' else mg < 0
             res = 'W' if win else 'L'
+        todo.append((res, now, mid))
+    for res, ts, mid in todo:
         conn.execute('UPDATE newjx_log SET result=?, settled_at=? '
-                     'WHERE match_id=?', (res, now, mid))
-        n += 1
-    if n:
+                     'WHERE match_id=?', (res, ts, mid))
+    if todo:
         conn.commit()
-    return n
+    return len(todo)
 
 
 def _stats(conn):

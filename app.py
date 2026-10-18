@@ -443,6 +443,82 @@ def db():
     return sqlite3.connect(DB_PATH, timeout=60)
 
 
+def _scan_with_retry(scan_fn, settle_fn, tries=5, wait=8):
+    """同步版：鎖錯誤短等重試（內部用）。"""
+    last = None
+    for _ in range(tries):
+        c = db()
+        try:
+            a = scan_fn(c)
+            s = settle_fn(c)
+            c.close()
+            return a, s
+        except sqlite3.OperationalError as e:
+            last = e
+            try:
+                c.close()
+            except Exception:
+                pass
+            if 'locked' not in str(e):
+                raise
+            time.sleep(wait)
+    raise last
+
+
+_bg_scan_state = {}
+
+
+def _start_bg_scan(kind):
+    """一鍵掃描改背景作業（2026-10-19 用戶報告撳完無反應）：
+    爬蟲間中長時間攞住寫鎖（實測 >160 秒連續鎖），同步等會令按鈕
+    好似死咗。依家 API 即刻回，背景線程每 15 秒等空窗重試（最多 10 分鐘），
+    寫入動作本身已改兩段式短事務，一有空窗即入。已在跑就唔重複開。"""
+    t = _bg_scan_state.get(kind)
+    if t and t.is_alive():
+        return False
+
+    def job():
+        for att in range(40):
+            c = db()
+            try:
+                if kind == 'w88':
+                    a = w88_engine.scan(c)
+                    s = w88_engine.settle(c)
+                    a8 = fw8x.scan(c) if fw8x else 0
+                    s8 = fw8x.settle(c) if fw8x else 0
+                    print('[bg-scan] 88W +%s settle %s｜8X +%s settle %s'
+                          % (a, s, a8, s8), flush=True)
+                else:
+                    a = newjx_engine.scan(c)
+                    s = newjx_engine.settle(c)
+                    print('[bg-scan] 新精選 +%s settle %s' % (a, s), flush=True)
+                c.close()
+                return
+            except sqlite3.OperationalError as e:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+                if 'locked' not in str(e):
+                    traceback.print_exc()
+                    return
+                time.sleep(15)
+            except Exception:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+                traceback.print_exc()
+                return
+        print('[bg-scan] %s 等咗 10 分鐘都入唔到寫鎖，今次放棄'
+              '（20 分鐘背景循環會繼續補）' % kind, flush=True)
+
+    t = threading.Thread(target=job, daemon=True)
+    _bg_scan_state[kind] = t
+    t.start()
+    return True
+
+
 def _migrate_db():
     """開機遷移：odds_asian 加 fetched_at（每場賠率/盤口「最後更新」顯示用）。
     同 crawler.connect() 內嘅遷移一致；喺度再做一次係保證 APP 查詢前欄位必存在
@@ -6921,17 +6997,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(500, json.dumps({'error': 'w88_engine 模組未載入'},
                                                ensure_ascii=False))
                     return
-                c = db()
-                a3 = w88_engine.scan(c)
-                s3 = w88_engine.settle(c)
-                a8 = s8 = None
-                if fw8x:
-                    a8 = fw8x.scan(c)
-                    s8 = fw8x.settle(c)
-                c.close()
+                started = _start_bg_scan('w88')
                 self._send(200, json.dumps(
-                    {'k3_added': a3, 'k3_settled': s3,
-                     'x8_added': a8, 'x8_settled': s8}, ensure_ascii=False))
+                    {'running': True, 'started': started}, ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -6944,11 +7012,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(500, json.dumps({'error': 'newjx_engine 模組未載入'},
                                                ensure_ascii=False))
                     return
-                c = db()
-                a = newjx_engine.scan(c)
-                s = newjx_engine.settle(c)
-                c.close()
-                self._send(200, json.dumps({'added': a, 'settled': s},
+                started = _start_bg_scan('newjx')
+                self._send(200, json.dumps({'running': True, 'started': started},
                                            ensure_ascii=False))
             except Exception as e:
                 import traceback

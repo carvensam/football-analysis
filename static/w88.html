@@ -183,18 +183,21 @@ async function load(){
 async function doScan(){
   const b = $('#btnScan');
   b.disabled = true;
-  $('#status').textContent = '掃描緊（88W 全市場＋8X上下盤公式）…';
+  $('#status').textContent = '啟動緊…';
   try {
     const r = await fetch('/api/w88/scan', {method: 'POST'});
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.status);
-    $('#status').textContent = `掃描完成：88W +${d.k3_added} 條・結算 ${d.k3_settled} 條` +
-      (d.x8_added != null ? `｜8X上下盤 +${d.x8_added} 場・結算 ${d.x8_settled} 場` : '');
+    $('#status').textContent = d.started === false
+      ? '⚡ 掃描已經喺背景跑緊，完成後列表會更新——12 秒後自動刷新…'
+      : '⚡ 已開始背景掃描＋結算（數據庫忙會自動等空窗補寫）——12 秒後自動刷新…';
+    setTimeout(load, 12000);
+    setTimeout(() => { b.disabled = false; }, 12000);
+    return;
   } catch (e) {
     $('#status').textContent = '掃描失敗：' + (e.message || e);
   }
   b.disabled = false;
-  load();
 }
 load();
 </script>
