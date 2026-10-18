@@ -5856,6 +5856,63 @@ def api_fw8s_history():
         conn.close()
 
 
+_FW8S_BT_CACHE = {'ts': 0.0, 'data': None}
+
+
+def api_fw8s_bt():
+    """全庫 8 格共識實跑回測：每獨立聯賽/杯賽場次＋下盤命中率%。
+    數據來自 fw8s_bt.db（fw8s_backtest.py 向量版產生，同 grid_report 口徑，
+    抽樣對照一致率 99%）。上盤共識全庫 0 次係真實結果，唔係 bug。"""
+    now = time.time()
+    if _FW8S_BT_CACHE['data'] is not None \
+            and now - _FW8S_BT_CACHE['ts'] < 3600:
+        return _FW8S_BT_CACHE['data']
+    bt_path = os.path.join(os.path.dirname(os.path.abspath(DB_PATH)),
+                           'fw8s_bt.db')
+    if not os.path.exists(bt_path):
+        return {'ok': False, 'error': '未找到 fw8s_bt.db——先喺本機跑 fw8s_backtest.py'}
+    bt = sqlite3.connect('file:%s?mode=ro' % bt_path, uri=True, timeout=10)
+    try:
+        rows = bt.execute(
+            "SELECT league, direction, COUNT(*), "
+            "SUM(CASE WHEN res='A' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN res='B' THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN res='P' THEN 1 ELSE 0 END) "
+            "FROM fw8s_bt WHERE direction IS NOT NULL "
+            "GROUP BY league, direction").fetchall()
+        total_eval = bt.execute(
+            'SELECT COUNT(*) FROM fw8s_bt').fetchone()[0]
+        up_n = bt.execute(
+            "SELECT COUNT(*) FROM fw8s_bt WHERE direction='up'").fetchone()[0]
+    finally:
+        bt.close()
+    per = {}
+    for lg, d, n, a, b, p in rows:
+        e = per.setdefault(lg, {'up': None, 'down': None})
+        eff = (a or 0) + (b or 0)
+        win = (b or 0) if d == 'down' else (a or 0)
+        e[d] = {'n': n, 'a': a or 0, 'b': b or 0, 'p': p or 0,
+                'hit_r': round(win / eff, 4) if eff else None}
+        # hit_r＝該方向「開出」比例：down → B 為贏（下盤開出）
+    out = []
+    for lg, e in per.items():
+        out.append({'league': lg, **e})
+    out.sort(key=lambda x: -((x['down'] or {'n': 0})['n']))
+    tot_a = sum((x['down'] or {}).get('a', 0) for x in out)
+    tot_b = sum((x['down'] or {}).get('b', 0) for x in out)
+    tot_p = sum((x['down'] or {}).get('p', 0) for x in out)
+    tot_n = sum((x['down'] or {}).get('n', 0) for x in out)
+    eff = tot_a + tot_b
+    data = {'ok': True, 'rows': out, 'total_eval': total_eval,
+            'up_consensus_n': up_n,
+            'total': {'n': tot_n, 'a': tot_a, 'b': tot_b, 'p': tot_p,
+                      'down_r': round(tot_b / eff, 4) if eff else None},
+            'updated': time.strftime('%Y-%m-%d %H:%M:%S')}
+    _FW8S_BT_CACHE['data'] = data
+    _FW8S_BT_CACHE['ts'] = now
+    return data
+
+
 def api_oupred_panel():
     """規則說明＋回查命中%＋每聯賽獨立因子（n 最大嘅 15 個聯賽嘅盤口因子示例）。"""
     bt = _oupred_backtest()
@@ -6380,6 +6437,14 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback; traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/fw8s/bt':
+            # 精選8s：全庫 8 格共識實跑回測（fw8s_bt.db，每聯賽場次+%）
+            try:
+                self._send(200, json.dumps(api_fw8s_bt(), ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         if u.path == '/api/feathourly':
             try:
                 self._send(200, json.dumps(get_feat_hourly(), ensure_ascii=False))
@@ -6634,8 +6699,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(500, json.dumps({'error': 'fw8x 模組未載入'},
                                                ensure_ascii=False))
                     return
-                self._send(200, json.dumps(fw8x.stats_and_list(db()),
-                                           ensure_ascii=False))
+                st = fw8x.stats_and_list(db())
+                # 2026 全年回測摘要（fw8x_backtest_2026.py 產生；冇檔案就略過）
+                try:
+                    import os as _os
+                    _btp = _os.path.join(_os.path.dirname(fw8x.__file__) or '.',
+                                         '..', 'fw8x_bt2026_summary.json')
+                    _btp = _os.path.abspath(_btp)
+                    if _os.path.isfile(_btp):
+                        st['bt'] = json.load(open(_btp, encoding='utf-8'))
+                except Exception:
+                    pass
+                self._send(200, json.dumps(st, ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()

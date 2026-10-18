@@ -144,6 +144,36 @@
     body.innerHTML = h;
   }
 
+  /* ---------- Tab 2b：全庫實跑（8 格共識真跑全歷史） ---------- */
+  function renderBt(d) {
+    var t = d.total || {};
+    var h = '<div class="note">用「精選8」同一個 8 格共識引擎<b>真跑晒成個資料庫</b>（2021–2026 全部聯賽/杯賽，' +
+      (d.total_eval || 0).toLocaleString() + ' 場有賽果場次逐場評估）。' +
+      '結論：<b style="color:#7ee2a0">8 格完全一致指上盤嘅場次，全庫 ' +
+      (d.up_consensus_n || 0) + ' 次</b>——上盤訊號要落到 4 格公式先存在' +
+      '（見「每聯賽公式」分頁）。下表係各聯賽/杯賽共識指下盤嘅實跑結果。</div>';
+    h += '<div class="sumbar">' +
+      si('評估場次', (d.total_eval || 0).toLocaleString(), '') +
+      si('共識場次', t.n || 0, 'gold') +
+      si('下盤開出', t.b || 0, 'up') +
+      si('下盤輸', t.a || 0, '') +
+      si('走盤', t.p || 0, '') +
+      si('下盤開出率', pct(t.down_r), 'up') +
+      '</div>';
+    h += '<table class="t"><thead><tr><th>聯賽／杯賽</th><th>共識場次</th>' +
+      '<th>下盤開出</th><th>下盤輸</th><th>走盤</th><th>下盤開出率</th></tr></thead><tbody>';
+    (d.rows || []).forEach(function (r) {
+      var dn = r.down || { n: 0, a: 0, b: 0, p: 0, hit_r: null };
+      var pcCls = (dn.hit_r != null && dn.hit_r >= 0.6) ? 'pc-up' : 'pc-dn';
+      h += '<tr><td class="l">' + esc(r.league) + '</td>' +
+        '<td>' + dn.n + '</td><td>' + dn.b + '</td><td>' + dn.a + '</td>' +
+        '<td>' + dn.p + '</td>' +
+        '<td class="' + pcCls + '">' + pct(dn.hit_r) + '</td></tr>';
+    });
+    h += '</tbody></table>';
+    body.innerHTML = h;
+  }
+
   /* ---------- Tab 3：過往紀錄 ---------- */
   function renderHist(d) {
     var st = d.stats || {};
@@ -213,6 +243,18 @@
       jfetch('/api/fw8s/rules').then(function (d) {
         status.textContent = '更新於 ' + (d.updated || '');
         renderRules(d);
+      }).catch(function (e) {
+        body.innerHTML = '<div class="err">載入失敗：' + esc(e.message) + '</div>';
+      });
+    } else if (curTab === 'bt') {
+      status.textContent = '載入全庫實跑…';
+      jfetch('/api/fw8s/bt').then(function (d) {
+        status.textContent = '更新於 ' + (d.updated || '');
+        if (!d.ok) {
+          body.innerHTML = '<div class="err">' + esc(d.error || '載入失敗') + '</div>';
+          return;
+        }
+        renderBt(d);
       }).catch(function (e) {
         body.innerHTML = '<div class="err">載入失敗：' + esc(e.message) + '</div>';
       });

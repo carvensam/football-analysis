@@ -3007,6 +3007,25 @@ async function loadX8(){
       <span style="color:var(--gold2)">待定 ${d.pending}</span>
       <span>命中率 <b style="color:${hr != null && hr >= 0.5 ? '#3fb950' : '#f85149'};font-size:1.2em">${hr == null ? '—' : (hr * 100).toFixed(1) + '%'}</b>${decided ? `（${d.w}/${decided}）` : ''}</span>
     </div></div>`;
+    if (d.bt && d.bt.total){
+      const B = d.bt;
+      const bDec = B.w + B.l, bHr = bDec ? B.w / bDec : null;
+      h += `<div class="fcard" style="margin:8px 0;border-color:#6b5510"><div class="f-top" style="flex-wrap:wrap;gap:8px">
+        <b style="color:var(--gold2)">${esc(B.label || '2026 全年回測')}</b>
+        <span>合資格 <b>${B.total}</b> 場</span>
+        <span style="color:#3fb950">贏 ${B.w}</span>
+        <span style="color:#f85149">輸 ${B.l}</span>
+        <span style="color:var(--dim)">走 ${B.p}</span>
+        <span>命中率 <b style="color:${bHr != null && bHr >= 0.5 ? '#3fb950' : '#f85149'};font-size:1.2em">${bHr == null ? '—' : (bHr * 100).toFixed(1) + '%'}</b>${bDec ? `（${B.w}/${bDec}）` : ''}</span>
+        <span style="color:var(--dim);font-size:12px">更新於 ${esc(B.updated_at || '')}</span></div>
+        ${(B.by_league || []).length ? `<div class="sub" style="margin-top:4px;flex-wrap:wrap;gap:6px">${B.by_league.slice(0, 10).map(L => {
+          const dec = L.w + L.l, r2 = dec ? L.w / dec : null;
+          return `<span class="tag" style="border-color:#6b5510">${esc(L.league)} ${L.n}場 ` +
+            `<b style="color:${r2 != null && r2 >= 0.5 ? '#3fb950' : '#f85149'}">${r2 == null ? '—' : (r2 * 100).toFixed(0) + '%'}</b></span>`;
+        }).join(' ')}</div>` : ''}
+        ${B.note ? `<div class="sub" style="margin-top:4px;color:var(--dim);font-size:12px">⚠️ ${esc(B.note)}</div>` : ''}
+      </div>`;
+    }
     if (d.by_league.length){
       h += '<div class="fcard" style="margin:8px 0"><div class="f-top" style="flex-wrap:wrap;gap:6px"><b>分聯賽</b>　';
       h += d.by_league.map(L => {
