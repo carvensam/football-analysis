@@ -7706,12 +7706,14 @@ if __name__ == '__main__':
     if not DISABLE_UPDATE:
         threading.Thread(target=_feat_hourly_loop, daemon=True).start()
         threading.Thread(target=_result_settle_loop, daemon=True).start()
-        if fw8x:
-            fw8x.start_loop()
-            print('[boot] 8X 背景循環已啟動（每 20 分鐘 scan+settle）', flush=True)
     else:
         print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '
               'restart loop）；紀錄由本機每小時做、每日推送', flush=True)
+    # 8X 循環照開（雲端都開）：每次 scan 先 ~20s CPU／20 分鐘，唔會搶 health check；
+    # 冇佢嘅話手機版 8X 永遠唔會自動有預測。
+    if fw8x:
+        fw8x.start_loop()
+        print('[boot] 8X 背景循環已啟動（每 20 分鐘 scan+settle）', flush=True)
     # 2026-10-12 雲端爬蟲節點：ENABLE_CLOUD_CRAWL=1 時喺背景線程探測 titan007
     # 各主機並爬佢通到嘅市場（寫 /data/football.db；本機 IP 被硬封鎖，雲端
     # 出口 IP 直達唔使代理）。本機（冇呢個 env）永遠唔會行呢段。
