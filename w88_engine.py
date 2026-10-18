@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
-"""88W 引擎（2026-10-19）：三市場逐聯賽規則庫。
-上盤／下盤＝league_formula（fw8x 公式，方向睇 dir）；
-雙數和波＝k3_draw_rules.json（k3_mine.py 逐聯賽挖掘，時段分割驗證過）。
-賽前掃描入 k3_log，賽後結算（和=W、唔和=L；順便記雙數中唔中）。
+"""88W 引擎 v2（2026-10-19）：全市場逐聯賽方法庫。
+
+規則來源：w88_rules.json（w88_mine.py v3 逐聯賽挖掘，72 聯賽 304 條方法，
+訓練期 ≤2024 ＋ 驗證期 2025+ 兩邊都 ≥72.5%，各 n≥5）。
+市場：ah_up/ah_down/draw/even/over/under/home_win/away_win。
+賽前掃描入 w88_log（一場可命中多條方法），賽後按市場結算。
+舊 k3_log（雙數和波）歷史記錄會一次性搬入 w88_log，之後唔再寫。
 """
 import json
 import os
@@ -11,35 +14,54 @@ import threading
 import time
 import traceback
 
-WS = os.path.dirname(os.path.abspath(__file__))
-K3_RULES_PATH = os.path.join(WS, 'k3_draw_rules.json')
-DB_PATH = os.environ.get('DB_PATH') or os.path.join(WS, 'football.db')
+WS = os.path.dirname(os.path.abspath(__file__))          # screen_app/
+BASE_DIR = os.path.dirname(WS)                             # 項目根（DB 所在）
+RULES_PATH = os.path.join(WS, 'w88_rules.json')
+DB_PATH = os.environ.get('DB_PATH') or os.path.join(BASE_DIR, 'football.db')
 
 # 賠率標籤優先次序（攞最接近開賽嘅一筆）
 _LABEL_PRI = ('closing', 'pre_5m', 'pre_15m', 'pre_30m', 'pre_4h', 'initial')
 
-_k3_rules = None
-_k3_ts = 0
+# 用到賽前排名／近績（prestandings）嘅條件
+PS_CONDS = {'rank_h5', 'rank_a5', 'rank_close',
+            'hh_wr_hi', 'aa_wr_lo', 'hh_wr_lo', 'aa_wr_hi',
+            'avg_hi', 'avg_lo',
+            'hh_gf_hi', 'aa_gf_hi', 'hh_ga_hi', 'aa_ga_hi'}
+
+_rules = None
+_rules_ts = 0
 
 
-def load_k3_rules(force=False):
-    global _k3_rules, _k3_ts
-    if not force and _k3_rules and time.time() - _k3_ts < 300:
-        return _k3_rules
+def load_rules(force=False):
+    global _rules, _rules_ts
+    if not force and _rules and time.time() - _rules_ts < 300:
+        return _rules
     try:
-        with open(K3_RULES_PATH, encoding='utf-8') as f:
-            _k3_rules = json.load(f)
+        with open(RULES_PATH, encoding='utf-8') as f:
+            _rules = json.load(f)
     except Exception:
-        _k3_rules = {}
-    _k3_ts = time.time()
-    return _k3_rules
+        _rules = {}
+    _rules_ts = time.time()
+    return _rules
 
 
 def migrate(conn):
+    conn.execute('''CREATE TABLE IF NOT EXISTS w88_log(
+        match_id INTEGER, market TEXT, conds TEXT, league TEXT, label TEXT,
+        ou_line REAL, hc REAL, giver TEXT,
+        added_at TEXT, result TEXT, settled_at TEXT,
+        PRIMARY KEY(match_id, market, conds))''')
     conn.execute('''CREATE TABLE IF NOT EXISTS k3_log(
         match_id INTEGER PRIMARY KEY, league TEXT, conds TEXT,
         ou_line REAL, hc REAL, giver TEXT,
         added_at TEXT, result TEXT, even INTEGER, settled_at TEXT)''')
+    # 舊 k3_log（雙數和波）歷史一次性搬入 w88_log
+    conn.execute(
+        "INSERT OR IGNORE INTO w88_log "
+        "(match_id, market, conds, league, label, ou_line, hc, giver, "
+        " added_at, result, settled_at) "
+        "SELECT match_id, 'draw', conds, league, 'K3開發雙數和波', "
+        "ou_line, hc, giver, added_at, result, settled_at FROM k3_log")
     conn.commit()
 
 
@@ -60,47 +82,111 @@ def _latest(conn, mid, table):
     return out[0]
 
 
-def _feats(conn, mid):
-    """計 K3 條件用嘅特徵：尾盤（或最新）讓球＋大小線＋初盤大小線。"""
+def _initial(conn, mid, table, cols):
+    r = conn.execute(
+        "SELECT %s FROM %s WHERE match_id=? AND company_id=12 "
+        "AND label='initial'" % (', '.join(cols), table), (mid,)).fetchone()
+    return r
+
+
+def _signed(hc, gv):
+    if hc is None:
+        return None
+    return 0.0 if gv is None else (hc if gv == 'home' else -hc)
+
+
+def _odds_feats(conn, mid):
+    """盤口類條件（對齊 w88_mine.py 口徑）：
+    hc0/hc025/hc05/hc075/hc_deep、gv_home/gv_away、
+    ou_le20/ou_le25/ou_ge30、ou_drop/ou_rise、uw_lo/uw_hi、ah_deep/ah_shallow。
+    回傳 (feats, ah, ou) 或 None（冇讓球盤）。"""
     ah = _latest(conn, mid, 'odds_asian')
     if not ah or ah.get('handicap') is None:
         return None
     ou = _latest(conn, mid, 'odds_ou')
-    ou_i = None
-    if ou:
-        r = conn.execute(
-            "SELECT total_line FROM odds_ou WHERE match_id=? AND company_id=12 "
-            "AND label='initial'", (mid,)).fetchone()
-        ou_i = r[0] if r else None
+    ou_i = _initial(conn, mid, 'odds_ou', ['total_line'])
+    ah_i = _initial(conn, mid, 'odds_asian', ['handicap', 'giver'])
     hc, gv = ah['handicap'], ah.get('giver')
     ho, ao = ah.get('home_odds'), ah.get('away_odds')
     ol = ou['total_line'] if ou else None
+    il = ou_i[0] if ou_i else None
     f = {
         'hc0': gv is None,
         'hc025': gv is not None and hc <= 0.25,
-        'hc05': gv is not None and hc <= 0.5,
-        'hc_shallow': gv is None or hc <= 0.5,
+        'hc05': gv is not None and 0.25 < hc <= 0.5,
+        'hc075': gv is not None and hc == 0.75,
+        'hc_deep': gv is not None and hc >= 1.5,
         'gv_home': gv == 'home',
         'gv_away': gv == 'away',
     }
     if ol is not None:
         f['ou_le20'] = ol <= 2.0
         f['ou_le25'] = ol <= 2.5
-        f['ou_gt30'] = ol > 3.0
-    if ol is not None and ou_i is not None:
-        f['ou_drop'] = ol < ou_i
-        f['ou_rise'] = ol > ou_i
+        f['ou_ge30'] = ol >= 3.0
+    if ol is not None and il is not None:
+        f['ou_drop'] = ol < il
+        f['ou_rise'] = ol > il
     if gv and ho is not None and ao is not None:
         uw = ho if gv == 'home' else ao
         f['uw_lo'] = uw < 0.725
         f['uw_hi'] = uw >= 0.90
+    sc = _signed(hc, gv)
+    si = _signed(ah_i[0], ah_i[1]) if ah_i else None
+    if sc is not None and si is not None:
+        f['ah_deep'] = sc > si
+        f['ah_shallow'] = sc < si
     return f, ah, ou
 
 
+def _ps_feats(feat):
+    """由 fw8x.features_for 嘅 feat 計排名／近績類條件（對齊挖掘口徑）。"""
+    f = {}
+    hr = feat.get('ps_home_total_rank')
+    ar = feat.get('ps_away_total_rank')
+    if hr is not None and ar is not None:
+        f['rank_h5'] = hr + 5 <= ar
+        f['rank_a5'] = ar + 5 <= hr
+        f['rank_close'] = abs(hr - ar) <= 3
+    hw = feat.get('ps_home_home_w') or 0
+    hd = feat.get('ps_home_home_d') or 0
+    hl = feat.get('ps_home_home_l') or 0
+    aw = feat.get('ps_away_away_w') or 0
+    ad = feat.get('ps_away_away_d') or 0
+    al = feat.get('ps_away_away_l') or 0
+    hp = hw + hd + hl
+    ap = aw + ad + al
+    if hp:
+        wr = hw / hp
+        f['hh_wr_hi'] = wr >= 0.60
+        f['hh_wr_lo'] = wr <= 0.30
+    if ap:
+        wr = aw / ap
+        f['aa_wr_lo'] = wr <= 0.30
+        f['aa_wr_hi'] = wr >= 0.55
+    avg = feat.get('ps_avg_total_goals')
+    if avg is not None:
+        f['avg_hi'] = avg >= 3.0
+        f['avg_lo'] = avg <= 2.3
+    hgf = feat.get('ps_home_avg_gf_home')
+    agf = feat.get('ps_away_avg_gf_away')
+    if hgf is not None:
+        f['hh_gf_hi'] = hgf >= 1.8
+    if agf is not None:
+        f['aa_gf_hi'] = agf >= 1.8
+    hga = feat.get('ps_home_home_ga')
+    aga = feat.get('ps_away_away_ga')
+    if hga is not None and hp:
+        f['hh_ga_hi'] = hga / hp >= 1.5
+    if aga is not None and ap:
+        f['aa_ga_hi'] = aga / ap >= 1.5
+    return f
+
+
 def scan(conn, hours=168, grace_min=10):
-    """賽前掃描：未來 hours 小時、聯賽有 K3 規則、條件全中 → 記入 k3_log。"""
+    """賽前掃描：未來 hours 小時、聯賽有方法庫、條件全中 → 記入 w88_log。
+    一場可以命中多條方法（每條一筆，PK 去重）。"""
     migrate(conn)
-    rules = load_k3_rules()
+    rules = load_rules()
     if not rules:
         return 0
     rows = conn.execute(
@@ -114,105 +200,164 @@ def scan(conn, hours=168, grace_min=10):
         tuple(rules.keys())).fetchall()
     added = 0
     now = time.strftime('%Y-%m-%d %H:%M:%S')
+    import fw8x
     for mid, lg in rows:
-        if conn.execute('SELECT 1 FROM k3_log WHERE match_id=?',
-                        (mid,)).fetchone():
-            continue
-        rule = rules.get(lg)
-        if not rule:
-            continue
         try:
-            got = _feats(conn, mid)
+            got = _odds_feats(conn, mid)
             if not got:
                 continue
-            f, ah, ou = got
-            if all(f.get(c) for c in rule['conds']):
-                conn.execute(
-                    'INSERT OR IGNORE INTO k3_log VALUES(?,?,?,?,?,?,?,?,?,?)',
-                    (mid, lg, json.dumps(rule['conds'], ensure_ascii=False),
+            of, ah, ou = got
+            psf = None  # 惰性：有方法用到 ps 條件先計一次
+            for rule in rules.get(lg, []):
+                conds = rule['conds']
+                # 盤口條件先過（平）；全中而又有 ps 條件先計 ps 特徵（貴）
+                if not all(of.get(c) for c in conds if c not in PS_CONDS):
+                    continue
+                if any(c in PS_CONDS for c in conds):
+                    if psf is None:
+                        info = fw8x.features_for(conn, mid, fill_live=True)
+                        psf = _ps_feats(info['feat']) if info else {}
+                    if not all(psf.get(c) for c in conds if c in PS_CONDS):
+                        continue
+                cur = conn.execute(
+                    'INSERT OR IGNORE INTO w88_log '
+                    '(match_id, market, conds, league, label, ou_line, hc, '
+                    ' giver, added_at) VALUES(?,?,?,?,?,?,?,?,?)',
+                    (mid, rule['market'],
+                     json.dumps(conds, ensure_ascii=False), lg,
+                     rule.get('label'),
                      ou['total_line'] if ou else None,
-                     ah.get('handicap'), ah.get('giver'),
-                     now, None, None, None))
-                added += 1
+                     ah.get('handicap'), ah.get('giver'), now))
+                added += cur.rowcount
         except Exception:
             traceback.print_exc()
     conn.commit()
     return added
 
 
+def _settle_one(market, hs, aws, hc, giver, ou_line):
+    """按市場結算：'W'／'L'／'P'（走盤）；None＝資料唔夠暫唔結。"""
+    tot = hs + aws
+    if market in ('ah_up', 'ah_down'):
+        if hc is None:
+            return None
+        if giver == 'home':
+            mg = hs - aws - hc
+        elif giver == 'away':
+            mg = aws - hs - hc
+        else:
+            mg = hs - aws
+        if abs(mg) < 1e-9:
+            return 'P'
+        win = mg > 0
+        if market == 'ah_down':
+            win = not win
+        return 'W' if win else 'L'
+    if market == 'draw':
+        return 'W' if hs == aws else 'L'
+    if market == 'even':
+        return 'W' if tot % 2 == 0 else 'L'
+    if market in ('over', 'under'):
+        if ou_line is None:
+            return None
+        if abs(tot - ou_line) < 1e-9:
+            return 'P'
+        win = tot > ou_line
+        if market == 'under':
+            win = not win
+        return 'W' if win else 'L'
+    if market == 'home_win':
+        return 'W' if hs > aws else 'L'
+    if market == 'away_win':
+        return 'W' if hs < aws else 'L'
+    return None
+
+
 def settle(conn):
-    """賽後結算：和=W、唔和=L；even=總入球雙數。"""
+    """賽後結算 w88_log。"""
     migrate(conn)
     rows = conn.execute(
-        'SELECT k.match_id, m.home_score, m.away_score FROM k3_log k '
+        'SELECT k.match_id, k.market, k.hc, k.giver, k.ou_line, '
+        'm.home_score, m.away_score FROM w88_log k '
         'JOIN matches m ON m.id=k.match_id '
         'WHERE k.result IS NULL AND m.home_score IS NOT NULL').fetchall()
     now = time.strftime('%Y-%m-%d %H:%M:%S')
-    for mid, hs, aws in rows:
-        res = 'W' if hs == aws else 'L'
-        even = 1 if (hs + aws) % 2 == 0 else 0
-        conn.execute('UPDATE k3_log SET result=?, even=?, settled_at=? '
-                     'WHERE match_id=?', (res, even, now, mid))
-    if rows:
+    n = 0
+    for mid, market, hc, giver, ou_line, hs, aws in rows:
+        res = _settle_one(market, hs, aws, hc, giver, ou_line)
+        if res is None:
+            continue
+        conn.execute('UPDATE w88_log SET result=?, settled_at=? '
+                     'WHERE match_id=? AND market=?', (res, now, mid, market))
+        n += 1
+    if n:
         conn.commit()
-    return len(rows)
+    return n
 
 
-def _k3_stats(conn):
+def _stats(conn):
     st = conn.execute(
         "SELECT COUNT(*), SUM(result='W'), SUM(result='L'), "
-        "SUM(result IS NULL), SUM(even) FROM k3_log").fetchone()
-    by_lg = [dict(zip(('league', 'n', 'w', 'l', 'even'), r)) for r in
+        "SUM(result='P'), SUM(result IS NULL) FROM w88_log").fetchone()
+    by_mkt = [dict(zip(('market', 'label', 'n', 'w', 'l', 'p'), r)) for r in
+              conn.execute(
+                  "SELECT market, label, COUNT(*), SUM(result='W'), "
+                  "SUM(result='L'), SUM(result='P') FROM w88_log "
+                  'GROUP BY market ORDER BY 3 DESC')]
+    by_lg = [dict(zip(('league', 'n', 'w', 'l', 'p'), r)) for r in
              conn.execute(
                  "SELECT league, COUNT(*), SUM(result='W'), SUM(result='L'),"
-                 ' SUM(even) FROM k3_log GROUP BY league ORDER BY 2 DESC')]
+                 " SUM(result='P') FROM w88_log GROUP BY league "
+                 'ORDER BY 2 DESC')]
     return {'total': st[0] or 0, 'w': st[1] or 0, 'l': st[2] or 0,
-            'pending': st[3] or 0, 'even': st[4] or 0, 'by_league': by_lg}
+            'push': st[3] or 0, 'pending': st[4] or 0,
+            'by_market': by_mkt, 'by_league': by_lg}
 
 
 def full(conn, limit=300):
-    """88W 頁面數據：三市場規則庫＋最近預測＋統計。"""
+    """88W 頁面數據：全市場方法庫＋最近預測＋統計。"""
     migrate(conn)
-    # K3 雙數和波預測列表
-    k3_rows = conn.execute(
-        'SELECT k.match_id, k.league, k.conds, k.ou_line, k.hc, k.giver, '
-        'k.added_at, k.result, k.even, m.kickoff, m.home_score, m.away_score, '
-        'h.name_tc, a.name_tc FROM k3_log k '
+    rows = conn.execute(
+        'SELECT k.match_id, k.league, k.market, k.label, k.conds, '
+        'k.ou_line, k.hc, k.giver, k.added_at, k.result, '
+        'm.kickoff, m.home_score, m.away_score, h.name_tc, a.name_tc '
+        'FROM w88_log k '
         'JOIN matches m ON m.id=k.match_id '
         'JOIN teams h ON h.titan_id=m.home_id '
         'JOIN teams a ON a.titan_id=m.away_id '
         'ORDER BY (k.result IS NULL) DESC, m.kickoff DESC LIMIT ?',
         (limit,)).fetchall()
-    k3_list = [{'match_id': r[0], 'league': r[1],
-                'conds': json.loads(r[2]) if r[2] else [],
-                'ou_line': r[3], 'hc': r[4], 'giver': r[5],
-                'added_at': r[6], 'result': r[7], 'even': r[8],
-                'kickoff': r[9],
-                'score': ('%s-%s' % (r[10], r[11]))
-                if r[10] is not None else None,
-                'home': r[12], 'away': r[13],
-                'label': 'K3開發雙數和波'} for r in k3_rows]
-    # 三市場規則庫
+    preds = [{'match_id': r[0], 'league': r[1], 'market': r[2],
+              'label': r[3],
+              'conds': json.loads(r[4]) if r[4] else [],
+              'ou_line': r[5], 'hc': r[6], 'giver': r[7],
+              'added_at': r[8], 'result': r[9], 'kickoff': r[10],
+              'score': ('%s-%s' % (r[11], r[12]))
+              if r[11] is not None else None,
+              'home': r[13], 'away': r[14]} for r in rows]
+    # 方法庫：w88_rules 全部方法；fw8x 讓球公式做補充
     try:
         import fw8x
         formulas = fw8x.load_formulas()
     except Exception:
         formulas = {}
     library = {}
+    for lg, rl in load_rules().items():
+        slot = library.setdefault(lg, {'league': lg, 'methods': []})
+        for r in rl:
+            slot['methods'].append({
+                'market': r['market'], 'label': r.get('label'),
+                'conds': r['conds'],
+                'train_n': r['train_n'], 'train_hit': r['train_hit'],
+                'test_n': r['test_n'], 'test_hit': r['test_hit'],
+                'all_n': r['all_n'], 'all_hit': r['all_hit']})
     for lg, f in formulas.items():
-        slot = library.setdefault(lg, {'league': lg})
-        slot['up' if f.get('dir') == 'up' else 'down'] = {
-            'hit': f.get('hit'), 'n': f.get('n'), 'preds': f.get('preds'),
+        slot = library.setdefault(lg, {'league': lg, 'methods': []})
+        slot['formula'] = {
+            'dir': f.get('dir'), 'hit': f.get('hit'), 'n': f.get('n'),
+            'preds': f.get('preds'),
             'label': 'K3上盤' if f.get('dir') == 'up' else '下盤公式'}
-    for lg, r in load_k3_rules().items():
-        slot = library.setdefault(lg, {'league': lg})
-        slot['draw'] = {'conds': r['conds'], 'train_n': r['train_n'],
-                        'train_draw': r['train_draw'],
-                        'test_n': r['test_n'], 'test_draw': r['test_draw'],
-                        'even_rate': r.get('even_rate'),
-                        'draw_in_even': r.get('draw_in_even'),
-                        'label': 'K3開發雙數和波'}
-    return {'k3': {'stats': _k3_stats(conn), 'rows': k3_list},
+    return {'stats': _stats(conn), 'rows': preds,
             'library': sorted(library.values(), key=lambda x: x['league'])}
 
 
@@ -229,7 +374,7 @@ def loop(interval=1200):
             s = settle(conn)
             conn.close()
             if a or s:
-                print('[88w] k3 scan +%d settle %d' % (a, s), flush=True)
+                print('[88w] scan +%d settle %d' % (a, s), flush=True)
         except Exception:
             traceback.print_exc()
         _stop.wait(interval)

@@ -9,6 +9,7 @@
   --bg:#0d1117; --bg2:#161d27; --card:#1a2230; --line:#2b3648;
   --tx:#e8e2d5; --dim:#8b94a3; --up:#3fb96c; --down:#e05c5c;
   --gold:#d4af37; --gold2:#f5d76e; --accent:#5b8def; --draw:#b98cff;
+  --even:#4fd1c5; --over:#f0a35e; --under:#6aa9ff; --home:#ffd166; --away:#7ce7f4;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{
@@ -51,15 +52,22 @@ h2.sec{font-size:16px;color:var(--gold2);margin:16px 0 6px}
 .lg{font-size:12px;color:var(--gold2)}
 .tm{flex:1;min-width:150px;font-weight:600}
 .tag{font-size:12px;font-weight:800;padding:2px 10px;border-radius:12px;border:1px solid var(--line);color:var(--dim)}
-.tag.k3d{color:var(--draw);border-color:var(--draw)}
 .tag.w{color:var(--up);border-color:var(--up)}
 .tag.l{color:var(--down);border-color:var(--down)}
+.tag.p{color:var(--dim);border-color:var(--dim)}
 .sub{font-size:12px;color:var(--dim);margin-top:4px}
+.mkt-up{color:var(--up);border-color:var(--up)}
+.mkt-down{color:var(--down);border-color:var(--down)}
+.mkt-draw{color:var(--draw);border-color:var(--draw)}
+.mkt-even{color:var(--even);border-color:var(--even)}
+.mkt-over{color:var(--over);border-color:var(--over)}
+.mkt-under{color:var(--under);border-color:var(--under)}
+.mkt-home{color:var(--home);border-color:var(--home)}
+.mkt-away{color:var(--away);border-color:var(--away)}
 table.lib{width:100%;border-collapse:collapse;font-size:13px}
 table.lib th,table.lib td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
 table.lib th{color:var(--gold2);position:sticky;top:104px;background:var(--bg2)}
 .rlab{font-weight:800;white-space:nowrap}
-.rlab.up{color:var(--up)} .rlab.down{color:var(--down)} .rlab.draw{color:var(--draw)}
 .rmeta{font-size:12px;color:var(--dim)}
 .note{color:var(--dim);font-size:12px;margin:6px 0}
 .err{color:#ffb0b0;background:#4a1d1d;border:1px solid #7a2d2d;border-radius:8px;padding:6px 10px;font-size:13px;margin:6px 0}
@@ -86,10 +94,10 @@ table.lib th{color:var(--gold2);position:sticky;top:104px;background:var(--bg2)}
 </div>
 <div id="main">
   <div class="sumbar" id="sum"></div>
-  <div class="note">三市場逐聯賽規則：<b style="color:var(--up)">K3上盤</b>／<b style="color:var(--down)">下盤公式</b>（8X 聯賽公式）＋ <b style="color:var(--draw)">K3開發雙數和波</b>（2026-10-19 逐聯賽挖掘，時段分割驗證）。和波一定係雙數——雙數中和率越高越好。</div>
-  <h2 class="sec">🎯 K3開發雙數和波 — 預測紀錄</h2>
-  <div id="k3body"></div>
-  <h2 class="sec">📚 逐聯賽規則庫（<span id="libn"></span> 個聯賽/杯賽）</h2>
+  <div class="note">全市場逐聯賽方法庫（2026-10-19 挖掘）：每個聯賽/杯賽 ≥4 個方法，訓練期 ≤2024 ＋ 驗證期 2025+ 兩邊命中率都 ≥72.5%。市場：<b class="mkt-up" style="border:0">K3上盤</b>／<b class="mkt-down" style="border:0">K3下盤</b>／<b class="mkt-draw" style="border:0">K3開發雙數和波</b>／<b class="mkt-even" style="border:0">雙數</b>／<b class="mkt-over" style="border:0">K3大球</b>／<b class="mkt-under" style="border:0">K3細球</b>／<b class="mkt-home" style="border:0">K3主勝</b>／<b class="mkt-away" style="border:0">K3客勝</b>。和波一定係雙數。</div>
+  <h2 class="sec">🎯 預測紀錄（全部市場）</h2>
+  <div id="predbody"></div>
+  <h2 class="sec">📚 逐聯賽方法庫（<span id="libn"></span> 個聯賽/杯賽）</h2>
   <div id="lib"></div>
 </div>
 <script>
@@ -101,10 +109,23 @@ function fmtLine(hc, gv){
   const n = {0.25:'平/半',0.5:'半球',0.75:'半/一',1:'一球',1.25:'一/球半',1.5:'球半',1.75:'球半/兩',2:'兩球',2.25:'兩/兩半',2.5:'兩半',2.75:'兩半/三',3:'三球'}[hc] || hc;
   return (gv === 'home' ? '主讓' : '客讓') + n;
 }
-const COND_TXT = {hc0:'平手盤',hc025:'讓≤0.25',hc05:'讓≤0.5',hc_shallow:'淺盤',
-  gv_home:'主讓',gv_away:'客讓',ou_le20:'大小線≤2.0',ou_le25:'大小線≤2.5',
-  ou_gt30:'大小線>3.0',ou_drop:'大小線降盤',ou_rise:'大小線升盤',
-  uw_lo:'上盤低水',uw_hi:'上盤高水'};
+const MKT_CLASS = {ah_up:'mkt-up', ah_down:'mkt-down', draw:'mkt-draw', even:'mkt-even',
+  over:'mkt-over', under:'mkt-under', home_win:'mkt-home', away_win:'mkt-away'};
+const MKT_WIN_TXT = {ah_up:'上盤贏', ah_down:'下盤贏', draw:'和', even:'雙數',
+  over:'大', under:'細', home_win:'主勝', away_win:'客勝'};
+const COND_TXT = {
+  hc0:'平手盤', hc025:'讓≤平/半', hc05:'讓≤半球', hc075:'讓半/一', hc_deep:'深盤≥球半',
+  gv_home:'主讓', gv_away:'客讓',
+  ou_le20:'大小線≤2.0', ou_le25:'大小線≤2.5', ou_ge30:'大小線≥3.0',
+  ou_drop:'大小線降盤', ou_rise:'大小線升盤',
+  uw_lo:'上盤低水', uw_hi:'上盤高水',
+  ah_deep:'讓球升盤', ah_shallow:'讓球降盤',
+  rank_h5:'主排名高5+', rank_a5:'客排名高5+', rank_close:'排名差≤3',
+  hh_wr_hi:'主隊主場勝率≥60%', aa_wr_lo:'客隊客場勝率≤30%',
+  hh_wr_lo:'主隊主場勝率≤30%', aa_wr_hi:'客隊客場勝率≥55%',
+  avg_hi:'場均總入球≥3.0', avg_lo:'場均總入球≤2.3',
+  hh_gf_hi:'主隊主場场均入≥1.8', aa_gf_hi:'客隊客場场均入≥1.8',
+  hh_ga_hi:'主隊主場场均失≥1.5', aa_ga_hi:'客隊客場场均失≥1.5'};
 const condTxt = c => COND_TXT[c] || c;
 async function load(){
   $('#status').textContent = '載入緊…';
@@ -112,58 +133,62 @@ async function load(){
     const r = await fetch('/api/w88/full');
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.status);
-    const ks = d.k3.stats;
-    const dec = ks.w + ks.l, hr = dec ? (ks.w / dec * 100).toFixed(1) + '%' : '—';
+    const st = d.stats;
+    const dec = st.w + st.l, hr = dec ? (st.w / dec * 100).toFixed(1) + '%' : '—';
     const lib = d.library;
+    const nMethods = lib.reduce((a, x) => a + (x.methods ? x.methods.length : 0), 0);
     $('#sum').innerHTML =
-      `<div class="si"><div class="t">規則庫聯賽</div><div class="v gold">${lib.length}</div></div>` +
-      `<div class="si"><div class="t">K3上盤規則</div><div class="v up">${lib.filter(x=>x.up).length}</div></div>` +
-      `<div class="si"><div class="t">下盤公式</div><div class="v down">${lib.filter(x=>x.down).length}</div></div>` +
-      `<div class="si"><div class="t">K3雙數和波</div><div class="v draw">${lib.filter(x=>x.draw).length}</div></div>` +
-      `<div class="si"><div class="t">K3 實戰（和波）</div><div class="v ${dec && ks.w/dec>=0.3?'up':'gold'}">${hr}</div></div>` +
-      `<div class="si"><div class="t">待定</div><div class="v gold">${ks.pending}</div></div>`;
+      `<div class="si"><div class="t">聯賽/杯賽</div><div class="v gold">${lib.length}</div></div>` +
+      `<div class="si"><div class="t">方法總數</div><div class="v gold">${nMethods}</div></div>` +
+      `<div class="si"><div class="t">實戰 中/唔中</div><div class="v"><span style="color:var(--up)">${st.w}</span>/<span style="color:var(--down)">${st.l}</span></div></div>` +
+      `<div class="si"><div class="t">實戰命中率</div><div class="v ${dec && st.w/dec>=0.725?'up':'gold'}">${hr}</div></div>` +
+      `<div class="si"><div class="t">待定</div><div class="v gold">${st.pending}</div></div>` +
+      `<div class="si"><div class="t">走盤</div><div class="v">${st.push}</div></div>`;
     let h = '';
-    if (!d.k3.rows.length) h = '<div class="note">暫無記錄。背景每 20 分鐘自動掃描未來 7 日場次。</div>';
-    for (const r of d.k3.rows){
-      const badge = r.result === 'W' ? '<span class="tag w">✔ 和</span>'
-        : r.result === 'L' ? '<span class="tag l">✘ 唔和</span>'
+    if (!d.rows.length) h = '<div class="note">暫無記錄。背景每 20 分鐘自動掃描未來 7 日場次，亦可按「⚡ 一鍵掃描預測」。</div>';
+    for (const r of d.rows){
+      const mc = MKT_CLASS[r.market] || '';
+      const wt = MKT_WIN_TXT[r.market] || '中';
+      const badge = r.result === 'W' ? `<span class="tag w">✔ ${wt}</span>`
+        : r.result === 'L' ? '<span class="tag l">✘ 唔中</span>'
+        : r.result === 'P' ? '<span class="tag p">走盤</span>'
         : '<span class="tag" style="color:var(--gold2);border-color:#6b5510">⏳ 待定</span>';
-      const evenTag = r.result != null
-        ? (r.even ? '<span class="tag k3d">雙數✔</span>' : '<span class="tag">單數</span>') : '';
       h += `<div class="mrow ${r.result==='W'?'hit':''}"><div class="m-top">
         <span class="ko">${esc((r.kickoff||'').slice(5,16))}</span>
         <span class="lg">${esc(r.league)}</span>
         <b class="tm">${esc(r.home)} <span style="color:var(--dim)">vs</span> ${esc(r.away)}</b>
-        <span class="tag k3d">${esc(r.label)}</span>${badge}${evenTag}</div>
+        <span class="tag ${mc}">${esc(r.label || r.market)}</span>${badge}</div>
         <div class="sub">條件：${r.conds.map(condTxt).join('＋')}　盤口：${fmtLine(r.hc, r.giver)}　大小線：${r.ou_line ?? '—'}
         ${r.score ? `　賽果：<b>${esc(r.score)}</b>` : ''}</div></div>`;
     }
-    $('#k3body').innerHTML = h;
+    $('#predbody').innerHTML = h;
     $('#libn').textContent = lib.length;
-    let t = `<table class="lib"><tr><th>聯賽/杯賽</th><th>規則（三市場）</th></tr>`;
+    let t = `<table class="lib"><tr><th>聯賽/杯賽</th><th>方法（全市場）</th></tr>`;
     for (const L of lib){
       const cells = [];
-      if (L.up) cells.push(`<div><span class="rlab up">K3上盤</span> <span class="rmeta">命中率 ${(L.up.hit*100).toFixed(1)}%・n=${L.up.n}｜${esc((L.up.preds||[]).join('＋'))}</span></div>`);
-      if (L.down) cells.push(`<div><span class="rlab down">下盤公式</span> <span class="rmeta">命中率 ${(L.down.hit*100).toFixed(1)}%・n=${L.down.n}｜${esc((L.down.preds||[]).join('＋'))}</span></div>`);
-      if (L.draw) cells.push(`<div><span class="rlab draw">K3開發雙數和波</span> <span class="rmeta">${L.draw.conds.map(condTxt).join('＋')}｜訓練 ${(L.draw.train_draw*100).toFixed(1)}%(n=${L.draw.train_n})・驗證 ${(L.draw.test_draw*100).toFixed(1)}%(n=${L.draw.test_n})｜雙數中和率 ${L.draw.draw_in_even != null ? (L.draw.draw_in_even*100).toFixed(1)+'%' : '—'}</span></div>`);
+      if (L.formula) cells.push(`<div><span class="rlab ${L.formula.dir==='up'?'mkt-up':'mkt-down'}" style="border:0">${esc(L.formula.label)}</span> <span class="rmeta">8X公式・命中率 ${(L.formula.hit*100).toFixed(1)}%・n=${L.formula.n}</span></div>`);
+      for (const m of (L.methods || [])){
+        const mc = MKT_CLASS[m.market] || '';
+        cells.push(`<div><span class="rlab ${mc}" style="border:0">${esc(m.label || m.market)}</span> <span class="rmeta">${m.conds.map(condTxt).join('＋')}｜訓練 ${(m.train_hit*100).toFixed(1)}%(n=${m.train_n})・驗證 ${(m.test_hit*100).toFixed(1)}%(n=${m.test_n})</span></div>`);
+      }
       t += `<tr><td style="white-space:nowrap">${esc(L.league)}</td><td>${cells.join('')}</td></tr>`;
     }
     $('#lib').innerHTML = t + '</table>';
     $('#status').textContent = '最後更新 ' + new Date().toLocaleTimeString('zh-HK', {hour12:false});
   } catch (e) {
     $('#status').textContent = '載入失敗';
-    $('#k3body').innerHTML = '<div class="err">載入失敗：' + esc(e.message || e) + '</div>';
+    $('#predbody').innerHTML = '<div class="err">載入失敗：' + esc(e.message || e) + '</div>';
   }
 }
 async function doScan(){
   const b = $('#btnScan');
   b.disabled = true;
-  $('#status').textContent = '掃描緊（K3雙數和波＋8X上下盤公式）…';
+  $('#status').textContent = '掃描緊（88W 全市場＋8X上下盤公式）…';
   try {
     const r = await fetch('/api/w88/scan', {method: 'POST'});
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.status);
-    $('#status').textContent = `掃描完成：K3雙數和波 +${d.k3_added} 場・結算 ${d.k3_settled} 場` +
+    $('#status').textContent = `掃描完成：88W +${d.k3_added} 條・結算 ${d.k3_settled} 條` +
       (d.x8_added != null ? `｜8X上下盤 +${d.x8_added} 場・結算 ${d.x8_settled} 場` : '');
   } catch (e) {
     $('#status').textContent = '掃描失敗：' + (e.message || e);
