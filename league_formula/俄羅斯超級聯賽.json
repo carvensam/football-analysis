@@ -1,0 +1,30 @@
+{
+ "league": "俄羅斯超級聯賽",
+ "preds": [
+  "ah_sline_initial=l0.00",
+  "upw_c~w1.05"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.8438,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7179,
+   "n": 39,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8438,
+   "n": 32,
+   "preds": [
+    "ah_sline_initial=l0.00",
+    "upw_c~w1.05"
+   ]
+  }
+ ],
+ "opt_done": true
+}

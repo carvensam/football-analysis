@@ -258,6 +258,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <button class="tab" data-pg="fw8">🎯 精選8 <span id="fw8Cnt"></span></button>
     <button class="tab" data-pg="fwck8">✓ Check8</button>
     <button class="tab" data-pg="fw8s">⬆️ 精選8s</button>
+    <button class="tab" data-pg="x8">🧪 8X <span id="x8Cnt"></span></button>
     <button class="tab" data-pg="fw12">🎯 精選12 <span id="fw12Cnt"></span></button>
     <button class="tab" data-pg="fwck12">✓ Check12</button>
     <button class="tab" data-pg="htft">⚡ 半全場</button>
@@ -475,6 +476,28 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
             title="精選8s"></iframe>
   </section>
 
+  <!-- 8X：66 條優化公式賽前記錄＋賽後自動結算 -->
+  <section class="pg" id="pg-x8">
+    <div class="toolbar">
+      <button class="btn accent" id="btnX8Scan">⟳ 重新整理（掃描＋結算）</button>
+      <button class="btn" id="btnX8List">↻ 刷新列表</button>
+      <span class="hint" id="x8Msg"></span>
+    </div>
+    <div id="x8Stats"></div>
+    <div id="x8Body"><div class="note">載入中…</div></div>
+  </section>
+
+  <!-- 8X 新預測彈窗 -->
+  <div class="bet-modal" id="x8Modal">
+    <div class="bet-sheet">
+      <h3>🔔 8X 新預測</h3>
+      <div id="x8ModalBody"></div>
+      <div class="bet-btns" style="margin-top:10px">
+        <button class="btn" id="x8ModalClose">關閉</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 設定 -->
   <section class="pg" id="pg-settings">
     <div class="set-doc" id="setBody"></div>
@@ -523,7 +546,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   </div>
 </div>
 <script src="/static/phone_crawl.js?v=5.3.0"></script>
-<script src="/static/app.js?v=5.4.1"></script>
+<script src="/static/app.js?v=5.5.3"></script>
 <script src="/static/crawlbtn.js?v=5.3.1"></script>
 </body>
 </html>

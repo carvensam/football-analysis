@@ -1,0 +1,38 @@
+{
+ "league": "澳大利亞新南威爾士州超級聯賽",
+ "preds": [
+  "ah_upw_pre_10m~w0.95",
+  "ps_away_away_rank:r13_16"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.8125,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7647,
+   "n": 34,
+   "note": "baseline"
+  },
+  {
+   "round": 1,
+   "hit": 0.7647,
+   "n": 34,
+   "preds": [
+    "ps_home_total_ga:d3.00"
+   ]
+  },
+  {
+   "round": 2,
+   "hit": 0.8125,
+   "n": 32,
+   "preds": [
+    "ah_upw_pre_10m~w0.95",
+    "ps_away_away_rank:r13_16"
+   ]
+  }
+ ],
+ "opt_done": true
+}

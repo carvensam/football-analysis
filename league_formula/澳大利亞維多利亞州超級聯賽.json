@@ -1,0 +1,41 @@
+{
+ "league": "澳大利亞維多利亞州超級聯賽",
+ "preds": [
+  "ou_total_line_pre_30m=o2.50",
+  "rankdiff_total:r1_2",
+  "rankdiff_homeaway:r1_2"
+ ],
+ "dir": "up",
+ "n": 33,
+ "hit": 0.8485,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8125,
+   "n": 32,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.825,
+   "n": 40,
+   "preds": [
+    "ou_total_line_pre_30m=o2.50",
+    "rankdiff_homeaway:r1_2"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8485,
+   "n": 33,
+   "preds": [
+    "ou_total_line_pre_30m=o2.50",
+    "rankdiff_total:r1_2",
+    "rankdiff_homeaway:r1_2"
+   ]
+  }
+ ],
+ "opt_done": true
+}

@@ -1,0 +1,49 @@
+{
+ "league": "巴西甲組聯賽",
+ "preds": [
+  "ah_upw_initial~w0.80",
+  "rankdiff_total:r1_2",
+  "md_home_last6_w:d3.00"
+ ],
+ "dir": "down",
+ "n": 31,
+ "hit": 0.8387,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7115,
+   "n": 52,
+   "note": "baseline"
+  },
+  {
+   "round": 1,
+   "hit": 0.7115,
+   "n": 52,
+   "preds": [
+    "move_upw_initial_closing:d0.25"
+   ]
+  },
+  {
+   "round": 2,
+   "hit": 0.8125,
+   "n": 32,
+   "preds": [
+    "ah_upw_pre_30m~w0.90",
+    "move_upw_initial_pre_4h:d-0.10"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8387,
+   "n": 31,
+   "preds": [
+    "ah_upw_initial~w0.80",
+    "rankdiff_total:r1_2",
+    "md_home_last6_w:d3.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

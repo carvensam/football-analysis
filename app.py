@@ -20,6 +20,8 @@
   GET  /api/lgpred                聯賽預測標籤（>78% 規則）
   GET  /api/lgalerts              🔔 聯賽規則提示鐘
   GET  /api/hitrate?kind=&id=     命中率回查（fw7／fw8／fw12／fwx）
+  GET  /api/8x/list|new           8X 版面（66 公式賽前記錄＋結算＋新預測輪詢）
+  POST /api/8x/scan               8X 即時掃描＋結算
   仲有：/api/picks、/api/results、/api/featlog、/api/v2/*、/api/v1/*（V1/V2 舊頁）
 """
 import json
@@ -45,6 +47,10 @@ if BASE_DIR not in sys.path:
 
 import numpy as np
 import screen_engine
+try:
+    import fw8x
+except ImportError:
+    fw8x = None
 from concurrent.futures import ThreadPoolExecutor
 
 # 精選／我的選擇等列表逐場運算（screen＋check）係 CPU 密集——
@@ -6622,6 +6628,34 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/8x/list':
+            try:
+                if not fw8x:
+                    self._send(500, json.dumps({'error': 'fw8x 模組未載入'},
+                                               ensure_ascii=False))
+                    return
+                self._send(200, json.dumps(fw8x.stats_and_list(db()),
+                                           ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/8x/new':
+            try:
+                if not fw8x:
+                    self._send(500, json.dumps({'error': 'fw8x 模組未載入'},
+                                               ensure_ascii=False))
+                    return
+                q = parse_qs(u.query)
+                since = float(q.get('since', ['0'])[0])
+                self._send(200, json.dumps(fw8x.newsince(db(), since),
+                                           ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         if u.path == '/api/fwgrid/full':
             try:
                 q = parse_qs(u.query)
@@ -6741,6 +6775,23 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path != '/' and u.path.endswith('/'):
             u = u._replace(path=u.path.rstrip('/'))
+        if u.path == '/api/8x/scan':
+            try:
+                if not fw8x:
+                    self._send(500, json.dumps({'error': 'fw8x 模組未載入'},
+                                               ensure_ascii=False))
+                    return
+                c = db()
+                a = fw8x.scan(c)
+                s = fw8x.settle(c)
+                c.close()
+                self._send(200, json.dumps({'added': a, 'settled': s},
+                                           ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         if u.path == '/api/crawl/stop':
             try:
                 self._send(200, json.dumps(do_crawl_stop(), ensure_ascii=False))
@@ -7655,6 +7706,9 @@ if __name__ == '__main__':
     if not DISABLE_UPDATE:
         threading.Thread(target=_feat_hourly_loop, daemon=True).start()
         threading.Thread(target=_result_settle_loop, daemon=True).start()
+        if fw8x:
+            fw8x.start_loop()
+            print('[boot] 8X 背景循環已啟動（每 20 分鐘 scan+settle）', flush=True)
     else:
         print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '
               'restart loop）；紀錄由本機每小時做、每日推送', flush=True)

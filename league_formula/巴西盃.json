@@ -1,0 +1,28 @@
+{
+ "league": "巴西盃",
+ "preds": [
+  "ah_sline_initial=l0.75"
+ ],
+ "dir": "up",
+ "n": 43,
+ "hit": 0.7674,
+ "round": 1,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7674,
+   "n": 43,
+   "note": "baseline"
+  },
+  {
+   "round": 1,
+   "hit": 0.7674,
+   "n": 43,
+   "preds": [
+    "ah_sline_initial=l0.75"
+   ]
+  }
+ ],
+ "opt_done": true
+}

@@ -1,0 +1,41 @@
+{
+ "league": "英格蘭乙組聯賽",
+ "preds": [
+  "ah_upw_pre_10m~w1.05",
+  "ah_upw_pre_5m~w1.05",
+  "ou_over_odds_closing=w0.85"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.875,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7576,
+   "n": 33,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8065,
+   "n": 31,
+   "preds": [
+    "md_home_hw_winrate_home:d0.30",
+    "ps_avg_total_goals:d2.50"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.875,
+   "n": 32,
+   "preds": [
+    "ah_upw_pre_10m~w1.05",
+    "ah_upw_pre_5m~w1.05",
+    "ou_over_odds_closing=w0.85"
+   ]
+  }
+ ],
+ "opt_done": true
+}

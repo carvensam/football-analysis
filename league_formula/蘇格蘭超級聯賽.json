@@ -1,0 +1,23 @@
+{
+ "league": "蘇格蘭超級聯賽",
+ "preds": [
+  "ah_upw_initial~w0.95",
+  "move_line_pre_4h_closing:l0.25"
+ ],
+ "dir": "down",
+ "n": 33,
+ "hit": 0.8182,
+ "threshold": 0.78,
+ "below_threshold": false,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8182,
+   "n": 33,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

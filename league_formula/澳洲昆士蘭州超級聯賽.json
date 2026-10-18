@@ -1,0 +1,41 @@
+{
+ "league": "澳洲昆士蘭州超級聯賽",
+ "preds": [
+  "ps_home_total_rank:r9_12",
+  "ps_away_total_rank:r5_8",
+  "ps_home_home_rank:r5_8"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.8125,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7353,
+   "n": 34,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7941,
+   "n": 34,
+   "preds": [
+    "ps_away_away_rank:r1_2",
+    "ps_away_home_rank:r3_4"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8125,
+   "n": 32,
+   "preds": [
+    "ps_home_total_rank:r9_12",
+    "ps_away_total_rank:r5_8",
+    "ps_home_home_rank:r5_8"
+   ]
+  }
+ ],
+ "opt_done": true
+}

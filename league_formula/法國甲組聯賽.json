@@ -1,0 +1,41 @@
+{
+ "league": "法國甲組聯賽",
+ "preds": [
+  "ah_upw_pre_10m~w1.05",
+  "ou_over_odds_closing=w0.85",
+  "md_away_last6_w:d0.00"
+ ],
+ "dir": "down",
+ "n": 33,
+ "hit": 0.9091,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7647,
+   "n": 34,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7955,
+   "n": 44,
+   "preds": [
+    "ah_upw_pre_5m~w1.05",
+    "ou_over_odds_closing=w0.85"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.9091,
+   "n": 33,
+   "preds": [
+    "ah_upw_pre_10m~w1.05",
+    "ou_over_odds_closing=w0.85",
+    "md_away_last6_w:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

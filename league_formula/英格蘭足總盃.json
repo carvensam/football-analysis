@@ -1,0 +1,30 @@
+{
+ "league": "英格蘭足總盃",
+ "preds": [
+  "ou_total_line_pre_4h=o2.50",
+  "move_line_initial_pre_4h:l-0.25"
+ ],
+ "dir": "down",
+ "n": 30,
+ "hit": 0.8333,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8,
+   "n": 30,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8333,
+   "n": 30,
+   "preds": [
+    "ou_total_line_pre_4h=o2.50",
+    "move_line_initial_pre_4h:l-0.25"
+   ]
+  }
+ ],
+ "opt_done": true
+}

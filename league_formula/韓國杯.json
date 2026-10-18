@@ -1,0 +1,30 @@
+{
+ "league": "韓國杯",
+ "preds": [
+  "move_line_initial_pre_4h:l0.00",
+  "move_upw_pre_4h_closing:d0.00"
+ ],
+ "dir": "down",
+ "n": 38,
+ "hit": 0.7368,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7368,
+   "n": 38,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7368,
+   "n": 38,
+   "preds": [
+    "move_line_initial_pre_4h:l0.00",
+    "move_upw_pre_4h_closing:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

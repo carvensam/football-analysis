@@ -1,0 +1,30 @@
+{
+ "league": "德國甲組聯賽",
+ "preds": [
+  "ah_upw_pre_30m~w1.05",
+  "ps_avg_total_goals:d2.75"
+ ],
+ "dir": "down",
+ "n": 33,
+ "hit": 0.8788,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8065,
+   "n": 31,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8788,
+   "n": 33,
+   "preds": [
+    "ah_upw_pre_30m~w1.05",
+    "ps_avg_total_goals:d2.75"
+   ]
+  }
+ ],
+ "opt_done": true
+}

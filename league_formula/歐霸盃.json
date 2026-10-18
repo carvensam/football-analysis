@@ -1,0 +1,41 @@
+{
+ "league": "歐霸盃",
+ "preds": [
+  "ps_avg_total_goals:d3.50",
+  "move_line_initial_pre_4h:l0.00",
+  "move_line_pre_4h_closing:l0.00"
+ ],
+ "dir": "up",
+ "n": 34,
+ "hit": 0.8235,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7436,
+   "n": 39,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7812,
+   "n": 32,
+   "preds": [
+    "ah_sline_pre_30m=l-0.25",
+    "md_home_hw_winrate_all:d0.50"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8235,
+   "n": 34,
+   "preds": [
+    "ps_avg_total_goals:d3.50",
+    "move_line_initial_pre_4h:l0.00",
+    "move_line_pre_4h_closing:l0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

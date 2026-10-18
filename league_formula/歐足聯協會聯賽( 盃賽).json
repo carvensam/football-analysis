@@ -1,0 +1,41 @@
+{
+ "league": "歐足聯協會聯賽( 盃賽)",
+ "preds": [
+  "ah_upw_pre_10m~w0.90",
+  "ou_total_line_initial=o2.75",
+  "ps_away_total_ga:d0.00"
+ ],
+ "dir": "down",
+ "n": 36,
+ "hit": 0.8611,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.725,
+   "n": 40,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8125,
+   "n": 32,
+   "preds": [
+    "ah_sline_pre_15m=l0.75",
+    "ah_upw_initial~w0.80"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8611,
+   "n": 36,
+   "preds": [
+    "ah_upw_pre_10m~w0.90",
+    "ou_total_line_initial=o2.75",
+    "ps_away_total_ga:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

@@ -1,0 +1,41 @@
+{
+ "league": "德國乙組聯賽",
+ "preds": [
+  "pts_diff_l6:d-6.00",
+  "md_away_last6_w:d3.00",
+  "move_upw_initial_closing:d0.00"
+ ],
+ "dir": "down",
+ "n": 33,
+ "hit": 0.8788,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8333,
+   "n": 30,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8649,
+   "n": 37,
+   "preds": [
+    "pts_diff_l6:d-6.00",
+    "move_upw_initial_closing:d0.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8788,
+   "n": 33,
+   "preds": [
+    "pts_diff_l6:d-6.00",
+    "md_away_last6_w:d3.00",
+    "move_upw_initial_closing:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

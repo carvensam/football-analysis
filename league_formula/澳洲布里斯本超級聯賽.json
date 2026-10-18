@@ -1,0 +1,41 @@
+{
+ "league": "澳洲布里斯本超級聯賽",
+ "preds": [
+  "ps_home_total_rank:r9_12",
+  "ps_home_away_rank:r9_12",
+  "ps_away_home_rank:r5_8"
+ ],
+ "dir": "down",
+ "n": 39,
+ "hit": 0.7692,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7442,
+   "n": 43,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7576,
+   "n": 33,
+   "preds": [
+    "ou_total_line_closing=o3.25",
+    "ps_away_away_rank:r5_8"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.7692,
+   "n": 39,
+   "preds": [
+    "ps_home_total_rank:r9_12",
+    "ps_home_away_rank:r9_12",
+    "ps_away_home_rank:r5_8"
+   ]
+  }
+ ],
+ "opt_done": true
+}

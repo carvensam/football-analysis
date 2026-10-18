@@ -1,0 +1,46 @@
+{
+ "league": "烏拉圭甲組聯賽",
+ "preds": [
+  "ou_total_line_initial=o2.00",
+  "ou_over_odds_closing=w0.90",
+  "rankdiff_homeaway:r1_2"
+ ],
+ "dir": "down",
+ "n": 47,
+ "hit": 0.8511,
+ "v3_train_hit": null,
+ "v3_test_hit": {
+  "n": 30,
+  "hit": 0.8
+ },
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7667,
+   "n": 30,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8387,
+   "n": 31,
+   "preds": [
+    "ah_sline_pre_30m=l0.25",
+    "ps_away_home_rank:r1_2"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8511,
+   "n": 47,
+   "preds": [
+    "ou_total_line_initial=o2.00",
+    "ou_over_odds_closing=w0.90",
+    "rankdiff_homeaway:r1_2"
+   ]
+  }
+ ],
+ "opt_done": true
+}

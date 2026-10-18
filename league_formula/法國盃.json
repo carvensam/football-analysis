@@ -1,0 +1,41 @@
+{
+ "league": "法國盃",
+ "preds": [
+  "upw_c~w0.95",
+  "ah_upw_pre_5m~w0.95",
+  "move_line_initial_pre_4h:l0.00"
+ ],
+ "dir": "down",
+ "n": 31,
+ "hit": 0.8387,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8387,
+   "n": 31,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8387,
+   "n": 31,
+   "preds": [
+    "md_home_last6_pts:d6.00",
+    "md_away_last6_pts:d9.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8387,
+   "n": 31,
+   "preds": [
+    "upw_c~w0.95",
+    "ah_upw_pre_5m~w0.95",
+    "move_line_initial_pre_4h:l0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

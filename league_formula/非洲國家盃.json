@@ -1,0 +1,41 @@
+{
+ "league": "非洲國家盃",
+ "preds": [
+  "ah_upw_pre_10m~w1.10",
+  "move_line_initial_pre_4h:l0.00",
+  "move_line_pre_4h_closing:l0.00"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.875,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8333,
+   "n": 30,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8529,
+   "n": 34,
+   "preds": [
+    "ah_upw_pre_10m~w1.10",
+    "move_line_initial_closing:l0.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.875,
+   "n": 32,
+   "preds": [
+    "ah_upw_pre_10m~w1.10",
+    "move_line_initial_pre_4h:l0.00",
+    "move_line_pre_4h_closing:l0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

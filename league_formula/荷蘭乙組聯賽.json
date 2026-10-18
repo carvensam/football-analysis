@@ -1,0 +1,41 @@
+{
+ "league": "荷蘭乙組聯賽",
+ "preds": [
+  "ps_home_total_rank:r9_12",
+  "md_away_last6_w:d0.00",
+  "move_upw_initial_pre_4h:d0.05"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.875,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7778,
+   "n": 36,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8667,
+   "n": 30,
+   "preds": [
+    "ou_under_odds_closing=w1.00",
+    "ps_home_away_rank:r3_4"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.875,
+   "n": 32,
+   "preds": [
+    "ps_home_total_rank:r9_12",
+    "md_away_last6_w:d0.00",
+    "move_upw_initial_pre_4h:d0.05"
+   ]
+  }
+ ],
+ "opt_done": true
+}

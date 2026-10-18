@@ -1,0 +1,24 @@
+{
+ "league": "美國職業大聯盟聯賽",
+ "preds": [
+  "md_home_hw_winrate_home:d0.40",
+  "ah_sline_closing=l0.25",
+  "ps_away_avg_gf_total:d1.50"
+ ],
+ "dir": "down",
+ "n": 30,
+ "hit": 0.9,
+ "threshold": 0.78,
+ "below_threshold": false,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.9,
+   "n": 30,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

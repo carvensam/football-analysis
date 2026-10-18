@@ -1,0 +1,23 @@
+{
+ "league": "智利甲组聯賽",
+ "preds": [
+  "ah_sline_pre_30m=l0.75",
+  "dnw_c~w1.00"
+ ],
+ "dir": "up",
+ "n": 32,
+ "hit": 0.8125,
+ "threshold": 0.78,
+ "below_threshold": false,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8125,
+   "n": 32,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

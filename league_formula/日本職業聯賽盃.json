@@ -1,0 +1,30 @@
+{
+ "league": "日本職業聯賽盃",
+ "preds": [
+  "ah_sline_closing=l-0.25",
+  "ps_away_total_ga:d0.00"
+ ],
+ "dir": "down",
+ "n": 41,
+ "hit": 0.7805,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.75,
+   "n": 32,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7805,
+   "n": 41,
+   "preds": [
+    "ah_sline_closing=l-0.25",
+    "ps_away_total_ga:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

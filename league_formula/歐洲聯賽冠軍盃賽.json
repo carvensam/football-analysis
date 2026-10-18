@@ -1,0 +1,49 @@
+{
+ "league": "歐洲聯賽冠軍盃賽",
+ "preds": [
+  "dnw_c~w0.80",
+  "md_away_last6_w:d0.00",
+  "move_upw_initial_pre_4h:d0.00"
+ ],
+ "dir": "down",
+ "n": 30,
+ "hit": 0.8667,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7333,
+   "n": 30,
+   "note": "baseline"
+  },
+  {
+   "round": 1,
+   "hit": 0.7333,
+   "n": 30,
+   "preds": [
+    "ah_sline_pre_5m=l2.00"
+   ]
+  },
+  {
+   "round": 2,
+   "hit": 0.8125,
+   "n": 32,
+   "preds": [
+    "ou_total_line_pre_10m=o2.50",
+    "ps_home_avg_gf_home:d1.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8667,
+   "n": 30,
+   "preds": [
+    "dnw_c~w0.80",
+    "md_away_last6_w:d0.00",
+    "move_upw_initial_pre_4h:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

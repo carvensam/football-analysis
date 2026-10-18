@@ -1,0 +1,30 @@
+{
+ "league": "瑞典盃",
+ "preds": [
+  "dnw_c~w0.90",
+  "move_upw_initial_closing:d0.00"
+ ],
+ "dir": "up",
+ "n": 37,
+ "hit": 0.8108,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8108,
+   "n": 37,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8108,
+   "n": 37,
+   "preds": [
+    "dnw_c~w0.90",
+    "move_upw_initial_closing:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

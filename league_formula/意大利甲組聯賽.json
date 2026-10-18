@@ -1,0 +1,23 @@
+{
+ "league": "意大利甲組聯賽",
+ "preds": [
+  "move_line_pre_4h_closing:l0.25",
+  "ah_sline_initial=l0.25"
+ ],
+ "dir": "down",
+ "n": 31,
+ "hit": 0.8065,
+ "threshold": 0.78,
+ "below_threshold": false,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8065,
+   "n": 31,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

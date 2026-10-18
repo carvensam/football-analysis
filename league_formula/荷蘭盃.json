@@ -1,0 +1,30 @@
+{
+ "league": "荷蘭盃",
+ "preds": [
+  "upw_c~w0.80",
+  "md_away_last6_w:d0.00"
+ ],
+ "dir": "up",
+ "n": 30,
+ "hit": 0.8,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.75,
+   "n": 32,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8,
+   "n": 30,
+   "preds": [
+    "upw_c~w0.80",
+    "md_away_last6_w:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

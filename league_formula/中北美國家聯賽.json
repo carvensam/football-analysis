@@ -1,0 +1,23 @@
+{
+ "league": "中北美國家聯賽",
+ "preds": [
+  "ah_upw_pre_15m~w0.80",
+  "ah_upw_pre_5m~w0.80"
+ ],
+ "dir": "up",
+ "n": 33,
+ "hit": 0.8485,
+ "threshold": 0.78,
+ "below_threshold": false,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8485,
+   "n": 33,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

@@ -1,0 +1,41 @@
+{
+ "league": "南美解放者杯",
+ "preds": [
+  "ou_total_line_pre_4h=o2.50",
+  "md_home_last6_w:d0.00",
+  "md_away_hw_winrate_all:d0.50"
+ ],
+ "dir": "up",
+ "n": 31,
+ "hit": 0.8387,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7619,
+   "n": 42,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7879,
+   "n": 33,
+   "preds": [
+    "dnw_c~w0.90",
+    "ou_total_line_initial=o2.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8387,
+   "n": 31,
+   "preds": [
+    "ou_total_line_pre_4h=o2.50",
+    "md_home_last6_w:d0.00",
+    "md_away_hw_winrate_all:d0.50"
+   ]
+  }
+ ],
+ "opt_done": true
+}

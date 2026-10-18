@@ -1,0 +1,41 @@
+{
+ "league": "英格蘭聯賽盃",
+ "preds": [
+  "upw_c~w1.05",
+  "ah_upw_pre_5m~w1.05",
+  "move_line_pre_4h_closing:l0.00"
+ ],
+ "dir": "down",
+ "n": 31,
+ "hit": 0.8387,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7059,
+   "n": 34,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7838,
+   "n": 37,
+   "preds": [
+    "ah_upw_pre_5m~w1.05",
+    "move_line_pre_4h_closing:l0.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8387,
+   "n": 31,
+   "preds": [
+    "upw_c~w1.05",
+    "ah_upw_pre_5m~w1.05",
+    "move_line_pre_4h_closing:l0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

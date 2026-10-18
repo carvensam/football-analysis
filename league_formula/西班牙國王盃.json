@@ -1,0 +1,41 @@
+{
+ "league": "西班牙國王盃",
+ "preds": [
+  "ah_sline_initial=l-0.25",
+  "md_away_last6_w:d0.00",
+  "ps_away_total_gf:d0.00"
+ ],
+ "dir": "down",
+ "n": 33,
+ "hit": 0.7879,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7742,
+   "n": 31,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7778,
+   "n": 36,
+   "preds": [
+    "dnw_c~w0.80",
+    "md_away_last6_w:d3.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.7879,
+   "n": 33,
+   "preds": [
+    "ah_sline_initial=l-0.25",
+    "md_away_last6_w:d0.00",
+    "ps_away_total_gf:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

@@ -1,0 +1,41 @@
+{
+ "league": "巴西乙級聯賽",
+ "preds": [
+  "upw_c~w0.85",
+  "ah_upw_pre_15m~w0.85",
+  "ps_away_away_rank:r5_8"
+ ],
+ "dir": "up",
+ "n": 30,
+ "hit": 0.9,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8235,
+   "n": 34,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8387,
+   "n": 31,
+   "preds": [
+    "ah_sline_pre_15m=l-0.25",
+    "dnw_c~w0.75"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.9,
+   "n": 30,
+   "preds": [
+    "upw_c~w0.85",
+    "ah_upw_pre_15m~w0.85",
+    "ps_away_away_rank:r5_8"
+   ]
+  }
+ ],
+ "opt_done": true
+}

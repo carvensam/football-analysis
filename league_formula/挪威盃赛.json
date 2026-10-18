@@ -1,0 +1,23 @@
+{
+ "league": "挪威盃赛",
+ "preds": [
+  "dnw_c~w0.80",
+  "move_upw_initial_pre_4h:d0.00"
+ ],
+ "dir": "down",
+ "n": 31,
+ "hit": 0.8065,
+ "threshold": 0.78,
+ "below_threshold": false,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8065,
+   "n": 31,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

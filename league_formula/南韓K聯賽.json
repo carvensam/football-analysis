@@ -1,0 +1,41 @@
+{
+ "league": "南韓K聯賽",
+ "preds": [
+  "ah_sline_pre_10m=l0.25",
+  "ou_total_line_pre_30m=o2.00",
+  "move_line_initial_closing:l0.00"
+ ],
+ "dir": "down",
+ "n": 33,
+ "hit": 0.8485,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8333,
+   "n": 30,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8333,
+   "n": 30,
+   "preds": [
+    "ah_sline_pre_5m=l-0.25",
+    "ah_upw_initial~w1.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8485,
+   "n": 33,
+   "preds": [
+    "ah_sline_pre_10m=l0.25",
+    "ou_total_line_pre_30m=o2.00",
+    "move_line_initial_closing:l0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

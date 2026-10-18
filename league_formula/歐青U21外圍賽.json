@@ -1,0 +1,41 @@
+{
+ "league": "歐青U21外圍賽",
+ "preds": [
+  "ah_sline_pre_4h=l0.25",
+  "ah_sline_pre_5m=l0.25",
+  "ps_home_total_rank:r25+"
+ ],
+ "dir": "down",
+ "n": 30,
+ "hit": 0.8333,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8065,
+   "n": 31,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8182,
+   "n": 33,
+   "preds": [
+    "ah_sline_pre_30m=l2.00",
+    "move_line_pre_4h_closing:l0.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8333,
+   "n": 30,
+   "preds": [
+    "ah_sline_pre_4h=l0.25",
+    "ah_sline_pre_5m=l0.25",
+    "ps_home_total_rank:r25+"
+   ]
+  }
+ ],
+ "opt_done": true
+}

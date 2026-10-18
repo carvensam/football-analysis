@@ -1,0 +1,24 @@
+{
+ "league": "南韓K2聯賽",
+ "preds": [
+  "md_home_hw_winrate_home:d0.50",
+  "md_away_last6_pts:d6.00",
+  "ah_sline_initial=l0.25"
+ ],
+ "dir": "down",
+ "n": 35,
+ "hit": 0.8286,
+ "threshold": 0.78,
+ "below_threshold": false,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8286,
+   "n": 35,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

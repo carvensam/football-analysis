@@ -1,0 +1,41 @@
+{
+ "league": "英格蘭超級聯賽",
+ "preds": [
+  "upw_c~w0.85",
+  "ps_home_avg_gf_total:d1.00",
+  "move_line_initial_closing:l0.00"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.9062,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7742,
+   "n": 31,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8235,
+   "n": 34,
+   "preds": [
+    "ou_total_line_pre_5m=o3.50",
+    "md_away_hw_winrate_away:d0.50"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.9062,
+   "n": 32,
+   "preds": [
+    "upw_c~w0.85",
+    "ps_home_avg_gf_total:d1.00",
+    "move_line_initial_closing:l0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

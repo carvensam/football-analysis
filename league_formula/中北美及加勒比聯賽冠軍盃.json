@@ -1,0 +1,30 @@
+{
+ "league": "中北美及加勒比聯賽冠軍盃",
+ "preds": [
+  "ou_under_odds_closing=w0.85",
+  "move_line_pre_4h_closing:l0.00"
+ ],
+ "dir": "up",
+ "n": 32,
+ "hit": 0.7188,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.6774,
+   "n": 31,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7188,
+   "n": 32,
+   "preds": [
+    "ou_under_odds_closing=w0.85",
+    "move_line_pre_4h_closing:l0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

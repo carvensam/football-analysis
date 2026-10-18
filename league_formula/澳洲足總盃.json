@@ -1,0 +1,41 @@
+{
+ "league": "澳洲足總盃",
+ "preds": [
+  "ps_away_total_rank:r25+",
+  "md_away_last6_w:d0.00",
+  "move_line_initial_closing:l0.25"
+ ],
+ "dir": "down",
+ "n": 42,
+ "hit": 0.8571,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7742,
+   "n": 31,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8056,
+   "n": 36,
+   "preds": [
+    "move_line_initial_pre_4h:l0.00",
+    "move_upw_pre_4h_closing:d0.15"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8571,
+   "n": 42,
+   "preds": [
+    "ps_away_total_rank:r25+",
+    "md_away_last6_w:d0.00",
+    "move_line_initial_closing:l0.25"
+   ]
+  }
+ ],
+ "opt_done": true
+}

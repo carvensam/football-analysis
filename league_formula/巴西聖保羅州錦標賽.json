@@ -1,0 +1,30 @@
+{
+ "league": "巴西聖保羅州錦標賽",
+ "preds": [
+  "ah_sline_pre_4h=l-0.50",
+  "ou_total_line_pre_4h=o2.25"
+ ],
+ "dir": "down",
+ "n": 30,
+ "hit": 0.8,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7333,
+   "n": 45,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8,
+   "n": 30,
+   "preds": [
+    "ah_sline_pre_4h=l-0.50",
+    "ou_total_line_pre_4h=o2.25"
+   ]
+  }
+ ],
+ "opt_done": true
+}

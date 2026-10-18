@@ -1,0 +1,41 @@
+{
+ "league": "歐洲國家聯賽",
+ "preds": [
+  "ah_sline_pre_15m=l0.75",
+  "ou_total_line_pre_4h=o2.25",
+  "ou_total_line_pre_30m=o2.25"
+ ],
+ "dir": "up",
+ "n": 34,
+ "hit": 0.8235,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7949,
+   "n": 39,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8125,
+   "n": 32,
+   "preds": [
+    "ah_upw_initial~w1.10",
+    "move_line_pre_4h_closing:l0.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8235,
+   "n": 34,
+   "preds": [
+    "ah_sline_pre_15m=l0.75",
+    "ou_total_line_pre_4h=o2.25",
+    "ou_total_line_pre_30m=o2.25"
+   ]
+  }
+ ],
+ "opt_done": true
+}

@@ -1,0 +1,41 @@
+{
+ "league": "西班牙甲組聯賽",
+ "preds": [
+  "ah_upw_pre_4h~w1.05",
+  "ah_upw_pre_5m~w1.05",
+  "move_upw_initial_closing:d0.00"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.875,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7667,
+   "n": 30,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8333,
+   "n": 30,
+   "preds": [
+    "ah_sline_pre_15m=l-0.50",
+    "md_home_hw_winrate_all:d0.50"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.875,
+   "n": 32,
+   "preds": [
+    "ah_upw_pre_4h~w1.05",
+    "ah_upw_pre_5m~w1.05",
+    "move_upw_initial_closing:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

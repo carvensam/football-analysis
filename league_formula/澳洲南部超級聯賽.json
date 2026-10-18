@@ -1,0 +1,30 @@
+{
+ "league": "澳洲南部超級聯賽",
+ "preds": [
+  "dnw_c~w0.95",
+  "ps_away_away_rank:r5_8"
+ ],
+ "dir": "up",
+ "n": 38,
+ "hit": 0.8421,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.75,
+   "n": 36,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8421,
+   "n": 38,
+   "preds": [
+    "dnw_c~w0.95",
+    "ps_away_away_rank:r5_8"
+   ]
+  }
+ ],
+ "opt_done": true
+}

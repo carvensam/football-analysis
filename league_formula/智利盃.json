@@ -1,0 +1,23 @@
+{
+ "league": "智利盃",
+ "preds": [
+  "ah_sline_pre_5m=l-0.25",
+  "ah_sline_pre_4h=l-0.25"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.8125,
+ "threshold": 0.78,
+ "below_threshold": false,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8125,
+   "n": 32,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

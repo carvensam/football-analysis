@@ -1,0 +1,23 @@
+{
+ "league": "海灣盃",
+ "preds": [
+  "ah_sline_pre_15m=l0.75",
+  "ah_sline_pre_10m=l0.75"
+ ],
+ "dir": "up",
+ "n": 31,
+ "hit": 0.7097,
+ "threshold": 0.78,
+ "below_threshold": true,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7097,
+   "n": 31,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

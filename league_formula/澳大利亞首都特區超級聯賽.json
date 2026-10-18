@@ -1,0 +1,41 @@
+{
+ "league": "澳大利亞首都特區超級聯賽",
+ "preds": [
+  "ou_total_line_pre_10m=o3.50",
+  "move_line_pre_4h_closing:l0.00",
+  "move_upw_pre_4h_closing:d0.00"
+ ],
+ "dir": "up",
+ "n": 31,
+ "hit": 0.8387,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8333,
+   "n": 30,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8333,
+   "n": 30,
+   "preds": [
+    "ah_upw_pre_4h~w0.80",
+    "move_upw_pre_4h_closing:d0.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8387,
+   "n": 31,
+   "preds": [
+    "ou_total_line_pre_10m=o3.50",
+    "move_line_pre_4h_closing:l0.00",
+    "move_upw_pre_4h_closing:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

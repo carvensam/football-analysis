@@ -1,0 +1,41 @@
+{
+ "league": "英格蘭冠軍聯賽",
+ "preds": [
+  "ah_sline_pre_4h=l0.00",
+  "ps_away_avg_gf_total:d1.25",
+  "ps_away_avg_gf_away:d1.25"
+ ],
+ "dir": "down",
+ "n": 34,
+ "hit": 0.8824,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8286,
+   "n": 35,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8333,
+   "n": 30,
+   "preds": [
+    "ah_upw_pre_30m~w0.85",
+    "ps_away_home_rank:r3_4"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8824,
+   "n": 34,
+   "preds": [
+    "ah_sline_pre_4h=l0.00",
+    "ps_away_avg_gf_total:d1.25",
+    "ps_away_avg_gf_away:d1.25"
+   ]
+  }
+ ],
+ "opt_done": true
+}

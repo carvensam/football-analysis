@@ -1,0 +1,41 @@
+{
+ "league": "法國乙組聯賽",
+ "preds": [
+  "ah_sline_pre_4h=l0.25",
+  "upw_c~w1.05",
+  "pts_diff_l6:d0.00"
+ ],
+ "dir": "down",
+ "n": 36,
+ "hit": 0.8611,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7895,
+   "n": 38,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8065,
+   "n": 31,
+   "preds": [
+    "ah_sline_pre_10m=l-0.50",
+    "md_home_hw_winrate_all:d0.40"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8611,
+   "n": 36,
+   "preds": [
+    "ah_sline_pre_4h=l0.25",
+    "upw_c~w1.05",
+    "pts_diff_l6:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

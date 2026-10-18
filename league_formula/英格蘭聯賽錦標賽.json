@@ -1,0 +1,30 @@
+{
+ "league": "英格蘭聯賽錦標賽",
+ "preds": [
+  "ps_away_away_rank:r25+",
+  "move_line_pre_4h_closing:l0.25"
+ ],
+ "dir": "up",
+ "n": 33,
+ "hit": 0.8182,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7667,
+   "n": 30,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8182,
+   "n": 33,
+   "preds": [
+    "ps_away_away_rank:r25+",
+    "move_line_pre_4h_closing:l0.25"
+   ]
+  }
+ ],
+ "opt_done": true
+}

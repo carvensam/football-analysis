@@ -1,0 +1,30 @@
+{
+ "league": "墨西哥超級聯賽",
+ "preds": [
+  "ah_sline_pre_4h=l0.00",
+  "ps_away_avg_gf_away:d1.00"
+ ],
+ "dir": "down",
+ "n": 34,
+ "hit": 0.8824,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7742,
+   "n": 31,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8824,
+   "n": 34,
+   "preds": [
+    "ah_sline_pre_4h=l0.00",
+    "ps_away_avg_gf_away:d1.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

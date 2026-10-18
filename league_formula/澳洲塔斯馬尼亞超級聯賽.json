@@ -1,0 +1,23 @@
+{
+ "league": "澳洲塔斯馬尼亞超級聯賽",
+ "preds": [
+  "move_upw_initial_closing:d0.00",
+  "ps_home_away_rank:r5_8"
+ ],
+ "dir": "up",
+ "n": 34,
+ "hit": 0.7059,
+ "threshold": 0.78,
+ "below_threshold": true,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7059,
+   "n": 34,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

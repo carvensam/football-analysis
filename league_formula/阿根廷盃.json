@@ -1,0 +1,41 @@
+{
+ "league": "阿根廷盃",
+ "preds": [
+  "ou_total_line_pre_30m=o2.00",
+  "rankdiff_total:r1_2",
+  "move_line_initial_closing:l0.00"
+ ],
+ "dir": "down",
+ "n": 30,
+ "hit": 0.8,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7273,
+   "n": 33,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.75,
+   "n": 32,
+   "preds": [
+    "ah_sline_pre_5m=l0.50",
+    "ps_home_total_ga:d0.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8,
+   "n": 30,
+   "preds": [
+    "ou_total_line_pre_30m=o2.00",
+    "rankdiff_total:r1_2",
+    "move_line_initial_closing:l0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

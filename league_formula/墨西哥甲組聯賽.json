@@ -1,0 +1,41 @@
+{
+ "league": "墨西哥甲組聯賽",
+ "preds": [
+  "ah_upw_pre_10m~w0.85",
+  "move_line_initial_closing:l0.00",
+  "move_upw_initial_closing:d0.00"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.8438,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8,
+   "n": 30,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8065,
+   "n": 31,
+   "preds": [
+    "dnw_c~w1.00",
+    "ou_total_line_pre_30m=o2.50"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8438,
+   "n": 32,
+   "preds": [
+    "ah_upw_pre_10m~w0.85",
+    "move_line_initial_closing:l0.00",
+    "move_upw_initial_closing:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

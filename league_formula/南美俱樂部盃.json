@@ -1,0 +1,30 @@
+{
+ "league": "南美俱樂部盃",
+ "preds": [
+  "ah_upw_pre_10m~w1.05",
+  "ou_total_line_pre_30m=o2.00"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.8438,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8387,
+   "n": 31,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8438,
+   "n": 32,
+   "preds": [
+    "ah_upw_pre_10m~w1.05",
+    "ou_total_line_pre_30m=o2.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

@@ -1,0 +1,41 @@
+{
+ "league": "奧地利甲組聯賽",
+ "preds": [
+  "ah_sline_pre_30m=l-0.25",
+  "rankdiff_total:r1_2",
+  "move_line_initial_closing:l0.00"
+ ],
+ "dir": "down",
+ "n": 31,
+ "hit": 0.8387,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7949,
+   "n": 39,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8,
+   "n": 30,
+   "preds": [
+    "ah_sline_pre_15m=l-0.25",
+    "md_away_hw_winrate_all:d0.40"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8387,
+   "n": 31,
+   "preds": [
+    "ah_sline_pre_30m=l-0.25",
+    "rankdiff_total:r1_2",
+    "move_line_initial_closing:l0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

@@ -1,0 +1,41 @@
+{
+ "league": "挪威超級聯賽",
+ "preds": [
+  "dnw_c~w0.80",
+  "ps_away_home_rank:r5_8",
+  "rankdiff_homeaway:r1_2"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.8438,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7949,
+   "n": 39,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8,
+   "n": 30,
+   "preds": [
+    "md_away_hw_winrate_all:d0.40",
+    "ps_away_avg_gf_total:d2.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8438,
+   "n": 32,
+   "preds": [
+    "dnw_c~w0.80",
+    "ps_away_home_rank:r5_8",
+    "rankdiff_homeaway:r1_2"
+   ]
+  }
+ ],
+ "opt_done": true
+}

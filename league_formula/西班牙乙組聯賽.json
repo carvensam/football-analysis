@@ -1,0 +1,41 @@
+{
+ "league": "西班牙乙組聯賽",
+ "preds": [
+  "ah_sline_pre_10m=l0.25",
+  "ah_upw_pre_30m~w0.80",
+  "rankdiff_homeaway:r1_2"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.875,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7436,
+   "n": 39,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8333,
+   "n": 30,
+   "preds": [
+    "ah_upw_pre_4h~w0.85",
+    "ps_away_avg_gf_total:d1.50"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.875,
+   "n": 32,
+   "preds": [
+    "ah_sline_pre_10m=l0.25",
+    "ah_upw_pre_30m~w0.80",
+    "rankdiff_homeaway:r1_2"
+   ]
+  }
+ ],
+ "opt_done": true
+}

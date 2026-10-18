@@ -1,0 +1,41 @@
+{
+ "league": "葡萄牙超級聯賽",
+ "preds": [
+  "ah_upw_pre_4h~w1.00",
+  "md_home_last6_pts:d6.00",
+  "md_home_hw_winrate_all:d0.40"
+ ],
+ "dir": "down",
+ "n": 30,
+ "hit": 0.8667,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7143,
+   "n": 42,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8065,
+   "n": 31,
+   "preds": [
+    "rankdiff_homeaway:r5_8",
+    "md_away_last6_pts:d9.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8667,
+   "n": 30,
+   "preds": [
+    "ah_upw_pre_4h~w1.00",
+    "md_home_last6_pts:d6.00",
+    "md_home_hw_winrate_all:d0.40"
+   ]
+  }
+ ],
+ "opt_done": true
+}

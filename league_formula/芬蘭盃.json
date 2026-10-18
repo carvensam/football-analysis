@@ -1,0 +1,41 @@
+{
+ "league": "芬蘭盃",
+ "preds": [
+  "dnw_c~w0.95",
+  "ps_away_total_ga:d0.00",
+  "ps_home_total_ga:d0.00"
+ ],
+ "dir": "up",
+ "n": 30,
+ "hit": 0.8,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7632,
+   "n": 38,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7857,
+   "n": 42,
+   "preds": [
+    "dnw_c~w0.95",
+    "move_line_initial_closing:l0.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8,
+   "n": 30,
+   "preds": [
+    "dnw_c~w0.95",
+    "ps_away_total_ga:d0.00",
+    "ps_home_total_ga:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

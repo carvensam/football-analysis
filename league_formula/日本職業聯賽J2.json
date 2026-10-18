@@ -1,0 +1,41 @@
+{
+ "league": "日本職業聯賽J2",
+ "preds": [
+  "ou_total_line_closing=o2.25",
+  "md_home_last6_pts:d3.00",
+  "md_away_last6_pts:d6.00"
+ ],
+ "dir": "down",
+ "n": 33,
+ "hit": 0.9091,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7742,
+   "n": 31,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8108,
+   "n": 37,
+   "preds": [
+    "ou_total_line_closing=o2.00",
+    "ps_away_avg_gf_away:d1.50"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.9091,
+   "n": 33,
+   "preds": [
+    "ou_total_line_closing=o2.25",
+    "md_home_last6_pts:d3.00",
+    "md_away_last6_pts:d6.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

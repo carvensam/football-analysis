@@ -1,0 +1,41 @@
+{
+ "league": "澳大利亞足球超級聯賽",
+ "preds": [
+  "ah_upw_initial~w0.85",
+  "md_home_last6_w:d3.00",
+  "move_line_pre_4h_closing:l0.00"
+ ],
+ "dir": "down",
+ "n": 32,
+ "hit": 0.875,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8636,
+   "n": 44,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8636,
+   "n": 44,
+   "preds": [
+    "ah_upw_initial~w0.85",
+    "md_home_last6_w:d3.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.875,
+   "n": 32,
+   "preds": [
+    "ah_upw_initial~w0.85",
+    "md_home_last6_w:d3.00",
+    "move_line_pre_4h_closing:l0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

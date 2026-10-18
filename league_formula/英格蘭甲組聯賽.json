@@ -1,0 +1,23 @@
+{
+ "league": "英格蘭甲組聯賽",
+ "preds": [
+  "ah_sline_pre_5m=l-0.25",
+  "ps_away_total_rank:r17_20"
+ ],
+ "dir": "down",
+ "n": 33,
+ "hit": 0.8485,
+ "threshold": 0.78,
+ "below_threshold": false,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8485,
+   "n": 33,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

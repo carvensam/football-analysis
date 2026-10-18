@@ -1,0 +1,49 @@
+{
+ "league": "芬蘭超級聯賽",
+ "preds": [
+  "ou_total_line_pre_15m=o2.50",
+  "ps_away_away_rank:r9_12",
+  "ps_away_home_rank:r5_8"
+ ],
+ "dir": "up",
+ "n": 30,
+ "hit": 0.8333,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7115,
+   "n": 52,
+   "note": "baseline"
+  },
+  {
+   "round": 1,
+   "hit": 0.7115,
+   "n": 52,
+   "preds": [
+    "ah_sline_pre_30m=l-0.75"
+   ]
+  },
+  {
+   "round": 2,
+   "hit": 0.8,
+   "n": 30,
+   "preds": [
+    "ah_sline_pre_30m=l-0.75",
+    "ps_home_total_rank:r9_12"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.8333,
+   "n": 30,
+   "preds": [
+    "ou_total_line_pre_15m=o2.50",
+    "ps_away_away_rank:r9_12",
+    "ps_away_home_rank:r5_8"
+   ]
+  }
+ ],
+ "opt_done": true
+}

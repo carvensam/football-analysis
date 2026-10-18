@@ -1,0 +1,30 @@
+{
+ "league": "德國足協盃",
+ "preds": [
+  "upw_c~w0.80",
+  "ps_away_total_ga:d0.00"
+ ],
+ "dir": "up",
+ "n": 31,
+ "hit": 0.7097,
+ "round": 2,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7059,
+   "n": 34,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.7097,
+   "n": 31,
+   "preds": [
+    "upw_c~w0.80",
+    "ps_away_total_ga:d0.00"
+   ]
+  }
+ ],
+ "opt_done": true
+}

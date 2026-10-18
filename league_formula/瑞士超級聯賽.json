@@ -1,0 +1,23 @@
+{
+ "league": "瑞士超級聯賽",
+ "preds": [
+  "ah_sline_pre_15m=l-0.25",
+  "ps_away_total_rank:r3_4"
+ ],
+ "dir": "down",
+ "n": 31,
+ "hit": 0.8065,
+ "threshold": 0.78,
+ "below_threshold": false,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8065,
+   "n": 31,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

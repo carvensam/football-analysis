@@ -1,0 +1,23 @@
+{
+ "league": "荷蘭甲組聯賽",
+ "preds": [
+  "ah_sline_pre_4h=l1.00",
+  "rankdiff_total:r5_8"
+ ],
+ "dir": "down",
+ "n": 35,
+ "hit": 0.8286,
+ "threshold": 0.78,
+ "below_threshold": false,
+ "status": "optimized",
+ "verify_ok": true,
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.8286,
+   "n": 35,
+   "note": "baseline"
+  }
+ ],
+ "opt_done": true
+}

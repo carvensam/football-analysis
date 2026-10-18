@@ -243,6 +243,7 @@ function goto(pg){
       const f = $('#fw8sFrame');
       if (f && !f.src) f.src = '/fw8s';
     },
+    x8: () => loadX8(),
     v1: () => loadV1(),
     settings: () => loadSettings(),
     home: () => loadHome()}[pg] || (() => {}))();
@@ -2978,3 +2979,131 @@ async function loadFeatHourly(){
     $('#fhBody').innerHTML = '<div class="err">載入失敗：' + esc(e) + '</div>';
   }
 }
+
+/* ---------- 🧪 8X：66 條優化公式賽前記錄＋賽後自動結算 ---------- */
+let _x8Badge = 0;
+function x8UpDown(r){
+  /* r.sline 係 Python 口徑（+＝主讓，同 screen_engine.signed_line）；
+     fmtLine 係 JS 口徑（-＝主讓，見 2914 行呼叫方式）——所以要反號。
+     上盤＝讓球方；平手→上盤＝主隊（一貫定義） */
+  if (r.sline == null) return {up: r.home, down: r.away, lineTxt: '無尾盤'};
+  const v = -r.sline;
+  const lineTxt = fmtLine(v);
+  if (v < 0) return {up: r.home, down: r.away, lineTxt};
+  if (v > 0) return {up: r.away, down: r.home, lineTxt};
+  return {up: r.home, down: r.away, lineTxt: '平手'};
+}
+async function loadX8(){
+  try {
+    const d = await jget('/api/8x/list');
+    const decided = d.w + d.l;
+    const hr = decided ? d.w / decided : null;
+    let h = `<div class="fcard" style="margin:8px 0"><div class="f-top" style="flex-wrap:wrap;gap:8px">
+      <b>8X 真實成績</b>
+      <span>總記錄 <b>${d.total}</b> 場</span>
+      <span style="color:#3fb950">贏 ${d.w}</span>
+      <span style="color:#f85149">輸 ${d.l}</span>
+      <span style="color:var(--dim)">走 ${d.p}</span>
+      <span style="color:var(--gold2)">待定 ${d.pending}</span>
+      <span>命中率 <b style="color:${hr != null && hr >= 0.5 ? '#3fb950' : '#f85149'};font-size:1.2em">${hr == null ? '—' : (hr * 100).toFixed(1) + '%'}</b>${decided ? `（${d.w}/${decided}）` : ''}</span>
+    </div></div>`;
+    if (d.by_league.length){
+      h += '<div class="fcard" style="margin:8px 0"><div class="f-top" style="flex-wrap:wrap;gap:6px"><b>分聯賽</b>　';
+      h += d.by_league.map(L => {
+        const dec = L.w + L.l, r2 = dec ? L.w / dec : null;
+        return `<span class="tag" style="border-color:#6b5510">${esc(L.league)} ${L.n}場 ` +
+          `<b style="color:${r2 != null && r2 >= 0.5 ? '#3fb950' : '#f85149'}">${r2 == null ? '—' : (r2 * 100).toFixed(0) + '%'}</b></span>`;
+      }).join(' ');
+      h += '</div></div>';
+    }
+    $('#x8Stats').innerHTML = h;
+    let b = '';
+    if (!d.rows.length) b = '<div class="note">暫無記錄。背景每 20 分鐘自動掃描未來 7 日場次，有公式全中嘅場次會自動記錄並彈窗通知。</div>';
+    for (const r of d.rows){
+      const ud = x8UpDown(r);
+      const isUp = r.dir === 'up';
+      const predTeam = isUp ? ud.up : ud.down;
+      const resBadge = r.result === 'W' ? '<span class="tag" style="color:#3fb950;border-color:#3fb950">✔ 贏</span>'
+        : r.result === 'L' ? '<span class="tag" style="color:#f85149;border-color:#f85149">✘ 輸</span>'
+        : r.result === 'P' ? '<span class="tag dim">走盤</span>'
+        : '<span class="tag" style="color:var(--gold2);border-color:#6b5510">⏳ 待定</span>';
+      b += `<div class="fcard"><div class="f-top" style="flex-wrap:wrap;gap:6px">
+        <span class="f-time">${esc((r.kickoff || '').slice(5, 16))}</span>
+        <span class="lg" style="color:var(--gold2);font-size:12px">${esc(r.league)}</span>
+        <b>${esc(r.home)} <span style="color:var(--dim)">vs</span> ${esc(r.away)}</b>
+        <span class="tag dim">${esc(ud.lineTxt)}</span>
+        <span class="tag dim">主 ${r.upw == null ? '—' : (+r.upw).toFixed(2)}／客 ${r.dnw == null ? '—' : (+r.dnw).toFixed(2)}</span>
+        ${resBadge}</div>
+        <div class="sub" style="margin-top:4px">預測：<b style="color:${isUp ? '#3fb950' : '#f85149'}">${isUp ? '上盤' : '下盤'}＝${esc(predTeam)}</b>
+        　回測基數 ${r.n_back || 0} 場・命中率 ${r.hit_back == null ? '—' : (r.hit_back * 100).toFixed(1) + '%'}
+        　<span style="color:var(--dim)">記錄於 ${new Date(r.ts * 1000).toLocaleString('zh-HK', {hour12: false})}</span></div></div>`;
+    }
+    $('#x8Body').innerHTML = b;
+    $('#x8Msg').textContent = `最後更新 ${new Date().toLocaleTimeString('zh-HK', {hour12: false})}`;
+  } catch (e) {
+    $('#x8Body').innerHTML = '<div class="err">載入失敗：' + esc(e) + '</div>';
+  }
+}
+async function x8DoScan(){
+  const btn = $('#btnX8Scan');
+  btn.disabled = true; $('#x8Msg').textContent = '掃描緊…';
+  try {
+    const r = await jpost('/api/8x/scan');
+    toast(`8X：新增 ${r.added} 場・結算 ${r.settled} 場`);
+    await loadX8();
+  } catch (e) { toast('8X 掃描失敗：' + e); }
+  btn.disabled = false;
+}
+function _x8Beep(){
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    [880, 1175].forEach((f, i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.frequency.value = f; o.type = 'sine';
+      g.gain.setValueAtTime(0.001, ctx.currentTime + i * 0.25);
+      g.gain.exponentialRampToValueAtTime(0.25, ctx.currentTime + i * 0.25 + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.25 + 0.22);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(ctx.currentTime + i * 0.25); o.stop(ctx.currentTime + i * 0.25 + 0.25);
+    });
+  } catch (_) {}
+  if (navigator.vibrate) try { navigator.vibrate([200, 100, 200]); } catch (_) {}
+}
+function x8Popup(list){
+  $('#x8ModalBody').innerHTML = list.map(r => {
+    return `<div class="fcard" style="margin:6px 0"><div class="f-top">
+      <span class="f-time">${esc((r.kickoff || '').slice(5, 16))}</span>
+      <span class="lg" style="color:var(--gold2);font-size:12px">${esc(r.league)}</span>
+      <b>${esc(r.home)} vs ${esc(r.away)}</b>
+      <span class="tag" style="color:${r.direction === 'up' ? '#3fb950' : '#f85149'};border-color:currentColor">${r.direction === 'up' ? '上盤' : '下盤'}</span>
+    </div></div>`;
+  }).join('');
+  $('#x8Modal').classList.add('on');
+  _x8Beep();
+  _x8Badge += list.length;
+  const c = $('#x8Cnt'); if (c) c.textContent = _x8Badge ? '🔔' + _x8Badge : '';
+}
+async function x8Poll(){
+  try {
+    let since = parseFloat(localStorage.getItem('x8last') || '0');
+    if (!since){
+      /* 第一次開啟：以而家做基準，唔會彈返晒歷史 */
+      since = Date.now() / 1000;
+      localStorage.setItem('x8last', String(since));
+      return;
+    }
+    const r = await fetch('/api/8x/new?since=' + since);
+    if (!r.ok) return;
+    const list = await r.json();
+    if (list.length){
+      localStorage.setItem('x8last', String(Math.max(...list.map(x => x.created_ts))));
+      x8Popup(list);
+    }
+  } catch (_) {}
+}
+document.addEventListener('click', e => {
+  if (e.target.id === 'btnX8Scan') x8DoScan();
+  if (e.target.id === 'btnX8List') loadX8();
+  if (e.target.id === 'x8ModalClose') $('#x8Modal').classList.remove('on');
+});
+setInterval(x8Poll, 60000);

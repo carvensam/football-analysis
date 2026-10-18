@@ -1,0 +1,41 @@
+{
+ "league": "瑞典超級聯賽",
+ "preds": [
+  "ah_sline_pre_5m=l0.25",
+  "ps_away_total_rank:r9_12",
+  "rankdiff_total:r1_2"
+ ],
+ "dir": "down",
+ "n": 31,
+ "hit": 0.9032,
+ "round": 3,
+ "status": "optimized",
+ "trajectory": [
+  {
+   "round": 0,
+   "hit": 0.7778,
+   "n": 36,
+   "note": "baseline"
+  },
+  {
+   "round": 2,
+   "hit": 0.8438,
+   "n": 32,
+   "preds": [
+    "ah_sline_pre_10m=l0.75",
+    "ou_under_odds_closing=w1.00"
+   ]
+  },
+  {
+   "round": 3,
+   "hit": 0.9032,
+   "n": 31,
+   "preds": [
+    "ah_sline_pre_5m=l0.25",
+    "ps_away_total_rank:r9_12",
+    "rankdiff_total:r1_2"
+   ]
+  }
+ ],
+ "opt_done": true
+}
