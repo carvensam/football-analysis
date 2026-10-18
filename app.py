@@ -6892,6 +6892,30 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/w88/scan':
+            # 88W 一鍵掃描預測（2026-10-19）：K3 雙數和波＋8X 上/下盤公式
+            # 一次過 scan＋settle，三個市場全包
+            try:
+                if not w88_engine:
+                    self._send(500, json.dumps({'error': 'w88_engine 模組未載入'},
+                                               ensure_ascii=False))
+                    return
+                c = db()
+                a3 = w88_engine.scan(c)
+                s3 = w88_engine.settle(c)
+                a8 = s8 = None
+                if fw8x:
+                    a8 = fw8x.scan(c)
+                    s8 = fw8x.settle(c)
+                c.close()
+                self._send(200, json.dumps(
+                    {'k3_added': a3, 'k3_settled': s3,
+                     'x8_added': a8, 'x8_settled': s8}, ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         if u.path == '/api/crawl/stop':
             try:
                 self._send(200, json.dumps(do_crawl_stop(), ensure_ascii=False))
