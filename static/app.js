@@ -243,6 +243,10 @@ function goto(pg){
       const f = $('#fw8sFrame');
       if (f && !f.src) f.src = '/fw8s';
     },
+    w88: () => {
+      const f = $('#w88Frame');
+      if (f && !f.src) f.src = '/88w';
+    },
     x8: () => loadX8(),
     v1: () => loadV1(),
     settings: () => loadSettings(),
@@ -3059,7 +3063,7 @@ async function loadX8(){
         <span class="tag dim">${esc(ud.lineTxt)}</span>
         <span class="tag dim">主 ${r.upw == null ? '—' : (+r.upw).toFixed(2)}／客 ${r.dnw == null ? '—' : (+r.dnw).toFixed(2)}</span>
         ${resBadge}</div>
-        <div class="sub" style="margin-top:4px">預測：<b style="color:${isUp ? '#3fb950' : '#f85149'}">${isUp ? '上盤' : '下盤'}＝${esc(predTeam)}</b>
+        <div class="sub" style="margin-top:4px">預測：<b style="color:${isUp ? '#3fb950' : '#f85149'}">${isUp ? 'K3上盤' : '下盤'}＝${esc(predTeam)}</b>
         　回測基數 ${r.n_back || 0} 場・命中率 ${r.hit_back == null ? '—' : (r.hit_back * 100).toFixed(1) + '%'}
         　<span style="color:var(--dim)">記錄於 ${new Date(r.ts * 1000).toLocaleString('zh-HK', {hour12: false})}</span></div></div>`;
     }

@@ -51,6 +51,10 @@ try:
     import fw8x
 except ImportError:
     fw8x = None
+try:
+    import w88_engine
+except ImportError:
+    w88_engine = None
 from concurrent.futures import ThreadPoolExecutor
 
 # 精選／我的選擇等列表逐場運算（screen＋check）係 CPU 密集——
@@ -6429,6 +6433,23 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback; traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/88w':
+            with open(os.path.join(STATIC_DIR, 'w88.html'), 'rb') as f:
+                self._send(200, f.read(), 'text/html; charset=utf-8')
+            return
+        if u.path == '/api/w88/full':
+            # 88W：三市場逐聯賽規則庫＋K3雙數和波預測＋統計
+            if not w88_engine:
+                self._send(500, json.dumps({'error': 'w88_engine 模組未載入'},
+                                           ensure_ascii=False))
+                return
+            try:
+                self._send(200, json.dumps(w88_engine.full(db()),
+                                           ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         if u.path == '/api/fw8s/history':
             # 精選8s：過往入選紀錄（自動結算）
             try:
@@ -7793,6 +7814,10 @@ if __name__ == '__main__':
     if fw8x:
         fw8x.start_loop()
         print('[boot] 8X 背景循環已啟動（每 20 分鐘 scan+settle）', flush=True)
+    # 88W／K3 雙數和波循環（2026-10-19）：純 SQL 掃描，資源用量極低
+    if w88_engine:
+        w88_engine.start_loop()
+        print('[boot] 88W 背景循環已啟動（每 20 分鐘 K3 scan+settle）', flush=True)
     # 2026-10-12 雲端爬蟲節點：ENABLE_CLOUD_CRAWL=1 時喺背景線程探測 titan007
     # 各主機並爬佢通到嘅市場（寫 /data/football.db；本機 IP 被硬封鎖，雲端
     # 出口 IP 直達唔使代理）。本機（冇呢個 env）永遠唔會行呢段。

@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>88W</title>
+<style>
+:root{
+  --bg:#0d1117; --bg2:#161d27; --card:#1a2230; --line:#2b3648;
+  --tx:#e8e2d5; --dim:#8b94a3; --up:#3fb96c; --down:#e05c5c;
+  --gold:#d4af37; --gold2:#f5d76e; --accent:#5b8def; --draw:#b98cff;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--tx);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans TC",sans-serif;
+  font-size:15px; line-height:1.55; padding:52px 0 20px;
+}
+.gold-banner{
+  position:fixed; left:0; right:0; top:0; height:52px; z-index:50;
+  background:linear-gradient(180deg,#e6c34a,#b8932a);
+  color:#3a2c05; display:flex; align-items:center; justify-content:center;
+  font-weight:900; letter-spacing:.3em; font-size:34px; line-height:52px;
+  border-bottom:2px solid #8a6d1a;
+}
+#topbar{
+  position:sticky; top:52px; z-index:40;
+  background:var(--bg2); border-bottom:1px solid var(--line);
+  display:flex; align-items:center; gap:8px; padding:6px 10px; flex-wrap:wrap;
+}
+#status{font-size:13px;color:var(--dim);flex:1;min-width:120px}
+.btn{
+  background:var(--card); color:var(--tx); border:1px solid var(--line);
+  border-radius:8px; padding:6px 12px; font-size:14px; cursor:pointer;
+}
+.btn:hover{border-color:var(--accent)}
+#main{max-width:860px;margin:0 auto;padding:10px}
+.sumbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin:8px 0}
+.si{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;text-align:center}
+.si .t{color:var(--dim);font-size:11px}
+.si .v{font-size:19px;font-weight:900;margin-top:2px}
+.si .v.up{color:var(--up)} .si .v.down{color:var(--down)}
+.si .v.gold{color:var(--gold2)} .si .v.draw{color:var(--draw)}
+h2.sec{font-size:16px;color:var(--gold2);margin:16px 0 6px}
+.mrow{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:6px 0}
+.mrow.hit{border-color:#2c5c3c}
+.mrow .m-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ko{font-size:12px;color:var(--dim)}
+.lg{font-size:12px;color:var(--gold2)}
+.tm{flex:1;min-width:150px;font-weight:600}
+.tag{font-size:12px;font-weight:800;padding:2px 10px;border-radius:12px;border:1px solid var(--line);color:var(--dim)}
+.tag.k3d{color:var(--draw);border-color:var(--draw)}
+.tag.w{color:var(--up);border-color:var(--up)}
+.tag.l{color:var(--down);border-color:var(--down)}
+.sub{font-size:12px;color:var(--dim);margin-top:4px}
+table.lib{width:100%;border-collapse:collapse;font-size:13px}
+table.lib th,table.lib td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+table.lib th{color:var(--gold2);position:sticky;top:104px;background:var(--bg2)}
+.rlab{font-weight:800;white-space:nowrap}
+.rlab.up{color:var(--up)} .rlab.down{color:var(--down)} .rlab.draw{color:var(--draw)}
+.rmeta{font-size:12px;color:var(--dim)}
+.note{color:var(--dim);font-size:12px;margin:6px 0}
+.err{color:#ffb0b0;background:#4a1d1d;border:1px solid #7a2d2d;border-radius:8px;padding:6px 10px;font-size:13px;margin:6px 0}
+</style>
+</head>
+<body>
+<div class="gold-banner">88W</div>
+<div id="topbar">
+  <span id="status">載入緊…</span>
+  <button class="btn" onclick="location.href='/'">← 主頁</button>
+  <button class="btn" onclick="load()">重新整理</button>
+</div>
+<div id="main">
+  <div class="sumbar" id="sum"></div>
+  <div class="note">三市場逐聯賽規則：<b style="color:var(--up)">K3上盤</b>／<b style="color:var(--down)">下盤公式</b>（8X 聯賽公式）＋ <b style="color:var(--draw)">K3開發雙數和波</b>（2026-10-19 逐聯賽挖掘，時段分割驗證）。和波一定係雙數——雙數中和率越高越好。</div>
+  <h2 class="sec">🎯 K3開發雙數和波 — 預測紀錄</h2>
+  <div id="k3body"></div>
+  <h2 class="sec">📚 逐聯賽規則庫（<span id="libn"></span> 個聯賽/杯賽）</h2>
+  <div id="lib"></div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function fmtLine(hc, gv){
+  if (hc == null) return '—';
+  if (gv == null || gv === 'none') return '平手';
+  const n = {0.25:'平/半',0.5:'半球',0.75:'半/一',1:'一球',1.25:'一/球半',1.5:'球半',1.75:'球半/兩',2:'兩球',2.25:'兩/兩半',2.5:'兩半',2.75:'兩半/三',3:'三球'}[hc] || hc;
+  return (gv === 'home' ? '主讓' : '客讓') + n;
+}
+const COND_TXT = {hc0:'平手盤',hc025:'讓≤0.25',hc05:'讓≤0.5',hc_shallow:'淺盤',
+  gv_home:'主讓',gv_away:'客讓',ou_le20:'大小線≤2.0',ou_le25:'大小線≤2.5',
+  ou_gt30:'大小線>3.0',ou_drop:'大小線降盤',ou_rise:'大小線升盤',
+  uw_lo:'上盤低水',uw_hi:'上盤高水'};
+const condTxt = c => COND_TXT[c] || c;
+async function load(){
+  $('#status').textContent = '載入緊…';
+  try {
+    const r = await fetch('/api/w88/full');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+    const ks = d.k3.stats;
+    const dec = ks.w + ks.l, hr = dec ? (ks.w / dec * 100).toFixed(1) + '%' : '—';
+    const lib = d.library;
+    $('#sum').innerHTML =
+      `<div class="si"><div class="t">規則庫聯賽</div><div class="v gold">${lib.length}</div></div>` +
+      `<div class="si"><div class="t">K3上盤規則</div><div class="v up">${lib.filter(x=>x.up).length}</div></div>` +
+      `<div class="si"><div class="t">下盤公式</div><div class="v down">${lib.filter(x=>x.down).length}</div></div>` +
+      `<div class="si"><div class="t">K3雙數和波</div><div class="v draw">${lib.filter(x=>x.draw).length}</div></div>` +
+      `<div class="si"><div class="t">K3 實戰（和波）</div><div class="v ${dec && ks.w/dec>=0.3?'up':'gold'}">${hr}</div></div>` +
+      `<div class="si"><div class="t">待定</div><div class="v gold">${ks.pending}</div></div>`;
+    let h = '';
+    if (!d.k3.rows.length) h = '<div class="note">暫無記錄。背景每 20 分鐘自動掃描未來 7 日場次。</div>';
+    for (const r of d.k3.rows){
+      const badge = r.result === 'W' ? '<span class="tag w">✔ 和</span>'
+        : r.result === 'L' ? '<span class="tag l">✘ 唔和</span>'
+        : '<span class="tag" style="color:var(--gold2);border-color:#6b5510">⏳ 待定</span>';
+      const evenTag = r.result != null
+        ? (r.even ? '<span class="tag k3d">雙數✔</span>' : '<span class="tag">單數</span>') : '';
+      h += `<div class="mrow ${r.result==='W'?'hit':''}"><div class="m-top">
+        <span class="ko">${esc((r.kickoff||'').slice(5,16))}</span>
+        <span class="lg">${esc(r.league)}</span>
+        <b class="tm">${esc(r.home)} <span style="color:var(--dim)">vs</span> ${esc(r.away)}</b>
+        <span class="tag k3d">${esc(r.label)}</span>${badge}${evenTag}</div>
+        <div class="sub">條件：${r.conds.map(condTxt).join('＋')}　盤口：${fmtLine(r.hc, r.giver)}　大小線：${r.ou_line ?? '—'}
+        ${r.score ? `　賽果：<b>${esc(r.score)}</b>` : ''}</div></div>`;
+    }
+    $('#k3body').innerHTML = h;
+    $('#libn').textContent = lib.length;
+    let t = `<table class="lib"><tr><th>聯賽/杯賽</th><th>規則（三市場）</th></tr>`;
+    for (const L of lib){
+      const cells = [];
+      if (L.up) cells.push(`<div><span class="rlab up">K3上盤</span> <span class="rmeta">命中率 ${(L.up.hit*100).toFixed(1)}%・n=${L.up.n}｜${esc((L.up.preds||[]).join('＋'))}</span></div>`);
+      if (L.down) cells.push(`<div><span class="rlab down">下盤公式</span> <span class="rmeta">命中率 ${(L.down.hit*100).toFixed(1)}%・n=${L.down.n}｜${esc((L.down.preds||[]).join('＋'))}</span></div>`);
+      if (L.draw) cells.push(`<div><span class="rlab draw">K3開發雙數和波</span> <span class="rmeta">${L.draw.conds.map(condTxt).join('＋')}｜訓練 ${(L.draw.train_draw*100).toFixed(1)}%(n=${L.draw.train_n})・驗證 ${(L.draw.test_draw*100).toFixed(1)}%(n=${L.draw.test_n})｜雙數中和率 ${L.draw.draw_in_even != null ? (L.draw.draw_in_even*100).toFixed(1)+'%' : '—'}</span></div>`);
+      t += `<tr><td style="white-space:nowrap">${esc(L.league)}</td><td>${cells.join('')}</td></tr>`;
+    }
+    $('#lib').innerHTML = t + '</table>';
+    $('#status').textContent = '最後更新 ' + new Date().toLocaleTimeString('zh-HK', {hour12:false});
+  } catch (e) {
+    $('#status').textContent = '載入失敗';
+    $('#k3body').innerHTML = '<div class="err">載入失敗：' + esc(e.message || e) + '</div>';
+  }
+}
+load();
+</script>
+</body>
+</html>

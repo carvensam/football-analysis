@@ -1,0 +1,988 @@
+{
+ "中北美及加勒比聯賽冠軍盃": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.237,
+  "base_even": 0.483,
+  "hist_n": 240,
+  "conds": [
+   "hc_shallow",
+   "ou_le25"
+  ],
+  "train_n": 45,
+  "train_draw": 0.356,
+  "test_n": 25,
+  "test_draw": 0.4,
+  "all_n": 70,
+  "all_draw": 0.371,
+  "even_rate": 0.486,
+  "draw_in_even": 0.765
+ },
+ "丹麥超級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.273,
+  "base_even": 0.546,
+  "hist_n": 724,
+  "conds": [
+   "hc05",
+   "gv_home",
+   "uw_hi"
+  ],
+  "train_n": 109,
+  "train_draw": 0.376,
+  "test_n": 36,
+  "test_draw": 0.361,
+  "all_n": 145,
+  "all_draw": 0.372,
+  "even_rate": 0.566,
+  "draw_in_even": 0.659
+ },
+ "俄羅斯超級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.261,
+  "base_even": 0.516,
+  "hist_n": 1206,
+  "conds": [
+   "ou_le20",
+   "ou_drop"
+  ],
+  "train_n": 67,
+  "train_draw": 0.328,
+  "test_n": 23,
+  "test_draw": 0.435,
+  "all_n": 90,
+  "all_draw": 0.356,
+  "even_rate": 0.522,
+  "draw_in_even": 0.681
+ },
+ "南美俱樂部盃": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.267,
+  "base_even": 0.526,
+  "hist_n": 938,
+  "conds": [
+   "hc0",
+   "ou_le25"
+  ],
+  "train_n": 62,
+  "train_draw": 0.323,
+  "test_n": 29,
+  "test_draw": 0.414,
+  "all_n": 91,
+  "all_draw": 0.352,
+  "even_rate": 0.495,
+  "draw_in_even": 0.711
+ },
+ "南美解放者杯": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.261,
+  "base_even": 0.511,
+  "hist_n": 926,
+  "conds": [
+   "gv_home",
+   "ou_le20",
+   "uw_hi"
+  ],
+  "train_n": 62,
+  "train_draw": 0.387,
+  "test_n": 52,
+  "test_draw": 0.423,
+  "all_n": 114,
+  "all_draw": 0.404,
+  "even_rate": 0.57,
+  "draw_in_even": 0.708
+ },
+ "南韓K2聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.288,
+  "base_even": 0.485,
+  "hist_n": 1373,
+  "conds": [
+   "hc025",
+   "gv_home"
+  ],
+  "train_n": 185,
+  "train_draw": 0.324,
+  "test_n": 92,
+  "test_draw": 0.326,
+  "all_n": 277,
+  "all_draw": 0.325,
+  "even_rate": 0.477,
+  "draw_in_even": 0.682
+ },
+ "南韓K聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.286,
+  "base_even": 0.488,
+  "hist_n": 1182,
+  "conds": [
+   "hc025",
+   "gv_home",
+   "ou_le25"
+  ],
+  "train_n": 159,
+  "train_draw": 0.327,
+  "test_n": 77,
+  "test_draw": 0.364,
+  "all_n": 236,
+  "all_draw": 0.339,
+  "even_rate": 0.538,
+  "draw_in_even": 0.63
+ },
+ "墨西哥甲組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.277,
+  "base_even": 0.496,
+  "hist_n": 1065,
+  "conds": [
+   "hc025",
+   "ou_rise",
+   "uw_hi"
+  ],
+  "train_n": 47,
+  "train_draw": 0.34,
+  "test_n": 12,
+  "test_draw": 0.333,
+  "all_n": 59,
+  "all_draw": 0.339,
+  "even_rate": 0.508,
+  "draw_in_even": 0.667
+ },
+ "墨西哥超級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.252,
+  "base_even": 0.488,
+  "hist_n": 1237,
+  "conds": [
+   "hc025",
+   "gv_away"
+  ],
+  "train_n": 71,
+  "train_draw": 0.324,
+  "test_n": 69,
+  "test_draw": 0.333,
+  "all_n": 140,
+  "all_draw": 0.329,
+  "even_rate": 0.6,
+  "draw_in_even": 0.548
+ },
+ "奧地利甲組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.259,
+  "base_even": 0.502,
+  "hist_n": 713,
+  "conds": [
+   "hc05",
+   "ou_drop",
+   "uw_hi"
+  ],
+  "train_n": 58,
+  "train_draw": 0.397,
+  "test_n": 24,
+  "test_draw": 0.375,
+  "all_n": 82,
+  "all_draw": 0.39,
+  "even_rate": 0.561,
+  "draw_in_even": 0.696
+ },
+ "巴西乙級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.289,
+  "base_even": 0.484,
+  "hist_n": 2611,
+  "conds": [
+   "hc0",
+   "ou_drop"
+  ],
+  "train_n": 96,
+  "train_draw": 0.385,
+  "test_n": 26,
+  "test_draw": 0.423,
+  "all_n": 122,
+  "all_draw": 0.393,
+  "even_rate": 0.549,
+  "draw_in_even": 0.716
+ },
+ "巴西甲組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.274,
+  "base_even": 0.488,
+  "hist_n": 2204,
+  "conds": [
+   "ou_drop",
+   "uw_hi"
+  ],
+  "train_n": 216,
+  "train_draw": 0.329,
+  "test_n": 84,
+  "test_draw": 0.417,
+  "all_n": 300,
+  "all_draw": 0.353,
+  "even_rate": 0.543,
+  "draw_in_even": 0.65
+ },
+ "巴西盃": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.27,
+  "base_even": 0.515,
+  "hist_n": 721,
+  "conds": [
+   "gv_away",
+   "ou_le20",
+   "uw_hi"
+  ],
+  "train_n": 30,
+  "train_draw": 0.467,
+  "test_n": 24,
+  "test_draw": 0.5,
+  "all_n": 54,
+  "all_draw": 0.481,
+  "even_rate": 0.648,
+  "draw_in_even": 0.743
+ },
+ "巴西聖保羅州錦標賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.277,
+  "base_even": 0.495,
+  "hist_n": 705,
+  "conds": [
+   "gv_away",
+   "uw_hi"
+  ],
+  "train_n": 84,
+  "train_draw": 0.321,
+  "test_n": 29,
+  "test_draw": 0.345,
+  "all_n": 113,
+  "all_draw": 0.327,
+  "even_rate": 0.531,
+  "draw_in_even": 0.617
+ },
+ "德國甲組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.248,
+  "base_even": 0.537,
+  "hist_n": 1583,
+  "conds": [
+   "hc05",
+   "gv_home",
+   "ou_le25"
+  ],
+  "train_n": 125,
+  "train_draw": 0.32,
+  "test_n": 53,
+  "test_draw": 0.321,
+  "all_n": 178,
+  "all_draw": 0.32,
+  "even_rate": 0.584,
+  "draw_in_even": 0.548
+ },
+ "德國足協盃": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.209,
+  "base_even": 0.547,
+  "hist_n": 340,
+  "conds": [
+   "hc025"
+  ],
+  "train_n": 29,
+  "train_draw": 0.379,
+  "test_n": 11,
+  "test_draw": 0.455,
+  "all_n": 40,
+  "all_draw": 0.4,
+  "even_rate": 0.575,
+  "draw_in_even": 0.696
+ },
+ "意大利甲組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.269,
+  "base_even": 0.503,
+  "hist_n": 1964,
+  "conds": [
+   "ou_le20",
+   "ou_drop"
+  ],
+  "train_n": 74,
+  "train_draw": 0.324,
+  "test_n": 68,
+  "test_draw": 0.382,
+  "all_n": 142,
+  "all_draw": 0.352,
+  "even_rate": 0.479,
+  "draw_in_even": 0.735
+ },
+ "挪威超級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.222,
+  "base_even": 0.49,
+  "hist_n": 1380,
+  "conds": [
+   "gv_home",
+   "ou_le25"
+  ],
+  "train_n": 168,
+  "train_draw": 0.321,
+  "test_n": 43,
+  "test_draw": 0.279,
+  "all_n": 211,
+  "all_draw": 0.313,
+  "even_rate": 0.526,
+  "draw_in_even": 0.595
+ },
+ "日本職業聯賽J1": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.269,
+  "base_even": 0.493,
+  "hist_n": 1471,
+  "conds": [
+   "hc05",
+   "gv_away",
+   "ou_drop"
+  ],
+  "train_n": 62,
+  "train_draw": 0.323,
+  "test_n": 23,
+  "test_draw": 0.478,
+  "all_n": 85,
+  "all_draw": 0.365,
+  "even_rate": 0.576,
+  "draw_in_even": 0.633
+ },
+ "日本職業聯賽J2": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.279,
+  "base_even": 0.486,
+  "hist_n": 2267,
+  "conds": [
+   "hc05",
+   "ou_le20",
+   "uw_hi"
+  ],
+  "train_n": 306,
+  "train_draw": 0.346,
+  "test_n": 51,
+  "test_draw": 0.412,
+  "all_n": 357,
+  "all_draw": 0.356,
+  "even_rate": 0.51,
+  "draw_in_even": 0.698
+ },
+ "日本職業聯賽盃": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.261,
+  "base_even": 0.475,
+  "hist_n": 495,
+  "conds": [
+   "gv_away",
+   "ou_drop"
+  ],
+  "train_n": 28,
+  "train_draw": 0.321,
+  "test_n": 17,
+  "test_draw": 0.412,
+  "all_n": 45,
+  "all_draw": 0.356,
+  "even_rate": 0.556,
+  "draw_in_even": 0.64
+ },
+ "智利盃": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.265,
+  "base_even": 0.514,
+  "hist_n": 510,
+  "conds": [
+   "hc0"
+  ],
+  "train_n": 31,
+  "train_draw": 0.355,
+  "test_n": 36,
+  "test_draw": 0.333,
+  "all_n": 67,
+  "all_draw": 0.343,
+  "even_rate": 0.567,
+  "draw_in_even": 0.605
+ },
+ "歐洲國家聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.255,
+  "base_even": 0.5,
+  "hist_n": 764,
+  "conds": [
+   "hc05",
+   "ou_le20"
+  ],
+  "train_n": 134,
+  "train_draw": 0.336,
+  "test_n": 20,
+  "test_draw": 0.45,
+  "all_n": 154,
+  "all_draw": 0.351,
+  "even_rate": 0.545,
+  "draw_in_even": 0.643
+ },
+ "歐足聯協會聯賽( 盃賽)": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.227,
+  "base_even": 0.479,
+  "hist_n": 2338,
+  "conds": [
+   "hc025",
+   "ou_rise"
+  ],
+  "train_n": 42,
+  "train_draw": 0.333,
+  "test_n": 27,
+  "test_draw": 0.296,
+  "all_n": 69,
+  "all_draw": 0.319,
+  "even_rate": 0.464,
+  "draw_in_even": 0.688
+ },
+ "歐霸盃": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.221,
+  "base_even": 0.474,
+  "hist_n": 1181,
+  "conds": [
+   "ou_le20"
+  ],
+  "train_n": 33,
+  "train_draw": 0.364,
+  "test_n": 15,
+  "test_draw": 0.4,
+  "all_n": 48,
+  "all_draw": 0.375,
+  "even_rate": 0.542,
+  "draw_in_even": 0.692
+ },
+ "比利時甲組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.247,
+  "base_even": 0.515,
+  "hist_n": 1424,
+  "conds": [
+   "hc025",
+   "gv_home",
+   "ou_drop"
+  ],
+  "train_n": 43,
+  "train_draw": 0.349,
+  "test_n": 22,
+  "test_draw": 0.545,
+  "all_n": 65,
+  "all_draw": 0.415,
+  "even_rate": 0.6,
+  "draw_in_even": 0.692
+ },
+ "法國乙組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.278,
+  "base_even": 0.5,
+  "hist_n": 1831,
+  "conds": [
+   "hc0",
+   "ou_drop"
+  ],
+  "train_n": 81,
+  "train_draw": 0.333,
+  "test_n": 29,
+  "test_draw": 0.379,
+  "all_n": 110,
+  "all_draw": 0.345,
+  "even_rate": 0.627,
+  "draw_in_even": 0.551
+ },
+ "法國甲組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.246,
+  "base_even": 0.515,
+  "hist_n": 1737,
+  "conds": [
+   "hc025",
+   "gv_away",
+   "ou_drop"
+  ],
+  "train_n": 43,
+  "train_draw": 0.349,
+  "test_n": 13,
+  "test_draw": 0.462,
+  "all_n": 56,
+  "all_draw": 0.375,
+  "even_rate": 0.625,
+  "draw_in_even": 0.6
+ },
+ "法國盃": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.252,
+  "base_even": 0.53,
+  "hist_n": 472,
+  "conds": [
+   "hc05",
+   "ou_le25",
+   "uw_hi"
+  ],
+  "train_n": 75,
+  "train_draw": 0.373,
+  "test_n": 24,
+  "test_draw": 0.458,
+  "all_n": 99,
+  "all_draw": 0.394,
+  "even_rate": 0.616,
+  "draw_in_even": 0.639
+ },
+ "澳大利亞新南威爾士州超級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.203,
+  "base_even": 0.491,
+  "hist_n": 941,
+  "conds": [
+   "hc025",
+   "ou_gt30",
+   "uw_hi"
+  ],
+  "train_n": 27,
+  "train_draw": 0.37,
+  "test_n": 11,
+  "test_draw": 0.364,
+  "all_n": 38,
+  "all_draw": 0.368,
+  "even_rate": 0.474,
+  "draw_in_even": 0.778
+ },
+ "烏拉圭甲組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.288,
+  "base_even": 0.51,
+  "hist_n": 1979,
+  "conds": [
+   "hc025",
+   "gv_away",
+   "ou_le20"
+  ],
+  "train_n": 28,
+  "train_draw": 0.5,
+  "test_n": 33,
+  "test_draw": 0.424,
+  "all_n": 61,
+  "all_draw": 0.459,
+  "even_rate": 0.508,
+  "draw_in_even": 0.903
+ },
+ "瑞典超級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.226,
+  "base_even": 0.488,
+  "hist_n": 1388,
+  "conds": [
+   "ou_le20"
+  ],
+  "train_n": 27,
+  "train_draw": 0.407,
+  "test_n": 9,
+  "test_draw": 0.333,
+  "all_n": 36,
+  "all_draw": 0.389,
+  "even_rate": 0.611,
+  "draw_in_even": 0.636
+ },
+ "瑞士超級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.267,
+  "base_even": 0.519,
+  "hist_n": 1014,
+  "conds": [
+   "gv_home",
+   "ou_drop",
+   "uw_hi"
+  ],
+  "train_n": 83,
+  "train_draw": 0.361,
+  "test_n": 55,
+  "test_draw": 0.273,
+  "all_n": 138,
+  "all_draw": 0.326,
+  "even_rate": 0.594,
+  "draw_in_even": 0.549
+ },
+ "美國冠軍聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.247,
+  "base_even": 0.483,
+  "hist_n": 2497,
+  "conds": [
+   "hc0",
+   "ou_drop"
+  ],
+  "train_n": 45,
+  "train_draw": 0.4,
+  "test_n": 22,
+  "test_draw": 0.318,
+  "all_n": 67,
+  "all_draw": 0.373,
+  "even_rate": 0.522,
+  "draw_in_even": 0.714
+ },
+ "美國職業大聯盟聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.263,
+  "base_even": 0.493,
+  "hist_n": 2908,
+  "conds": [
+   "hc0",
+   "ou_drop"
+  ],
+  "train_n": 70,
+  "train_draw": 0.357,
+  "test_n": 19,
+  "test_draw": 0.368,
+  "all_n": 89,
+  "all_draw": 0.36,
+  "even_rate": 0.517,
+  "draw_in_even": 0.696
+ },
+ "芬蘭盃": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.187,
+  "base_even": 0.556,
+  "hist_n": 401,
+  "conds": [
+   "ou_le25"
+  ],
+  "train_n": 49,
+  "train_draw": 0.388,
+  "test_n": 10,
+  "test_draw": 0.3,
+  "all_n": 59,
+  "all_draw": 0.373,
+  "even_rate": 0.542,
+  "draw_in_even": 0.688
+ },
+ "芬蘭超級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.235,
+  "base_even": 0.474,
+  "hist_n": 1014,
+  "conds": [
+   "hc025",
+   "ou_rise"
+  ],
+  "train_n": 30,
+  "train_draw": 0.333,
+  "test_n": 18,
+  "test_draw": 0.389,
+  "all_n": 48,
+  "all_draw": 0.354,
+  "even_rate": 0.562,
+  "draw_in_even": 0.63
+ },
+ "英格蘭乙組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.277,
+  "base_even": 0.501,
+  "hist_n": 2585,
+  "conds": [
+   "ou_le20",
+   "ou_drop"
+  ],
+  "train_n": 257,
+  "train_draw": 0.331,
+  "test_n": 40,
+  "test_draw": 0.45,
+  "all_n": 297,
+  "all_draw": 0.347,
+  "even_rate": 0.566,
+  "draw_in_even": 0.613
+ },
+ "英格蘭冠軍聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.262,
+  "base_even": 0.495,
+  "hist_n": 2895,
+  "conds": [
+   "hc025",
+   "ou_le20"
+  ],
+  "train_n": 99,
+  "train_draw": 0.343,
+  "test_n": 51,
+  "test_draw": 0.373,
+  "all_n": 150,
+  "all_draw": 0.353,
+  "even_rate": 0.527,
+  "draw_in_even": 0.671
+ },
+ "英格蘭甲組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.252,
+  "base_even": 0.483,
+  "hist_n": 2695,
+  "conds": [
+   "hc025",
+   "ou_le20"
+  ],
+  "train_n": 40,
+  "train_draw": 0.35,
+  "test_n": 32,
+  "test_draw": 0.281,
+  "all_n": 72,
+  "all_draw": 0.319,
+  "even_rate": 0.472,
+  "draw_in_even": 0.676
+ },
+ "英格蘭超級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.241,
+  "base_even": 0.503,
+  "hist_n": 1968,
+  "conds": [
+   "hc05",
+   "gv_home",
+   "ou_drop"
+  ],
+  "train_n": 69,
+  "train_draw": 0.377,
+  "test_n": 45,
+  "test_draw": 0.289,
+  "all_n": 114,
+  "all_draw": 0.342,
+  "even_rate": 0.57,
+  "draw_in_even": 0.6
+ },
+ "荷蘭乙組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.222,
+  "base_even": 0.482,
+  "hist_n": 2028,
+  "conds": [
+   "hc05",
+   "gv_home",
+   "ou_le25"
+  ],
+  "train_n": 76,
+  "train_draw": 0.329,
+  "test_n": 9,
+  "test_draw": 0.333,
+  "all_n": 85,
+  "all_draw": 0.329,
+  "even_rate": 0.482,
+  "draw_in_even": 0.683
+ },
+ "荷蘭甲組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.243,
+  "base_even": 0.512,
+  "hist_n": 1610,
+  "conds": [
+   "hc05",
+   "gv_away",
+   "ou_drop"
+  ],
+  "train_n": 50,
+  "train_draw": 0.32,
+  "test_n": 23,
+  "test_draw": 0.348,
+  "all_n": 73,
+  "all_draw": 0.329,
+  "even_rate": 0.493,
+  "draw_in_even": 0.667
+ },
+ "葡萄牙超級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.248,
+  "base_even": 0.482,
+  "hist_n": 1599,
+  "conds": [
+   "hc05",
+   "ou_rise",
+   "uw_hi"
+  ],
+  "train_n": 53,
+  "train_draw": 0.321,
+  "test_n": 25,
+  "test_draw": 0.4,
+  "all_n": 78,
+  "all_draw": 0.346,
+  "even_rate": 0.513,
+  "draw_in_even": 0.675
+ },
+ "蘇格蘭超級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.24,
+  "base_even": 0.505,
+  "hist_n": 1044,
+  "conds": [
+   "hc05",
+   "ou_drop",
+   "uw_hi"
+  ],
+  "train_n": 78,
+  "train_draw": 0.321,
+  "test_n": 23,
+  "test_draw": 0.391,
+  "all_n": 101,
+  "all_draw": 0.337,
+  "even_rate": 0.475,
+  "draw_in_even": 0.708
+ },
+ "西班牙乙組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.289,
+  "base_even": 0.504,
+  "hist_n": 2421,
+  "conds": [
+   "hc025",
+   "gv_home",
+   "ou_le25"
+  ],
+  "train_n": 450,
+  "train_draw": 0.336,
+  "test_n": 180,
+  "test_draw": 0.311,
+  "all_n": 630,
+  "all_draw": 0.329,
+  "even_rate": 0.513,
+  "draw_in_even": 0.641
+ },
+ "西班牙甲組聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.262,
+  "base_even": 0.482,
+  "hist_n": 1985,
+  "conds": [
+   "ou_le25",
+   "ou_rise"
+  ],
+  "train_n": 104,
+  "train_draw": 0.346,
+  "test_n": 69,
+  "test_draw": 0.362,
+  "all_n": 173,
+  "all_draw": 0.353,
+  "even_rate": 0.503,
+  "draw_in_even": 0.701
+ },
+ "阿根廷甲級聯賽": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.316,
+  "base_even": 0.517,
+  "hist_n": 2306,
+  "conds": [
+   "hc025",
+   "gv_away",
+   "uw_hi"
+  ],
+  "train_n": 134,
+  "train_draw": 0.358,
+  "test_n": 84,
+  "test_draw": 0.381,
+  "all_n": 218,
+  "all_draw": 0.367,
+  "even_rate": 0.578,
+  "draw_in_even": 0.635
+ },
+ "阿根廷盃": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.27,
+  "base_even": 0.51,
+  "hist_n": 392,
+  "conds": [
+   "hc05",
+   "gv_home",
+   "uw_hi"
+  ],
+  "train_n": 51,
+  "train_draw": 0.333,
+  "test_n": 19,
+  "test_draw": 0.579,
+  "all_n": 70,
+  "all_draw": 0.4,
+  "even_rate": 0.6,
+  "draw_in_even": 0.667
+ },
+ "非洲國家盃": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.275,
+  "base_even": 0.507,
+  "hist_n": 1092,
+  "conds": [
+   "hc025"
+  ],
+  "train_n": 194,
+  "train_draw": 0.356,
+  "test_n": 17,
+  "test_draw": 0.471,
+  "all_n": 211,
+  "all_draw": 0.365,
+  "even_rate": 0.507,
+  "draw_in_even": 0.72
+ },
+ "韓國杯": {
+  "market": "draw",
+  "label": "K3開發雙數和波",
+  "base_draw": 0.301,
+  "base_even": 0.514,
+  "hist_n": 286,
+  "conds": [
+   "gv_home",
+   "uw_hi"
+  ],
+  "train_n": 73,
+  "train_draw": 0.397,
+  "test_n": 34,
+  "test_draw": 0.294,
+  "all_n": 107,
+  "all_draw": 0.364,
+  "even_rate": 0.598,
+  "draw_in_even": 0.609
+ }
+}

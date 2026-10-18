@@ -38,13 +38,14 @@ def settle_table(t):
     if not C or 'settled' not in C or 'match_id' not in C:
         return None
     pend = conn.execute(
-        'SELECT x.id, x.match_id FROM %s x JOIN matches m ON m.id=x.match_id '
-        'WHERE x.settled=0 AND m.home_score IS NOT NULL' % t).fetchall()
+        'SELECT x.id, x.match_id, x.direction FROM %s x JOIN matches m '
+        'ON m.id=x.match_id WHERE x.settled=0 AND m.home_score IS NOT NULL'
+        % t).fetchall()
     if t != 'feat_hourly':
         # 其他表結算語義各異（唔好用主客 W/L 亂寫）——淨回報數量，交返 app 循環
         return len(pend), 0
     n = 0
-    for rid, mid in pend:
+    for rid, mid, direction in pend:
         r = conn.execute(
             "SELECT oc.handicap, oc.giver, m.home_score, m.away_score "
             "FROM matches m LEFT JOIN odds_asian oc ON oc.match_id=m.id "
@@ -53,13 +54,20 @@ def settle_table(t):
         if not r or r[0] is None or r[2] is None:
             continue
         hc, gv, hs, aws = r
+        # 2026-10-19 修正：舊版 d=hs+hc-aws 符號倒轉兼冇睇入選方向；
+        # 口徑同 app.py pick_result＋以入選方向計 W/L/P
         if gv == 'home':
-            d = hs + hc - aws
+            margin = hs - aws - hc
         elif gv == 'away':
-            d = aws + hc - hs
+            margin = aws - hs - hc
+        else:
+            margin = hs - aws
+        if abs(margin) < 1e-9:
+            res = 'P'
+        elif direction in ('up', 'down'):
+            res = 'W' if (margin > 0) == (direction == 'up') else 'L'
         else:
             continue
-        res = 'W' if d > 0 else ('L' if d < 0 else 'P')
         conn.execute('UPDATE feat_hourly SET settled=1, result=? WHERE id=?',
                      (res, rid))
         n += 1
