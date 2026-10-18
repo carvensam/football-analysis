@@ -3018,7 +3018,11 @@ async function loadX8(){
         <span style="color:var(--dim)">走 ${B.p}</span>
         <span>命中率 <b style="color:${bHr != null && bHr >= 0.5 ? '#3fb950' : '#f85149'};font-size:1.2em">${bHr == null ? '—' : (bHr * 100).toFixed(1) + '%'}</b>${bDec ? `（${B.w}/${bDec}）` : ''}</span>
         <span style="color:var(--dim);font-size:12px">更新於 ${esc(B.updated_at || '')}</span></div>
-        ${(B.by_league || []).length ? `<div style="margin-top:6px">${B.by_league.map(L => {
+        ${(B.by_league || []).length ? `<div style="margin-top:6px">${B.by_league.slice().sort((a, b) => {
+          const ra = (a.w + a.l) ? a.w / (a.w + a.l) : -1;
+          const rb = (b.w + b.l) ? b.w / (b.w + b.l) : -1;
+          return rb - ra;
+        }).map(L => {
           const dec = L.w + L.l, r2 = dec ? L.w / dec : null;
           return `<div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:13px">
             <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(L.league)}</span>
