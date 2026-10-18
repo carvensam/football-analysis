@@ -1,0 +1,895 @@
+{
+ "中北美及加勒比聯賽冠軍盃": {
+  "dir": "up",
+  "conds": [
+   "sline_hi",
+   "aa_wr_hi",
+   "avg_hi"
+  ],
+  "train_n": 8,
+  "train_hit": 0.75,
+  "test_n": 9,
+  "test_hit": 0.778,
+  "all_n": 17,
+  "all_hit": 0.765,
+  "score": 0.75,
+  "label": "新精選上盤"
+ },
+ "丹麥超級聯賽": {
+  "dir": "up",
+  "conds": [
+   "ou_hi",
+   "un_lo",
+   "ah_dnmove",
+   "avg_hi"
+  ],
+  "train_n": 6,
+  "train_hit": 0.833,
+  "test_n": 10,
+  "test_hit": 0.9,
+  "all_n": 16,
+  "all_hit": 0.875,
+  "score": 0.8333333333333334,
+  "label": "新精選上盤"
+ },
+ "俄羅斯超級聯賽": {
+  "dir": "down",
+  "conds": [
+   "ou_hi",
+   "ah_upmove",
+   "ou_rise",
+   "hh_wr_hi",
+   "avg_hi"
+  ],
+  "train_n": 22,
+  "train_hit": 0.727,
+  "test_n": 6,
+  "test_hit": 0.833,
+  "all_n": 28,
+  "all_hit": 0.75,
+  "score": 0.7272727272727273,
+  "label": "新精選下盤"
+ },
+ "南美俱樂部盃": {
+  "dir": "down",
+  "conds": [
+   "sline_hi",
+   "un_lo",
+   "aa_wr_hi"
+  ],
+  "train_n": 5,
+  "train_hit": 1.0,
+  "test_n": 5,
+  "test_hit": 1.0,
+  "all_n": 10,
+  "all_hit": 1.0,
+  "score": 1.0,
+  "label": "新精選下盤"
+ },
+ "南美解放者杯": {
+  "dir": "down",
+  "conds": [
+   "sline_lo",
+   "ou_lo",
+   "ah_dnmove"
+  ],
+  "train_n": 7,
+  "train_hit": 0.857,
+  "test_n": 6,
+  "test_hit": 0.833,
+  "all_n": 13,
+  "all_hit": 0.846,
+  "score": 0.8333333333333334,
+  "label": "新精選下盤"
+ },
+ "南韓K2聯賽": {
+  "dir": "down",
+  "conds": [
+   "ao_lo",
+   "ou_lo",
+   "hh_wr_hi"
+  ],
+  "train_n": 8,
+  "train_hit": 0.875,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 13,
+  "all_hit": 0.846,
+  "score": 0.8,
+  "label": "新精選下盤"
+ },
+ "南韓K聯賽": {
+  "dir": "down",
+  "conds": [
+   "ou_lo",
+   "rank_h",
+   "hh_wr_hi"
+  ],
+  "train_n": 17,
+  "train_hit": 0.824,
+  "test_n": 6,
+  "test_hit": 1.0,
+  "all_n": 23,
+  "all_hit": 0.87,
+  "score": 0.8235294117647058,
+  "label": "新精選下盤"
+ },
+ "墨西哥甲組聯賽": {
+  "dir": "up",
+  "conds": [
+   "ao_lo",
+   "un_lo",
+   "ah_upmove"
+  ],
+  "train_n": 9,
+  "train_hit": 0.778,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 14,
+  "all_hit": 0.786,
+  "score": 0.7777777777777778,
+  "label": "新精選上盤"
+ },
+ "墨西哥超級聯賽": {
+  "dir": "up",
+  "conds": [
+   "sline_hi",
+   "rank_a"
+  ],
+  "train_n": 8,
+  "train_hit": 0.875,
+  "test_n": 9,
+  "test_hit": 0.889,
+  "all_n": 17,
+  "all_hit": 0.882,
+  "score": 0.875,
+  "label": "新精選上盤"
+ },
+ "巴西甲組聯賽": {
+  "dir": "up",
+  "conds": [
+   "un_lo",
+   "ou_rise",
+   "avg_hi"
+  ],
+  "train_n": 16,
+  "train_hit": 0.75,
+  "test_n": 6,
+  "test_hit": 0.833,
+  "all_n": 22,
+  "all_hit": 0.773,
+  "score": 0.75,
+  "label": "新精選上盤"
+ },
+ "巴西盃": {
+  "dir": "up",
+  "conds": [
+   "sline_hi",
+   "ou_lo",
+   "ah_upmove",
+   "avg_hi"
+  ],
+  "train_n": 9,
+  "train_hit": 0.778,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 14,
+  "all_hit": 0.786,
+  "score": 0.7777777777777778,
+  "label": "新精選上盤"
+ },
+ "德國甲組聯賽": {
+  "dir": "up",
+  "conds": [
+   "ho_lo",
+   "ou_hi"
+  ],
+  "train_n": 9,
+  "train_hit": 0.778,
+  "test_n": 5,
+  "test_hit": 1.0,
+  "all_n": 14,
+  "all_hit": 0.857,
+  "score": 0.7777777777777778,
+  "label": "新精選上盤"
+ },
+ "德國足協盃": {
+  "dir": "down",
+  "conds": [
+   "ou_hi",
+   "rank_h",
+   "avg_hi"
+  ],
+  "train_n": 22,
+  "train_hit": 0.727,
+  "test_n": 9,
+  "test_hit": 0.778,
+  "all_n": 31,
+  "all_hit": 0.742,
+  "score": 0.7272727272727273,
+  "label": "新精選下盤"
+ },
+ "意大利甲組聯賽": {
+  "dir": "down",
+  "conds": [
+   "ou_rise",
+   "rank_h",
+   "hh_wr_hi",
+   "avg_hi"
+  ],
+  "train_n": 24,
+  "train_hit": 0.75,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 29,
+  "all_hit": 0.759,
+  "score": 0.75,
+  "label": "新精選下盤"
+ },
+ "挪威盃赛": {
+  "dir": "up",
+  "conds": [
+   "ou_hi",
+   "ov_lo",
+   "rank_h"
+  ],
+  "train_n": 8,
+  "train_hit": 0.875,
+  "test_n": 7,
+  "test_hit": 0.857,
+  "all_n": 15,
+  "all_hit": 0.867,
+  "score": 0.8571428571428571,
+  "label": "新精選上盤"
+ },
+ "日本天皇盃": {
+  "dir": "down",
+  "conds": [
+   "ao_lo",
+   "ov_lo"
+  ],
+  "train_n": 6,
+  "train_hit": 0.833,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 11,
+  "all_hit": 0.818,
+  "score": 0.8,
+  "label": "新精選下盤"
+ },
+ "日本職業聯賽J1": {
+  "dir": "up",
+  "conds": [
+   "sline_hi",
+   "ou_hi",
+   "ov_lo"
+  ],
+  "train_n": 13,
+  "train_hit": 0.769,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 18,
+  "all_hit": 0.778,
+  "score": 0.7692307692307693,
+  "label": "新精選上盤"
+ },
+ "日本職業聯賽J2": {
+  "dir": "down",
+  "conds": [
+   "ao_lo",
+   "avg_hi"
+  ],
+  "train_n": 7,
+  "train_hit": 0.857,
+  "test_n": 6,
+  "test_hit": 1.0,
+  "all_n": 13,
+  "all_hit": 0.923,
+  "score": 0.8571428571428571,
+  "label": "新精選下盤"
+ },
+ "智利盃": {
+  "dir": "down",
+  "conds": [
+   "ho_lo",
+   "rank_a",
+   "aa_wr_hi"
+  ],
+  "train_n": 7,
+  "train_hit": 1.0,
+  "test_n": 7,
+  "test_hit": 0.857,
+  "all_n": 14,
+  "all_hit": 0.929,
+  "score": 0.8571428571428571,
+  "label": "新精選下盤"
+ },
+ "歐洲聯賽冠軍盃賽": {
+  "dir": "down",
+  "conds": [
+   "sline_lo",
+   "ou_hi",
+   "ou_rise",
+   "aa_wr_hi"
+  ],
+  "train_n": 6,
+  "train_hit": 0.833,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 11,
+  "all_hit": 0.818,
+  "score": 0.8,
+  "label": "新精選下盤"
+ },
+ "歐足聯協會聯賽( 盃賽)": {
+  "dir": "up",
+  "conds": [
+   "sline_hi",
+   "ou_lo",
+   "ah_upmove",
+   "avg_hi"
+  ],
+  "train_n": 9,
+  "train_hit": 1.0,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 14,
+  "all_hit": 0.929,
+  "score": 0.8,
+  "label": "新精選上盤"
+ },
+ "歐霸盃": {
+  "dir": "up",
+  "conds": [
+   "sline_hi",
+   "un_lo",
+   "ah_upmove",
+   "avg_hi"
+  ],
+  "train_n": 11,
+  "train_hit": 0.818,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 16,
+  "all_hit": 0.812,
+  "score": 0.8,
+  "label": "新精選上盤"
+ },
+ "比利時甲組聯賽": {
+  "dir": "down",
+  "conds": [
+   "ho_lo",
+   "rank_a"
+  ],
+  "train_n": 6,
+  "train_hit": 0.833,
+  "test_n": 6,
+  "test_hit": 0.833,
+  "all_n": 12,
+  "all_hit": 0.833,
+  "score": 0.8333333333333334,
+  "label": "新精選下盤"
+ },
+ "法國乙組聯賽": {
+  "dir": "up",
+  "conds": [
+   "sline_hi",
+   "un_lo",
+   "ou_rise",
+   "hh_wr_hi"
+  ],
+  "train_n": 5,
+  "train_hit": 0.8,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 10,
+  "all_hit": 0.8,
+  "score": 0.8,
+  "label": "新精選上盤"
+ },
+ "法國甲組聯賽": {
+  "dir": "down",
+  "conds": [
+   "ov_lo",
+   "ou_rise",
+   "rank_h"
+  ],
+  "train_n": 5,
+  "train_hit": 0.8,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 10,
+  "all_hit": 0.8,
+  "score": 0.8,
+  "label": "新精選下盤"
+ },
+ "法國盃": {
+  "dir": "down",
+  "conds": [
+   "sline_lo",
+   "ho_lo"
+  ],
+  "train_n": 9,
+  "train_hit": 0.889,
+  "test_n": 11,
+  "test_hit": 1.0,
+  "all_n": 20,
+  "all_hit": 0.95,
+  "score": 0.8888888888888888,
+  "label": "新精選下盤"
+ },
+ "海灣盃": {
+  "dir": "down",
+  "conds": [
+   "sline_lo",
+   "avg_hi"
+  ],
+  "train_n": 6,
+  "train_hit": 1.0,
+  "test_n": 6,
+  "test_hit": 0.833,
+  "all_n": 12,
+  "all_hit": 0.917,
+  "score": 0.8333333333333334,
+  "label": "新精選下盤"
+ },
+ "澳大利亞新南威爾士州超級聯賽": {
+  "dir": "up",
+  "conds": [
+   "sline_lo",
+   "ah_upmove",
+   "aa_wr_hi",
+   "avg_hi"
+  ],
+  "train_n": 6,
+  "train_hit": 0.833,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 11,
+  "all_hit": 0.818,
+  "score": 0.8,
+  "label": "新精選上盤"
+ },
+ "澳大利亞維多利亞州超級聯賽": {
+  "dir": "up",
+  "conds": [
+   "ou_hi",
+   "un_lo",
+   "rank_a"
+  ],
+  "train_n": 5,
+  "train_hit": 0.8,
+  "test_n": 11,
+  "test_hit": 0.818,
+  "all_n": 16,
+  "all_hit": 0.812,
+  "score": 0.8,
+  "label": "新精選上盤"
+ },
+ "澳大利亞西部超級聯賽": {
+  "dir": "up",
+  "conds": [
+   "sline_hi",
+   "ho_lo",
+   "ou_hi",
+   "rank_h"
+  ],
+  "train_n": 11,
+  "train_hit": 0.727,
+  "test_n": 6,
+  "test_hit": 0.833,
+  "all_n": 17,
+  "all_hit": 0.765,
+  "score": 0.7272727272727273,
+  "label": "新精選上盤"
+ },
+ "澳洲南部超級聯賽": {
+  "dir": "down",
+  "conds": [
+   "sline_hi",
+   "ou_hi",
+   "ov_lo",
+   "ah_upmove",
+   "rank_h"
+  ],
+  "train_n": 6,
+  "train_hit": 0.833,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 11,
+  "all_hit": 0.818,
+  "score": 0.8,
+  "label": "新精選下盤"
+ },
+ "澳洲昆士蘭州超級聯賽": {
+  "dir": "down",
+  "conds": [
+   "ou_hi",
+   "un_lo",
+   "ou_rise",
+   "hh_wr_hi",
+   "avg_hi"
+  ],
+  "train_n": 7,
+  "train_hit": 0.857,
+  "test_n": 10,
+  "test_hit": 0.9,
+  "all_n": 17,
+  "all_hit": 0.882,
+  "score": 0.8571428571428571,
+  "label": "新精選下盤"
+ },
+ "澳洲足總盃": {
+  "dir": "down",
+  "conds": [
+   "sline_hi",
+   "ao_lo",
+   "ou_hi",
+   "rank_a",
+   "hh_wr_hi"
+  ],
+  "train_n": 5,
+  "train_hit": 1.0,
+  "test_n": 5,
+  "test_hit": 1.0,
+  "all_n": 10,
+  "all_hit": 1.0,
+  "score": 1.0,
+  "label": "新精選下盤"
+ },
+ "烏拉圭甲組聯賽": {
+  "dir": "up",
+  "conds": [
+   "sline_hi",
+   "ou_rise",
+   "rank_h"
+  ],
+  "train_n": 12,
+  "train_hit": 0.833,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 17,
+  "all_hit": 0.824,
+  "score": 0.8,
+  "label": "新精選上盤"
+ },
+ "瑞典盃": {
+  "dir": "up",
+  "conds": [
+   "sline_lo",
+   "ou_hi",
+   "ah_dnmove",
+   "hh_wr_hi"
+  ],
+  "train_n": 7,
+  "train_hit": 0.857,
+  "test_n": 7,
+  "test_hit": 0.857,
+  "all_n": 14,
+  "all_hit": 0.857,
+  "score": 0.8571428571428571,
+  "label": "新精選上盤"
+ },
+ "瑞典超級聯賽": {
+  "dir": "up",
+  "conds": [
+   "sline_hi",
+   "ov_lo",
+   "ah_upmove",
+   "avg_hi"
+  ],
+  "train_n": 6,
+  "train_hit": 0.833,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 11,
+  "all_hit": 0.818,
+  "score": 0.8,
+  "label": "新精選上盤"
+ },
+ "瑞士超級聯賽": {
+  "dir": "down",
+  "conds": [
+   "sline_lo",
+   "ou_hi",
+   "ah_dnmove",
+   "rank_a"
+  ],
+  "train_n": 11,
+  "train_hit": 0.909,
+  "test_n": 11,
+  "test_hit": 0.818,
+  "all_n": 22,
+  "all_hit": 0.864,
+  "score": 0.8181818181818182,
+  "label": "新精選下盤"
+ },
+ "美國冠軍聯賽": {
+  "dir": "down",
+  "conds": [
+   "ho_lo",
+   "ah_dnmove",
+   "aa_wr_hi"
+  ],
+  "train_n": 5,
+  "train_hit": 0.8,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 10,
+  "all_hit": 0.8,
+  "score": 0.8,
+  "label": "新精選下盤"
+ },
+ "美國職業大聯盟聯賽": {
+  "dir": "down",
+  "conds": [
+   "ou_hi",
+   "un_lo",
+   "ah_dnmove",
+   "rank_h"
+  ],
+  "train_n": 11,
+  "train_hit": 0.818,
+  "test_n": 5,
+  "test_hit": 1.0,
+  "all_n": 16,
+  "all_hit": 0.875,
+  "score": 0.8181818181818182,
+  "label": "新精選下盤"
+ },
+ "芬蘭盃": {
+  "dir": "down",
+  "conds": [
+   "ho_lo",
+   "ou_hi",
+   "rank_h"
+  ],
+  "train_n": 7,
+  "train_hit": 0.857,
+  "test_n": 6,
+  "test_hit": 0.833,
+  "all_n": 13,
+  "all_hit": 0.846,
+  "score": 0.8333333333333334,
+  "label": "新精選下盤"
+ },
+ "英格蘭乙組聯賽": {
+  "dir": "down",
+  "conds": [
+   "ao_lo",
+   "un_lo",
+   "rank_h"
+  ],
+  "train_n": 10,
+  "train_hit": 0.8,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 15,
+  "all_hit": 0.8,
+  "score": 0.8,
+  "label": "新精選下盤"
+ },
+ "英格蘭冠軍聯賽": {
+  "dir": "up",
+  "conds": [
+   "ou_hi",
+   "hh_wr_hi",
+   "aa_wr_hi"
+  ],
+  "train_n": 10,
+  "train_hit": 0.8,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 15,
+  "all_hit": 0.8,
+  "score": 0.8,
+  "label": "新精選上盤"
+ },
+ "英格蘭甲組聯賽": {
+  "dir": "down",
+  "conds": [
+   "ou_lo",
+   "ov_lo",
+   "aa_wr_hi"
+  ],
+  "train_n": 15,
+  "train_hit": 0.8,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 20,
+  "all_hit": 0.8,
+  "score": 0.8,
+  "label": "新精選下盤"
+ },
+ "英格蘭聯賽盃": {
+  "dir": "down",
+  "conds": [
+   "ao_lo",
+   "ah_upmove"
+  ],
+  "train_n": 11,
+  "train_hit": 0.818,
+  "test_n": 6,
+  "test_hit": 0.833,
+  "all_n": 17,
+  "all_hit": 0.824,
+  "score": 0.8181818181818182,
+  "label": "新精選下盤"
+ },
+ "英格蘭聯賽錦標賽": {
+  "dir": "up",
+  "conds": [
+   "ho_lo",
+   "ou_hi",
+   "ou_rise",
+   "avg_hi"
+  ],
+  "train_n": 7,
+  "train_hit": 0.857,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 12,
+  "all_hit": 0.833,
+  "score": 0.8,
+  "label": "新精選上盤"
+ },
+ "英格蘭超級聯賽": {
+  "dir": "down",
+  "conds": [
+   "ho_lo",
+   "ah_dnmove"
+  ],
+  "train_n": 10,
+  "train_hit": 0.8,
+  "test_n": 9,
+  "test_hit": 0.778,
+  "all_n": 19,
+  "all_hit": 0.789,
+  "score": 0.7777777777777778,
+  "label": "新精選下盤"
+ },
+ "英格蘭足總盃": {
+  "dir": "down",
+  "conds": [
+   "ou_hi",
+   "rank_h",
+   "hh_wr_hi",
+   "aa_wr_hi"
+  ],
+  "train_n": 14,
+  "train_hit": 0.857,
+  "test_n": 8,
+  "test_hit": 0.875,
+  "all_n": 22,
+  "all_hit": 0.864,
+  "score": 0.8571428571428571,
+  "label": "新精選下盤"
+ },
+ "荷蘭甲組聯賽": {
+  "dir": "up",
+  "conds": [
+   "rank_a",
+   "hh_wr_hi"
+  ],
+  "train_n": 13,
+  "train_hit": 0.846,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 18,
+  "all_hit": 0.833,
+  "score": 0.8,
+  "label": "新精選上盤"
+ },
+ "葡萄牙超級聯賽": {
+  "dir": "up",
+  "conds": [
+   "ou_hi",
+   "ov_lo",
+   "aa_wr_hi"
+  ],
+  "train_n": 13,
+  "train_hit": 0.846,
+  "test_n": 6,
+  "test_hit": 0.833,
+  "all_n": 19,
+  "all_hit": 0.842,
+  "score": 0.8333333333333334,
+  "label": "新精選上盤"
+ },
+ "西班牙國王盃": {
+  "dir": "down",
+  "conds": [
+   "ou_hi",
+   "ov_lo",
+   "ou_rise"
+  ],
+  "train_n": 7,
+  "train_hit": 0.857,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 12,
+  "all_hit": 0.833,
+  "score": 0.8,
+  "label": "新精選下盤"
+ },
+ "西班牙甲組聯賽": {
+  "dir": "down",
+  "conds": [
+   "un_lo",
+   "rank_a",
+   "avg_hi"
+  ],
+  "train_n": 10,
+  "train_hit": 0.8,
+  "test_n": 10,
+  "test_hit": 0.8,
+  "all_n": 20,
+  "all_hit": 0.8,
+  "score": 0.8,
+  "label": "新精選下盤"
+ },
+ "阿根廷甲級聯賽": {
+  "dir": "down",
+  "conds": [
+   "ou_lo",
+   "ah_dnmove",
+   "rank_a",
+   "hh_wr_hi"
+  ],
+  "train_n": 8,
+  "train_hit": 0.875,
+  "test_n": 5,
+  "test_hit": 1.0,
+  "all_n": 13,
+  "all_hit": 0.923,
+  "score": 0.875,
+  "label": "新精選下盤"
+ },
+ "阿根廷盃": {
+  "dir": "up",
+  "conds": [
+   "sline_hi",
+   "ho_lo",
+   "ov_lo"
+  ],
+  "train_n": 7,
+  "train_hit": 0.857,
+  "test_n": 7,
+  "test_hit": 0.857,
+  "all_n": 14,
+  "all_hit": 0.857,
+  "score": 0.8571428571428571,
+  "label": "新精選上盤"
+ },
+ "非洲國家盃": {
+  "dir": "up",
+  "conds": [
+   "ao_lo",
+   "ah_upmove",
+   "avg_hi"
+  ],
+  "train_n": 5,
+  "train_hit": 0.8,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 10,
+  "all_hit": 0.8,
+  "score": 0.8,
+  "label": "新精選上盤"
+ },
+ "韓國杯": {
+  "dir": "down",
+  "conds": [
+   "ah_upmove",
+   "rank_h"
+  ],
+  "train_n": 7,
+  "train_hit": 0.857,
+  "test_n": 5,
+  "test_hit": 0.8,
+  "all_n": 12,
+  "all_hit": 0.833,
+  "score": 0.8,
+  "label": "新精選下盤"
+ }
+}

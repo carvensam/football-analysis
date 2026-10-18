@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>新精選</title>
+<style>
+:root{
+  --bg:#0d1117; --bg2:#161d27; --card:#1a2230; --line:#2b3648;
+  --tx:#e8e2d5; --dim:#8b94a3; --up:#3fb96c; --down:#e05c5c;
+  --gold:#d4af37; --gold2:#f5d76e; --accent:#5b8def;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--tx);
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans TC",sans-serif;
+  font-size:15px; line-height:1.55; padding:52px 0 20px;
+}
+.gold-banner{
+  position:fixed; left:0; right:0; top:0; height:52px; z-index:50;
+  background:linear-gradient(180deg,#e6c34a,#b8932a);
+  color:#3a2c05; display:flex; align-items:center; justify-content:center;
+  font-weight:900; letter-spacing:.25em; font-size:30px; line-height:52px;
+  border-bottom:2px solid #8a6d1a;
+}
+#topbar{
+  position:sticky; top:52px; z-index:40;
+  background:var(--bg2); border-bottom:1px solid var(--line);
+  display:flex; align-items:center; gap:8px; padding:6px 10px; flex-wrap:wrap;
+}
+#status{font-size:13px;color:var(--dim);flex:1;min-width:120px}
+.btn{
+  background:var(--card); color:var(--tx); border:1px solid var(--line);
+  border-radius:8px; padding:6px 12px; font-size:14px; cursor:pointer;
+}
+.btn:hover{border-color:var(--accent)}
+.btn.gold{background:var(--gold);border-color:var(--gold);color:#3a2c05;font-weight:700}
+.btn:disabled{opacity:.45}
+#main{max-width:860px;margin:0 auto;padding:10px}
+.sumbar{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin:8px 0}
+.si{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;text-align:center}
+.si .t{color:var(--dim);font-size:11px}
+.si .v{font-size:19px;font-weight:900;margin-top:2px}
+.si .v.up{color:var(--up)} .si .v.down{color:var(--down)} .si .v.gold{color:var(--gold2)}
+h2.sec{font-size:16px;color:var(--gold2);margin:16px 0 6px}
+.mrow{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 10px;margin:6px 0}
+.mrow.hit{border-color:#2c5c3c}
+.mrow .m-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ko{font-size:12px;color:var(--dim)}
+.lg{font-size:12px;color:var(--gold2)}
+.tm{flex:1;min-width:150px;font-weight:600}
+.tag{font-size:12px;font-weight:800;padding:2px 10px;border-radius:12px;border:1px solid var(--line);color:var(--dim)}
+.tag.up{color:var(--up);border-color:var(--up)}
+.tag.down{color:var(--down);border-color:var(--down)}
+.tag.w{color:var(--up);border-color:var(--up)}
+.tag.l{color:var(--down);border-color:var(--down)}
+.tag.p{color:var(--dim);border-color:var(--dim)}
+.sub{font-size:12px;color:var(--dim);margin-top:4px}
+table.lib{width:100%;border-collapse:collapse;font-size:13px}
+table.lib th,table.lib td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+table.lib th{color:var(--gold2);position:sticky;top:104px;background:var(--bg2)}
+.rlab{font-weight:800;white-space:nowrap}
+.rlab.up{color:var(--up)} .rlab.down{color:var(--down)}
+.rmeta{font-size:12px;color:var(--dim)}
+.note{color:var(--dim);font-size:12px;margin:6px 0}
+.err{color:#ffb0b0;background:#4a1d1d;border:1px solid #7a2d2d;border-radius:8px;padding:6px 10px;font-size:13px;margin:6px 0}
+/* 手機（Xiaomi 14，393px）：橫額隨捲動走唔阻內容；頂欄貼頂；表可橫掃 */
+@media (max-width:640px){
+  body{font-size:14px;padding:0 0 16px}
+  .gold-banner{position:static;height:34px;font-size:20px;line-height:34px;letter-spacing:.15em}
+  #topbar{top:0;padding:4px 6px;gap:4px}
+  .btn{padding:5px 10px;font-size:13px}
+  #main{padding:6px}
+  .mrow .tm{min-width:0;flex-basis:100%;order:3}
+  table.lib{display:block;overflow-x:auto;max-width:100%}
+  table.lib th{position:static}
+}
+</style>
+</head>
+<body>
+<div class="gold-banner">新精選</div>
+<div id="topbar">
+  <span id="status">載入緊…</span>
+  <button class="btn gold" id="btnScan" onclick="doScan()">⚡ 一鍵掃描預測</button>
+  <button class="btn" onclick="location.href='/'">← 主頁</button>
+  <button class="btn" onclick="load()">重新整理</button>
+</div>
+<div id="main">
+  <div class="sumbar" id="sum"></div>
+  <div class="note">16 欄位全組合挖掘（65,535 個組合）：每個聯賽/杯賽獨立揀 <b style="color:var(--up)">上盤</b> 或 <b style="color:var(--down)">下盤</b> 最高命中率方法，訓練期 ≤2024 ＋ 驗證期 2025+ 兩期都 ≥72.5%（n≥5）先收錄。</div>
+  <h2 class="sec">🎯 預測紀錄</h2>
+  <div id="predbody"></div>
+  <h2 class="sec">📚 逐聯賽方法庫（<span id="libn"></span> 個聯賽/杯賽）</h2>
+  <div id="lib"></div>
+</div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function fmtLine(hc, gv){
+  if (hc == null) return '—';
+  if (gv == null || gv === 'none') return '平手';
+  const n = {0.25:'平/半',0.5:'半球',0.75:'半/一',1:'一球',1.25:'一/球半',1.5:'球半',1.75:'球半/兩',2:'兩球',2.25:'兩/兩半',2.5:'兩半',2.75:'兩半/三',3:'三球'}[hc] || hc;
+  return (gv === 'home' ? '主讓' : '客讓') + n;
+}
+const COND_TXT = {
+  sline_hi:'主深讓≥半/一', sline_lo:'客深讓≥半/一',
+  ho_lo:'主水≤0.80', ao_lo:'客水≤0.80',
+  ou_hi:'大小線≥2.75', ou_lo:'大小線≤2.25',
+  ov_lo:'大球水≤0.85', un_lo:'細球水≤0.85',
+  ah_upmove:'讓球升盤≥0.25', ah_dnmove:'讓球降盤≥0.25', ou_rise:'大小線升盤',
+  rank_h:'主排名高5+', rank_a:'客排名高5+',
+  hh_wr_hi:'主隊主場勝率≥60%', aa_wr_hi:'客隊客場勝率≥55%',
+  avg_hi:'場均總入球≥2.8'};
+const condTxt = c => COND_TXT[c] || c;
+async function load(){
+  $('#status').textContent = '載入緊…';
+  try {
+    const r = await fetch('/api/newjx/full');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+    const st = d.stats, lib = d.library;
+    const dec = st.w + st.l, hr = dec ? (st.w / dec * 100).toFixed(1) + '%' : '—';
+    $('#sum').innerHTML =
+      `<div class="si"><div class="t">聯賽/杯賽</div><div class="v gold">${lib.length}</div></div>` +
+      `<div class="si"><div class="t">上盤方法</div><div class="v up">${lib.filter(x=>x.dir==='up').length}</div></div>` +
+      `<div class="si"><div class="t">下盤方法</div><div class="v down">${lib.filter(x=>x.dir==='down').length}</div></div>` +
+      `<div class="si"><div class="t">實戰 中/唔中</div><div class="v"><span style="color:var(--up)">${st.w}</span>/<span style="color:var(--down)">${st.l}</span></div></div>` +
+      `<div class="si"><div class="t">實戰命中率</div><div class="v ${dec && st.w/dec>=0.725?'up':'gold'}">${hr}</div></div>` +
+      `<div class="si"><div class="t">待定</div><div class="v gold">${st.pending}</div></div>`;
+    let h = '';
+    if (!d.rows.length) h = '<div class="note">暫無記錄。背景每 20 分鐘自動掃描未來 7 日場次，亦可按「⚡ 一鍵掃描預測」。</div>';
+    for (const r of d.rows){
+      const dc = r.dir === 'up' ? 'up' : 'down';
+      const wt = r.dir === 'up' ? '上盤贏' : '下盤贏';
+      const badge = r.result === 'W' ? `<span class="tag w">✔ ${wt}</span>`
+        : r.result === 'L' ? '<span class="tag l">✘ 唔中</span>'
+        : r.result === 'P' ? '<span class="tag p">走盤</span>'
+        : '<span class="tag" style="color:var(--gold2);border-color:#6b5510">⏳ 待定</span>';
+      h += `<div class="mrow ${r.result==='W'?'hit':''}"><div class="m-top">
+        <span class="ko">${esc((r.kickoff||'').slice(5,16))}</span>
+        <span class="lg">${esc(r.league)}</span>
+        <b class="tm">${esc(r.home)} <span style="color:var(--dim)">vs</span> ${esc(r.away)}</b>
+        <span class="tag ${dc}">${esc(r.label)}</span>${badge}</div>
+        <div class="sub">條件：${r.conds.map(condTxt).join('＋')}　盤口：${fmtLine(r.hc, r.giver)}
+        ${r.score ? `　賽果：<b>${esc(r.score)}</b>` : ''}</div></div>`;
+    }
+    $('#predbody').innerHTML = h;
+    $('#libn').textContent = lib.length;
+    let t = `<table class="lib"><tr><th>聯賽/杯賽</th><th>最高命中方法（訓練/驗證）</th></tr>`;
+    for (const L of lib){
+      const dc = L.dir === 'up' ? 'up' : 'down';
+      t += `<tr><td style="white-space:nowrap">${esc(L.league)}</td>
+        <td><span class="rlab ${dc}">${esc(L.label)}</span>
+        <span class="rmeta">${L.conds.map(condTxt).join('＋')}｜訓練 ${(L.train_hit*100).toFixed(1)}%(n=${L.train_n})・驗證 ${(L.test_hit*100).toFixed(1)}%(n=${L.test_n})・全期 ${(L.all_hit*100).toFixed(1)}%(n=${L.all_n})</span></td></tr>`;
+    }
+    $('#lib').innerHTML = t + '</table>';
+    $('#status').textContent = '最後更新 ' + new Date().toLocaleTimeString('zh-HK', {hour12:false});
+  } catch (e) {
+    $('#status').textContent = '載入失敗';
+    $('#predbody').innerHTML = '<div class="err">載入失敗：' + esc(e.message || e) + '</div>';
+  }
+}
+async function doScan(){
+  const b = $('#btnScan');
+  b.disabled = true;
+  $('#status').textContent = '掃描緊（新精選 55 聯賽方法庫）…';
+  try {
+    const r = await fetch('/api/newjx/scan', {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.status);
+    $('#status').textContent = `掃描完成：新精選 +${d.added} 場・結算 ${d.settled} 場`;
+  } catch (e) {
+    $('#status').textContent = '掃描失敗：' + (e.message || e);
+  }
+  b.disabled = false;
+  load();
+}
+load();
+</script>
+</body>
+</html>

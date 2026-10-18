@@ -55,6 +55,10 @@ try:
     import w88_engine
 except ImportError:
     w88_engine = None
+try:
+    import newjx_engine
+except ImportError:
+    newjx_engine = None
 from concurrent.futures import ThreadPoolExecutor
 
 # 精選／我的選擇等列表逐場運算（screen＋check）係 CPU 密集——
@@ -6450,6 +6454,23 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback; traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/newjx':
+            with open(os.path.join(STATIC_DIR, 'newjx.html'), 'rb') as f:
+                self._send(200, f.read(), 'text/html; charset=utf-8')
+            return
+        if u.path == '/api/newjx/full':
+            # 新精選：16欄位全組合挖掘嘅逐聯賽上下盤最高命中方法庫
+            if not newjx_engine:
+                self._send(500, json.dumps({'error': 'newjx_engine 模組未載入'},
+                                           ensure_ascii=False))
+                return
+            try:
+                self._send(200, json.dumps(newjx_engine.full(db()),
+                                           ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         if u.path == '/api/fw8s/history':
             # 精選8s：過往入選紀錄（自動結算）
             try:
@@ -6911,6 +6932,24 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, json.dumps(
                     {'k3_added': a3, 'k3_settled': s3,
                      'x8_added': a8, 'x8_settled': s8}, ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/newjx/scan':
+            # 新精選一鍵掃描預測（2026-10-19）：逐聯賽上下盤方法 scan＋settle
+            try:
+                if not newjx_engine:
+                    self._send(500, json.dumps({'error': 'newjx_engine 模組未載入'},
+                                               ensure_ascii=False))
+                    return
+                c = db()
+                a = newjx_engine.scan(c)
+                s = newjx_engine.settle(c)
+                c.close()
+                self._send(200, json.dumps({'added': a, 'settled': s},
+                                           ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -7842,6 +7881,10 @@ if __name__ == '__main__':
     if w88_engine:
         w88_engine.start_loop()
         print('[boot] 88W 背景循環已啟動（每 20 分鐘 K3 scan+settle）', flush=True)
+    # 新精選循環（2026-10-19）：純 SQL＋按需 ps 特徵，資源用量低
+    if newjx_engine:
+        newjx_engine.start_loop()
+        print('[boot] 新精選背景循環已啟動（每 20 分鐘 scan+settle）', flush=True)
     # 2026-10-12 雲端爬蟲節點：ENABLE_CLOUD_CRAWL=1 時喺背景線程探測 titan007
     # 各主機並爬佢通到嘅市場（寫 /data/football.db；本機 IP 被硬封鎖，雲端
     # 出口 IP 直達唔使代理）。本機（冇呢個 env）永遠唔會行呢段。

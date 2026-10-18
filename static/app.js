@@ -247,6 +247,10 @@ function goto(pg){
       const f = $('#w88Frame');
       if (f && !f.src) f.src = '/88w';
     },
+    newjx: () => {
+      const f = $('#jxFrame');
+      if (f && !f.src) f.src = '/newjx';
+    },
     x8: () => loadX8(),
     v1: () => loadV1(),
     settings: () => loadSettings(),
