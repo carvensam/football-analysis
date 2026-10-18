@@ -109,10 +109,15 @@ tr.mode-watch td:first-child{box-shadow:inset 3px 0 0 var(--dim)}
   padding:8px 18px;border-radius:20px;font-size:14px;z-index:99;display:none;
 }
 @media (max-width:640px){
-  body{font-size:14px;padding:44px 0 46px}
-  .gold-banner{height:44px;font-size:32px;line-height:44px}
-  .gold-banner.bottom{font-size:26px}
-  #topbar{top:44px}
+  body{font-size:14px;padding:0 0 16px}
+  .gold-banner{position:static;height:34px;font-size:22px;line-height:34px}
+  .gold-banner.bottom{height:26px;font-size:15px;line-height:26px}
+  #topbar{top:0;padding:4px 6px;gap:4px}
+  #status{font-size:12px;min-width:0}
+  .mrow .ko{min-width:0}
+  .mrow .lg{min-width:0}
+  .mrow .tm{min-width:0;flex-basis:100%}
+  .toast{bottom:16px;max-width:92vw}
 }
 </style>
 </head>
