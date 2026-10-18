@@ -6700,14 +6700,18 @@ class Handler(BaseHTTPRequestHandler):
                                                ensure_ascii=False))
                     return
                 st = fw8x.stats_and_list(db())
-                # 2026 全年回測摘要（fw8x_backtest_2026.py 產生；冇檔案就略過）
+                # 2026 全年回測摘要（fw8x_backtest_2026.py 產生；冇檔案就略過）。
+                # 路徑兩個候選：本機 fw8x.py 喺 screen_app/（JSON 喺上一層），
+                # 雲端 fw8x.py 喺 repo 根（JSON 同層）。
                 try:
                     import os as _os
-                    _btp = _os.path.join(_os.path.dirname(fw8x.__file__) or '.',
-                                         '..', 'fw8x_bt2026_summary.json')
-                    _btp = _os.path.abspath(_btp)
-                    if _os.path.isfile(_btp):
-                        st['bt'] = json.load(open(_btp, encoding='utf-8'))
+                    _base = _os.path.dirname(_os.path.abspath(fw8x.__file__))
+                    for _btp in (_os.path.join(_base, 'fw8x_bt2026_summary.json'),
+                                 _os.path.join(_base, '..', 'fw8x_bt2026_summary.json')):
+                        _btp = _os.path.abspath(_btp)
+                        if _os.path.isfile(_btp):
+                            st['bt'] = json.load(open(_btp, encoding='utf-8'))
+                            break
                 except Exception:
                     pass
                 self._send(200, json.dumps(st, ensure_ascii=False))
