@@ -3653,6 +3653,146 @@ def get_fwcheck_full(g):
         return json.load(f)
 
 
+def get_fw12_audit():
+    """精選12 全庫重篩永久紀錄（fw_screen_audit.db grid='12'）。
+    本機讀實時審計庫；雲端冇審計庫就讀 fw12_audit.json 快照
+    （tools/fw12_snapshot.py 產生，跟 repo 永久保留）。
+    2026-10-19 用戶規格：用精選12掃全庫，合資格嘅展示結果在頁面，永久保留。"""
+    import glob as _glob
+    # 1) 實時審計庫（本機）
+    cands = []
+    _ws = os.path.dirname(BASE_DIR)          # screen_app 上一層 = 工作區
+    cands.append(os.path.join(_ws, 'fw_screen_audit.db'))
+    cands.append(os.path.join(BASE_DIR, 'fw_screen_audit.db'))
+    cands.extend(sorted(_glob.glob('/data/fw_screen_audit.db'),
+                        reverse=True))
+    out = None
+    for adb in cands:
+        if not os.path.isfile(adb):
+            continue
+        # 掃描進行中寫入方會鎖 WAL——ro 撞鎖就轉 immutable（讀到嘅係最近
+        # checkpoint 快照，展示用途足夠），唔會彈「尚未完成」假訊息
+        a = None
+        for uri in ('file:%s?mode=ro' % adb, 'file:%s?immutable=1' % adb):
+            try:
+                a = sqlite3.connect(uri, uri=True, timeout=8)
+                a.execute('SELECT 1').fetchone()
+                break
+            except sqlite3.OperationalError:
+                try:
+                    a.close()
+                except Exception:
+                    pass
+                a = None
+        if a is None:
+            continue
+        try:
+            tot = a.execute("SELECT COUNT(*) FROM fw_screen_audit "
+                            "WHERE grid='12'").fetchone()[0]
+            if tot == 0:
+                a.close()
+                continue
+            rows = a.execute(
+                "SELECT f.match_id, f.kickoff, f.league, f.category, "
+                "f.direction, f.result, f.line_h, f.line_g, f.up_water, "
+                "f.close_ho, f.close_ao, f.pass, f.detail, f.settled_at "
+                "FROM fw_screen_audit f WHERE f.grid='12' AND f.pass=1 "
+                "ORDER BY f.kickoff DESC").fetchall()
+            a.close()
+            # 用主庫補球隊名＋比數
+            conn = db()
+            names = {}
+            for r in rows:
+                m = conn.execute(
+                    "SELECT ht.name_tc, at.name_tc, m.home_score, "
+                    "m.away_score FROM matches m "
+                    "JOIN teams ht ON ht.titan_id=m.home_id "
+                    "JOIN teams at ON at.titan_id=m.away_id "
+                    "WHERE m.id=?", (r[0],)).fetchone()
+                names[r[0]] = m
+            conn.close()
+            items = []
+            for r in rows:
+                nm = names.get(r[0]) or (None, None, None, None)
+                d = None
+                try:
+                    d = json.loads(r[12]) if r[12] else None
+                except Exception:
+                    d = None
+                items.append({
+                    'mid': r[0], 'kickoff': r[1], 'league': r[2],
+                    'category': r[3], 'direction': r[4], 'result': r[5],
+                    'line_h': r[6], 'line_g': r[7], 'up_water': r[8],
+                    'close_ho': r[9], 'close_ao': r[10],
+                    'home': nm[0], 'away': nm[1],
+                    'hs': nm[2], 'aws': nm[3], 'cells': (d or {}).get('cells'),
+                    'settled_at': r[13]})
+            a2 = None
+            for uri in ('file:%s?mode=ro' % adb, 'file:%s?immutable=1' % adb):
+                try:
+                    a2 = sqlite3.connect(uri, uri=True, timeout=8)
+                    a2.execute('SELECT 1').fetchone()
+                    break
+                except sqlite3.OperationalError:
+                    try:
+                        a2.close()
+                    except Exception:
+                        pass
+                    a2 = None
+            if a2 is None:
+                raise sqlite3.OperationalError('audit db locked')
+            sm = a2.execute(
+                "SELECT COUNT(*), SUM(pass), "
+                "SUM(CASE WHEN pass=1 AND result='W' THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN pass=1 AND result='L' THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN pass=1 AND result='P' THEN 1 ELSE 0 END) "
+                "FROM fw_screen_audit WHERE grid='12'").fetchone()
+            lg_rows = a2.execute(
+                "SELECT league, COUNT(*), "
+                "SUM(CASE WHEN result='W' THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN result='L' THEN 1 ELSE 0 END), "
+                "SUM(CASE WHEN result='P' THEN 1 ELSE 0 END) "
+                "FROM fw_screen_audit WHERE grid='12' AND pass=1 "
+                "GROUP BY league ORDER BY 2 DESC").fetchall()
+            a2.close()
+            screened, npass, w, l, p = sm
+            decided = (w or 0) + (l or 0)
+            out = {
+                'source': 'live',
+                'screened': screened, 'pass': npass or 0,
+                'w': w or 0, 'l': l or 0, 'p': p or 0,
+                'hit_rate': round(100.0 * w / decided, 1) if decided else None,
+                'leagues': [{'league': x[0], 'n': x[1], 'w': x[2] or 0,
+                             'l': x[3] or 0, 'p': x[4] or 0,
+                             'hit_rate': (round(100.0 * (x[2] or 0) /
+                                                ((x[2] or 0) + (x[3] or 0)), 1)
+                                          if ((x[2] or 0) + (x[3] or 0)) else None)}
+                            for x in lg_rows],
+                'items': items}
+            break
+        except sqlite3.OperationalError:
+            continue
+    if out is None:
+        # 2) 快照 JSON（雲端永久保留用）
+        for pth in (os.path.join(BASE_DIR, 'fw12_audit.json'),
+                    os.path.join(os.path.dirname(BASE_DIR), 'fw12_audit.json')):
+            if os.path.isfile(pth):
+                with open(pth, encoding='utf-8') as f:
+                    out = json.load(f)
+                out['source'] = 'snapshot'
+                break
+    if out is None:
+        out = {'error': '精選12全庫重篩尚未完成或未有數據'}
+    # 3) 進度（掃描狀態）
+    try:
+        stf = os.path.join(BASE_DIR, 'logs', 'fw_screen12_state.json')
+        if os.path.isfile(stf):
+            out['scan'] = json.load(open(stf, encoding='ascii'))
+    except Exception:
+        pass
+    return out
+
+
 def api_fwcheck_target(mid, g):
     """Check 一下 7/8/12 單場檢驗：格方向＋情境歸類＋嗰個情境嘅歷史開出率。"""
     import fw_grid_engine
@@ -6806,6 +6946,16 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/v3/featlog':
             try:
                 self._send(200, json.dumps(get_v3_featlog(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/fw12/audit':
+            try:
+                self._send(200, json.dumps(get_fw12_audit(),
+                                           ensure_ascii=False,
+                                           default=_jdefault))
             except Exception as e:
                 import traceback
                 traceback.print_exc()

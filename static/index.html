@@ -289,6 +289,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <button class="tab" data-pg="w88">🏆 88W</button>
     <button class="tab" data-pg="newjx">🏅 新精選</button>
     <button class="tab" data-pg="fw12">🎯 精選12 <span id="fw12Cnt"></span></button>
+    <button class="tab" data-pg="fw12lib">📚 精選12全庫</button>
     <button class="tab" data-pg="fwck12">✓ Check12</button>
     <button class="tab" data-pg="htft">⚡ 半全場</button>
     <button class="tab" data-pg="review">📋 事後回查</button>
@@ -375,6 +376,16 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     </div>
     <div id="fw12Stats"></div>
     <div id="fw12List"><div class="note">載入中…</div></div>
+  </section>
+
+  <!-- 精選12 全庫重篩（永久保留，fw_screen_audit.db / fw12_audit.json） -->
+  <section class="pg" id="pg-fw12lib">
+    <div class="toolbar">
+      <span class="hint" id="fw12libInfo"></span>
+    </div>
+    <div id="fw12libStats"></div>
+    <div id="fw12libLg"></div>
+    <div id="fw12libList"><div class="note">載入中…</div></div>
   </section>
 
   <!-- Check 一下 7／8／12（離線預計算 8 情境表） -->
@@ -587,7 +598,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   </div>
 </div>
 <script src="/static/phone_crawl.js?v=5.3.0"></script>
-<script src="/static/app.js?v=5.5.8"></script>
+<script src="/static/app.js?v=5.6.0"></script>
 <script src="/static/crawlbtn.js?v=5.3.1"></script>
 </body>
 </html>

@@ -252,6 +252,7 @@ function goto(pg){
       if (f && !f.src) f.src = '/newjx';
     },
     x8: () => loadX8(),
+    fw12lib: () => loadFw12Lib(),
     v1: () => loadV1(),
     settings: () => loadSettings(),
     home: () => loadHome()}[pg] || (() => {}))();
@@ -3026,6 +3027,7 @@ async function loadX8(){
         <span style="color:var(--dim)">走 ${B.p}</span>
         <span>命中率 <b style="color:${bHr != null && bHr >= 0.5 ? '#3fb950' : '#f85149'};font-size:1.2em">${bHr == null ? '—' : (bHr * 100).toFixed(1) + '%'}</b>${bDec ? `（${B.w}/${bDec}）` : ''}</span>
         <span style="color:var(--dim);font-size:12px">更新於 ${esc(B.updated_at || '')}</span></div>
+        ${B.excl && B.excl.total ? `<div class="sub" style="margin-top:2px;color:var(--dim)">🚫 已剔除命中率&lt;50%：${B.excl.leagues.map(e => esc(e.league) + ' ' + e.hit_rate + '%').join('、')} → 餘下 <b>${B.excl.total}</b> 場，命中率 <b style="color:#3fb950;font-size:1.1em">${B.excl.hit_rate}%</b></div>` : ''}
         ${(B.by_league || []).length ? `<div style="margin-top:6px">${B.by_league.slice().sort((a, b) => {
           const ra = (a.w + a.l) ? a.w / (a.w + a.l) : -1;
           const rb = (b.w + b.l) ? b.w / (b.w + b.l) : -1;
@@ -3139,4 +3141,76 @@ document.addEventListener('click', e => {
   if (e.target.id === 'btnX8List') loadX8();
   if (e.target.id === 'x8ModalClose') $('#x8Modal').classList.remove('on');
 });
+
+/* ---------- 📚 精選12 全庫重篩（永久保留） ---------- */
+function _fw12LineTxt(it){
+  const h = it.line_h, g = it.line_g;
+  if (h == null) return '—';
+  const a = Math.abs(h);
+  let line;
+  if (a < 0.02) line = '平手';
+  else if (a < 0.27) line = (g === 'home' ? '主' : '客') + '讓平半';
+  else if (a < 0.52) line = (g === 'home' ? '主' : '客') + '讓半球';
+  else if (a < 0.77) line = (g === 'home' ? '主' : '客') + '讓半一';
+  else line = (g === 'home' ? '主' : '客') + '讓' + a.toFixed(2);
+  return line;
+}
+async function loadFw12Lib(){
+  const S = $('#fw12libStats'), L = $('#fw12libList'), G = $('#fw12libLg'), I = $('#fw12libInfo');
+  try {
+    const d = await (await fetch('/api/fw12/audit')).json();
+    if (d.error){ S.innerHTML = '<div class="note">' + esc(d.error) + '</div>'; L.innerHTML = ''; G.innerHTML = ''; I.textContent=''; return; }
+    let h = `<div class="fcard"><div class="f-top" style="flex-wrap:wrap;gap:8px">
+      <b>全庫已掃 <span class="num">${d.screened}</span> 場</b>
+      <span class="tag" style="border-color:var(--gold2)">合資格 <b class="num">${d.pass}</b> 場</span>
+      <span class="tag" style="color:#3fb950;border-color:#3fb950">贏 ${d.w}</span>
+      <span class="tag" style="color:#f85149;border-color:#f85149">輸 ${d.l}</span>
+      <span class="tag dim">走 ${d.p}</span>
+      <span class="tag" style="border-color:#6b5510">命中率 <b class="num" style="color:${d.hit_rate >= 50 ? '#3fb950' : '#f85149'}">${d.hit_rate == null ? '—' : d.hit_rate + '%'}</b></span></div>`;
+    if (!d.scan){
+      h += `<div class="sub" style="margin-top:4px;color:var(--gold2)">⏳ 全庫重篩進行中——數字會隨掃描增加，結果永久保留</div>`;
+    } else if (d.scan.phase !== 'done' && d.scan.last_id){
+      h += `<div class="sub" style="margin-top:4px;color:var(--gold2)">⏳ 全庫重篩進行中（已掃到 match_id ${d.scan.last_id}）——數字會隨掃描增加，結果永久保留</div>`;
+    } else {
+      h += `<div class="sub" style="margin-top:4px;color:var(--dim)">✅ 全庫重篩完成・結果永久保留（${d.source === 'live' ? '實時審計庫' : '雲端快照'}）</div>`;
+    }
+    h += '</div>';
+    S.innerHTML = h;
+    G.innerHTML = (d.leagues && d.leagues.length) ? '<div class="fcard"><div class="f-top" style="flex-wrap:wrap;gap:6px"><b>分聯賽</b>　' +
+      d.leagues.map(x => {
+        const dec = x.w + x.l;
+        const hr = x.hit_rate;
+        return `<span class="tag" style="border-color:#6b5510">${esc(x.league)} ${x.n}場 ` +
+          `<b style="color:${hr != null && hr >= 50 ? '#3fb950' : '#f85149'}">${hr == null ? '—' : hr + '%'}</b></span>`;
+      }).join(' ') + '</div></div>' : '';
+    let b = '';
+    if (!d.items || !d.items.length) b = '<div class="note">暫無合資格場次。</div>';
+    for (const it of (d.items || [])){
+      const isUp = it.direction === 'up';
+      const upTeam = (it.line_g === 'away') ? it.away : it.home;
+      const downTeam = (it.line_g === 'away') ? it.home : it.away;
+      const dirTeam = isUp ? upTeam : downTeam;
+      const resBadge = it.result === 'W' ? '<span class="tag" style="color:#3fb950;border-color:#3fb950">✔ 贏</span>'
+        : it.result === 'L' ? '<span class="tag" style="color:#f85149;border-color:#f85149">✘ 輸</span>'
+        : it.result === 'P' ? '<span class="tag dim">走盤</span>'
+        : '<span class="tag" style="color:var(--gold2);border-color:#6b5510">⏳ 待定</span>';
+      const score = (it.hs != null && it.aws != null) ? ` <b class="num">${it.hs}-${it.aws}</b>` : '';
+      const cellsTxt = (it.cells && it.cells.length) ? it.cells.map(c => esc(c.cell || c)).join('·') : '';
+      b += `<div class="fcard"><div class="f-top" style="flex-wrap:wrap;gap:6px">
+        <span class="f-time">${esc((it.kickoff || '').slice(0, 16))}</span>
+        <span class="lg" style="color:var(--gold2);font-size:12px">${esc(it.league)}</span>
+        <b>${esc(it.home || '')} <span style="color:var(--dim)">vs</span> ${esc(it.away || '')}${score}</b>
+        <span class="tag dim">${esc(_fw12LineTxt(it))}</span>
+        <span class="tag dim">主 ${it.close_ho == null ? '—' : (+it.close_ho).toFixed(2)}／客 ${it.close_ao == null ? '—' : (+it.close_ao).toFixed(2)}</span>
+        <span class="tag" style="color:${isUp ? '#3fb950' : '#f85149'};border-color:currentColor">${isUp ? '上盤' : '下盤'}＝${esc(dirTeam || '')}</span>
+        ${resBadge}</div>
+        <div class="sub" style="margin-top:4px;color:var(--dim)">12格：${cellsTxt}</div></div>`;
+    }
+    L.innerHTML = b;
+    I.textContent = `合資格 ${d.pass} 場｜最後更新 ${new Date().toLocaleTimeString('zh-HK', {hour12: false})}`;
+  } catch (e) {
+    L.innerHTML = '<div class="err">載入失敗：' + esc(e) + '</div>';
+  }
+}
+
 setInterval(x8Poll, 60000);
