@@ -17,6 +17,7 @@ import traceback
 WS = os.path.dirname(os.path.abspath(__file__))          # screen_app/
 BASE_DIR = os.path.dirname(WS)                             # 項目根（DB 所在）
 RULES_PATH = os.path.join(WS, 'w88_rules.json')
+DRAW_RULES_PATH = os.path.join(WS, 'k3_draw_rules.json')
 DB_PATH = os.environ.get('DB_PATH') or os.path.join(BASE_DIR, 'football.db')
 
 # 賠率標籤優先次序（攞最接近開賽嘅一筆）
@@ -43,6 +44,34 @@ def load_rules(force=False):
         _rules = {}
     _rules_ts = time.time()
     return _rules
+
+
+_draw_rules = None
+_draw_rules_ts = 0
+
+
+def load_draw_rules(force=False):
+    """K3 雙數和波規則（獨立檔）：欄位正規化成同 w88_rules 一樣
+    （all_draw→all_hit、train_draw→train_hit、test_draw→test_hit）。"""
+    global _draw_rules, _draw_rules_ts
+    if not force and _draw_rules and time.time() - _draw_rules_ts < 300:
+        return _draw_rules
+    try:
+        with open(DRAW_RULES_PATH, encoding='utf-8') as f:
+            raw = json.load(f)
+        out = {}
+        for lg, r in raw.items():
+            rr = dict(r)
+            rr['market'] = 'draw'
+            rr['all_hit'] = r.get('all_draw')
+            rr['train_hit'] = r.get('train_draw')
+            rr['test_hit'] = r.get('test_draw')
+            out[lg] = [rr]
+        _draw_rules = out
+    except Exception:
+        _draw_rules = {}
+    _draw_rules_ts = time.time()
+    return _draw_rules
 
 
 def migrate(conn):
@@ -346,6 +375,21 @@ def full(conn, limit=300):
               'score': ('%s-%s' % (r[11], r[12]))
               if r[11] is not None else None,
               'home': r[13], 'away': r[14]} for r in rows]
+    # 每條預測對返方法庫嘅歷史命中率（2026-10-20 用戶要求逐場顯示）：
+    # 優先（聯賽＋市場＋條件）精確對，對唔到就用（聯賽＋label）
+    _rlk = {}
+    for _src in (load_rules(), load_draw_rules()):
+        for _lg, _rl in _src.items():
+            for _r in _rl:
+                _rlk[(_lg, _r['market'], tuple(_r.get('conds') or []))] = _r
+                if _r.get('label'):
+                    _rlk[(_lg, 'lbl', _r['label'])] = _r
+    for p in preds:
+        _r = _rlk.get((p['league'], p['market'], tuple(p['conds']))) \
+            or _rlk.get((p['league'], 'lbl', p['label']))
+        if _r:
+            p['hist_hit'] = _r.get('all_hit')
+            p['hist_n'] = _r.get('all_n')
     # 方法庫：w88_rules 全部方法；fw8x 讓球公式做補充
     try:
         import fw8x
@@ -353,15 +397,16 @@ def full(conn, limit=300):
     except Exception:
         formulas = {}
     library = {}
-    for lg, rl in load_rules().items():
-        slot = library.setdefault(lg, {'league': lg, 'methods': []})
-        for r in rl:
-            slot['methods'].append({
-                'market': r['market'], 'label': r.get('label'),
-                'conds': r['conds'],
-                'train_n': r['train_n'], 'train_hit': r['train_hit'],
-                'test_n': r['test_n'], 'test_hit': r['test_hit'],
-                'all_n': r['all_n'], 'all_hit': r['all_hit']})
+    for _src in (load_rules(), load_draw_rules()):
+        for lg, rl in _src.items():
+            slot = library.setdefault(lg, {'league': lg, 'methods': []})
+            for r in rl:
+                slot['methods'].append({
+                    'market': r['market'], 'label': r.get('label'),
+                    'conds': r['conds'],
+                    'train_n': r['train_n'], 'train_hit': r['train_hit'],
+                    'test_n': r['test_n'], 'test_hit': r['test_hit'],
+                    'all_n': r['all_n'], 'all_hit': r['all_hit']})
     for lg, f in formulas.items():
         slot = library.setdefault(lg, {'league': lg, 'methods': []})
         slot['formula'] = {

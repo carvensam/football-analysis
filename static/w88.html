@@ -157,7 +157,7 @@ async function load(){
         <span class="ko">${esc((r.kickoff||'').slice(5,16))}</span>
         <span class="lg">${esc(r.league)}</span>
         <b class="tm">${esc(r.home)} <span style="color:var(--dim)">vs</span> ${esc(r.away)}</b>
-        <span class="tag ${mc}">${esc(r.label || r.market)}</span>${badge}</div>
+        <span class="tag ${mc}">${esc(r.label || r.market)}</span>${r.hist_hit != null ? `<span class="rmeta" style="margin-left:2px">歷史命中 ${(r.hist_hit*100).toFixed(1)}%${r.hist_n ? `(n=${r.hist_n})` : ''}</span>` : ''}${badge}</div>
         <div class="sub">條件：${r.conds.map(condTxt).join('＋')}　盤口：${fmtLine(r.hc, r.giver)}　大小線：${r.ou_line ?? '—'}
         ${r.score ? `　賽果：<b>${esc(r.score)}</b>` : ''}</div></div>`;
     }
