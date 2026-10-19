@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""好波 49 項大細分析引擎（2026-10-06 重做版）——概念完全照 FootballAnalysis
+"""好波 50 項大細分析引擎（2026-10-06 重做 49 項＋2026-10-20 第50項 8X 因素）——概念完全照 FootballAnalysis
 上下盤 45 項（scope masks／16格／12段水位／走勢狀態／對賽 h2h／上次完全相同），
 改做大細（Over/Under）口徑。
 
@@ -127,8 +127,10 @@ class HBItems:
     def run(self, league, home_id, away_id, round_label,
             line_c, over_c, under_c, line_i, over_i, under_i,
             line_4, over_4, under_4,
-            home_gf_h, home_ga_h, away_gf_a, away_ga_a):
-        """回傳 {'items': [...49...], 'consensus': {...}, 'pick': {...}}"""
+            home_gf_h, home_ga_h, away_gf_a, away_ga_a,
+            x8dir=None):
+        """回傳 {'items': [...50...], 'consensus': {...}, 'pick': {...}}
+        x8dir：8X 上下盤預測（'up'/'down'/None；2026-10-20 用戶——作為大小因素）"""
         A = self
         lg_code = self._lg_uniques.get(league, -1)
         rd_code = self._rd_uniques.get(str(round_label or ''), -1)
@@ -138,8 +140,8 @@ class HBItems:
         tgt_w_i = self._zone1(over_i)
         items = []
 
-        def add(no, title, r, extra=None):
-            side = self._side(r)
+        def add(no, title, r, extra=None, side=None):
+            side = side if side is not None else self._side(r)
             it = {'no': no, 'title': title, 'rates': r, 'side': side}
             if extra:
                 it.update(extra)
@@ -348,6 +350,18 @@ class HBItems:
                 self._rates(m_line))
         else:
             add('49', _t('all', '同尾盤線＋同半場入球節奏'), None)
+        # ---- 50：8X 上下盤預測（如有）——全庫 91,057 場統計：
+        # 上盤開出場 大球 53.95%（n=39,835）；下盤開出場 細球 53.26%（n=40,448）
+        if x8dir == 'up':
+            add('50', '8X預測上盤開出＝偏大球（全庫上盤開出 大53.9%）',
+                {'n': 39835, 'over_r': 0.5395, 'under_r': 0.4605,
+                 'push_r': 0.0}, side='大')
+        elif x8dir == 'down':
+            add('50', '8X預測下盤開出＝偏細球（全庫下盤開出 細53.3%）',
+                {'n': 40448, 'over_r': 0.4674, 'under_r': 0.5326,
+                 'push_r': 0.0}, side='細')
+        else:
+            add('50', '8X 上下盤預測（冇記錄，唔表態）', None)
 
         # ---------------------------------------------------------------- 共識
         votes = {'大': 0, '細': 0}

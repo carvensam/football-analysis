@@ -545,20 +545,6 @@ def _migrate_db():
         # 一勞永逸：kickoff 索引（一次性建立，秒級完成）。
         conn.execute('CREATE INDEX IF NOT EXISTS idx_matches_kickoff '
                      'ON matches(kickoff)')
-        # 2026-10-20：odds_asian/odds_ou 上嘅變動記錄 trigger（跟種子庫嚟）會寫
-        # 呢兩張 history 表——雲端舊庫冇呢兩張表，/api/admin/ingest 一 replace
-        # odds_asian 就炸「no such table: main.odds_asian_history」成盤 rollback。
-        # 開機補建（schema 同本機 master 一致）。
-        conn.execute('''CREATE TABLE IF NOT EXISTS odds_asian_history (
-            seq INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER, label TEXT, company_id INTEGER,
-            handicap REAL, home_odds REAL, away_odds REAL,
-            change_time TEXT, giver TEXT, fetched_at TEXT)''')
-        conn.execute('''CREATE TABLE IF NOT EXISTS odds_ou_history (
-            seq INTEGER PRIMARY KEY AUTOINCREMENT,
-            match_id INTEGER, label TEXT, company_id INTEGER,
-            total_line REAL, over_odds REAL, under_odds REAL,
-            change_time TEXT)''')
         conn.commit()
     finally:
         conn.close()
@@ -4832,9 +4818,23 @@ def _hb_predict_compute(mid):
     (hid, aid, hs, aws, hhs, haws, lg, rd, ln, oo, uo, iln, ioo, iuo,
      l4, o4o, o4u, ahc, agv) = r
     ctx = _hb_context()
+    # 2026-10-20 用戶：8X 上下盤預測（如有）作為好波大小第50項因素
+    x8dir = None
+    try:
+        c3 = db()
+        try:
+            _r = c3.execute('SELECT direction FROM fw8x_log WHERE match_id=?',
+                            (mid,)).fetchone()
+            x8dir = _r[0] if _r else None
+        finally:
+            c3.close()
+    except Exception:
+        pass
     res = ctx.predict(hid, aid, lg, rd, ou_line=ln, ou_over=oo,
                       ou_under=uo, oi_line=iln, oi_over=ioo, oi_under=iuo,
-                      ah_hc=ahc, o4_line=l4, o4_over=o4o, o4_under=o4u)
+                      ah_hc=ahc, o4_line=l4, o4_over=o4o, o4_under=o4u,
+                      x8dir=x8dir)
+    res['x8dir'] = x8dir
     res['match'] = {'id': mid, 'league': lg, 'home_id': hid, 'away_id': aid,
                     'score': f'{hs}-{aws}' if hs is not None else None,
                     'half': f'{hhs}-{haws}' if hhs is not None else None,

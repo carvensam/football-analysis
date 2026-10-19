@@ -383,8 +383,10 @@ class HB:
     def predict(self, home_id, away_id, league, round_label,
                 ou_line=None, ou_over=None, ou_under=None,
                 oi_line=None, oi_over=None, oi_under=None,
-                ah_hc=None, o4_line=None, o4_over=None, o4_under=None):
-        """回傳 {'ou':..., 'htft':..., 'relation':..., 'factors':...}"""
+                ah_hc=None, o4_line=None, o4_over=None, o4_under=None,
+                x8dir=None):
+        """回傳 {'ou':..., 'htft':..., 'relation':..., 'factors':...}
+        x8dir：8X 上下盤預測（'up'/'down'/None）——第50項大小因素（2026-10-20）"""
         L = self.lg.get(league)
         lg_n = L['n'] if L else 0
         # 聯賽基準（樣本細向全庫混合）
@@ -453,7 +455,8 @@ class HB:
             'top_scores': top_scorelines(lam_home, lam_away),
         }
 
-        # 4) 大/細：49 項 FootballAnalysis 概念分析 → 票數共識（2026-10-06 重做）
+        # 4) 大/細：50 項 FootballAnalysis 概念分析 → 票數共識
+        # （2026-10-20 加第50項：8X 上下盤預測作為大小因素；其餘 49 項 2026-10-06 重做）
         # 舊泊松/機器學習法已清除——唔係場場預測，係搵高%場次（精選門檻喺引擎入面）
         items_out = None
         try:
@@ -468,7 +471,8 @@ class HB:
                 oi_line, oi_over, oi_under,
                 o4_line, o4_over, o4_under,
                 H.get('gf_h'), H.get('ga_h'),
-                A2.get('gf_a'), A2.get('ga_a'))
+                A2.get('gf_a'), A2.get('ga_a'),
+                x8dir=x8dir)
         except Exception:
             import traceback
             traceback.print_exc()
