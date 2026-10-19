@@ -679,16 +679,186 @@ def do_fetch(mid, force=False):
         if not row:
             conn.close()
             return {'ok': False, 'error': '找不到賽事'}
+        before = _closing_now(conn, mid)
         ok = crawler.crawl_odds_for_match(conn, fetcher, mid, row[0], 12)
         conn.close()
         # 失敗唔緩存（2026-09-29）：冷卻期內被拒絕嘅請求唔記錄時間，
         # 下次撳掣即刻重試，唔會俾 120 秒快取擋住
         if ok:
             _last_fetch[mid] = time.time()
+            after_odds_update(mid, before)   # 2026-10-20：尾盤變動→重檢資格
             return {'ok': True}
         err = (getattr(fetcher, 'last_error', None)
                or 'titan007 無回應（數據伺服器可能暫時中斷，已排定自動重試）')
         return {'ok': False, 'error': err}
+
+
+# ============ 2026-10-20 尾盤變動 → 該場精選資格自動重檢 ============
+# 背景：用戶 10-20 投訴「尾盤無更新到，合唔合乎資格都有待商榷」——雲端（Render）
+# 凌晨 00–12 點冇排程爬蟲，尾盤停舊；就算重抓咗新尾盤，精選資格都仲係用舊線
+# 判定（do_fetch 從來唔觸發重算，只有 do_update 會）。呢組函數喺任何渠道寫入
+# 新盤口之後，若尾盤有重大變動（讓球±0.25／讓球方轉向／水位±0.15），背景線程
+# 用新線重算該場所有未結算精選資格：仍合 → 更新 detail＋快照；唔合 → 移出。
+_LINE_MOVE_H = 0.25   # 讓球變動門檻（淺/深一檔）
+_LINE_MOVE_W = 0.15   # 水位變動門檻
+_last_reval = {}
+
+
+def _closing_now(conn, mid):
+    return conn.execute(
+        "SELECT handicap, giver, home_odds, away_odds FROM odds_asian "
+        "WHERE match_id=? AND label='closing' AND company_id=12",
+        (mid,)).fetchone()
+
+
+def _line_changed(a, b):
+    """尾盤有冇重大變動（讓球差≥0.25、讓球方轉向、任一侧水位差≥0.15）。"""
+    if not a or a[0] is None:
+        return bool(b and b[0] is not None)
+    if not b or b[0] is None:
+        return True
+    if abs(abs(a[0]) - abs(b[0])) >= _LINE_MOVE_H - 1e-9:
+        return True
+    if (a[1] or None) != (b[1] or None):
+        return True
+    for i in (2, 3):
+        if a[i] is not None and b[i] is not None \
+                and abs(a[i] - b[i]) >= _LINE_MOVE_W:
+            return True
+    return False
+
+
+def _pick_revalidate(conn, mid):
+    """單場精選資格重檢（評估-only：唔重抓、唔清歷史池——歷史場次尾盤
+    永不變，變嘅只有目標場自己）。回傳動作列表（供日誌）。"""
+    import v2_engine
+    import v3_engine
+    import fw_grid_engine
+    import fw8s_engine
+    acts = []
+    try:
+        t = screen_engine.get_target(conn, mid)
+    except Exception:
+        t = None
+    if not t:
+        return acts
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    # 精選W（V3 六條件）
+    try:
+        fw = v3_engine.featured_w(conn, t)
+        row = conn.execute('SELECT result FROM v3_featured WHERE match_id=?',
+                           (mid,)).fetchone()
+        if fw.get('pass'):
+            conn.execute(
+                'INSERT INTO v3_featured(match_id,direction,detail,added_at) '
+                'VALUES(?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                'direction=excluded.direction, detail=excluded.detail',
+                (mid, fw['direction'], _fw_meta(fw), now))
+            log_v3_featured(conn, mid, fw['direction'])
+            acts.append('W保留' if row else 'W新增')
+        elif row and row[0] is None:
+            conn.execute('DELETE FROM v3_featured WHERE match_id=?', (mid,))
+            acts.append('W移出')
+    except Exception:
+        traceback.print_exc(limit=3)
+    # V1 十六字頭（＋同主隊 Z）
+    try:
+        fl = v2_engine.featured_letters(conn, t) or {}
+        d = fl.get('direction')
+        passed = fl.get('passed_letters') or []
+        zpass = [e for e in (fl.get('letters') or [])
+                 if e.get('mix') == '同主隊' and e['letter'] in passed]
+        dz = zpass[0]['dir'] if zpass else None
+        row = conn.execute('SELECT result FROM v1_featured WHERE match_id=?',
+                           (mid,)).fetchone()
+        if d:
+            conn.execute(
+                'INSERT INTO v1_featured(match_id,direction,added_at) '
+                'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                'direction=excluded.direction',
+                (mid, d, now))
+            log_featured(conn, mid, d)
+        elif row and row[0] is None:
+            conn.execute('DELETE FROM v1_featured WHERE match_id=?', (mid,))
+            acts.append('V1移出')
+        rowz = conn.execute('SELECT result FROM v1_featured_z WHERE match_id=?',
+                            (mid,)).fetchone()
+        if dz:
+            conn.execute(
+                'INSERT INTO v1_featured_z(match_id,direction,added_at) '
+                'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                'direction=excluded.direction',
+                (mid, dz, now))
+            log_featured_z(conn, mid, dz)
+        elif rowz and rowz[0] is None:
+            conn.execute('DELETE FROM v1_featured_z WHERE match_id=?', (mid,))
+    except Exception:
+        traceback.print_exc(limit=3)
+    # 格 7／8／12／8s
+    try:
+        for g in ('7', '8', '12', '8s'):
+            try:
+                rep = (fw8s_engine.fw8s_report(conn, t) if g == '8s'
+                       else fw_grid_engine.grid_report(conn, t, g))
+            except Exception:
+                continue
+            row = conn.execute(
+                'SELECT result FROM fw_grid_featured WHERE grid=? AND match_id=?',
+                (g, mid)).fetchone()
+            if rep.get('pass'):
+                conn.execute(
+                    'INSERT INTO fw_grid_featured(grid,match_id,direction,'
+                    'detail,added_at) VALUES(?,?,?,?,?) '
+                    'ON CONFLICT(grid,match_id) DO UPDATE SET '
+                    'direction=excluded.direction, detail=excluded.detail',
+                    (g, mid, rep['direction'],
+                     fw8s_engine.fw8s_meta(rep) if g == '8s'
+                     else _fw_grid_meta(rep), now))
+            elif row and row[0] is None:
+                conn.execute(
+                    'DELETE FROM fw_grid_featured WHERE grid=? AND match_id=?',
+                    (g, mid))
+                acts.append('格%s移出' % g)
+    except Exception:
+        traceback.print_exc(limit=3)
+    return acts
+
+
+def after_odds_update(mid, before):
+    """任何渠道寫入盤口後call：尾盤有重大變動 → 600 秒節流下背景重檢資格。"""
+    try:
+        conn = db()
+        try:
+            after = _closing_now(conn, mid)
+        finally:
+            conn.close()
+        if not _line_changed(before, after):
+            return
+        if time.time() - _last_reval.get(mid, 0) < 600:
+            return
+        _last_reval[mid] = time.time()
+
+        def _bg():
+            for _attempt in range(4):
+                try:
+                    c2 = db()
+                    try:
+                        acts = _pick_revalidate(c2, mid)
+                        c2.commit()
+                    finally:
+                        c2.close()
+                    if acts:
+                        print('[reval] 場次%s 尾盤變動→重檢精選資格：%s'
+                              % (mid, ','.join(acts)), flush=True)
+                    return
+                except sqlite3.OperationalError:
+                    time.sleep(5)
+                except Exception:
+                    traceback.print_exc(limit=3)
+                    return
+        threading.Thread(target=_bg, daemon=True).start()
+    except Exception:
+        pass
 
 
 # ============ 一鍵更新賽事（賽果＋新場次＋已存在場次嘅盤口及賠率全部刷新） ============
@@ -957,14 +1127,17 @@ def _fetch_batch_worker(hours):
         for i, (mid, ko) in enumerate(todo):
             _fbatch_state['phase'] = f'即時更新盤口及賠率 {i + 1}/{len(todo)}'
             try:
+                before = _closing_now(conn, mid)
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
                     _fbatch_state['ok'] += 1
+                    after_odds_update(mid, before)   # 2026-10-20 尾盤變動→重檢
                 elif not conn.execute(
                         'SELECT 1 FROM odds_asian WHERE match_id=? AND company_id=12',
                         (mid,)).fetchone() \
                         and crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 3):
                     # 易胜博未開盤 → Crown(3) 後備
                     _fbatch_state['ok'] += 1
+                    after_odds_update(mid, before)
                 else:
                     _fbatch_state['fail'] += 1
             except Exception:
@@ -1122,6 +1295,41 @@ def _v2_sched_job():
             do_update_window('24h')
         except Exception:
             _sched_state['last_error'] = traceback.format_exc(limit=3)
+
+
+def _cloud_overnight_job():
+    """2026-10-20：雲端凌晨 00–12 點冇排程爬蟲（V2 窗口更新 12 時先開），凌晨開賽
+    場次嘅尾盤會停舊幾個鐘——用戶 10-20 00:39 截圖投訴「尾盤無更新到」嘅元兇
+    （莫沙 vs 卡利亞里 00:30 開賽，雲端尾盤仲係 22 時嘅主讓平/半，市場其實
+    已經走咗去平手）。呢個 loop 每 15 分鐘經代理池補抓未來 60 分鐘內開賽、
+    尾盤舊過 10 分鐘嘅場次（通常幾場至十幾場，0.5C 頂得住）；do_fetch 內部
+    已含尾盤變動→資格重檢。只喺雲端（DISABLE_UPDATE）行。"""
+    while True:
+        time.sleep(900)
+        try:
+            if not DISABLE_UPDATE:
+                continue
+            conn = db()
+            rows = conn.execute(
+                'SELECT m.id, m.kickoff FROM matches m '
+                'WHERE m.home_score IS NULL '
+                "AND m.kickoff >= datetime('now','+8 hours','-5 minutes') "
+                "AND m.kickoff <= datetime('now','+8 hours','+60 minutes') "
+                'AND EXISTS(SELECT 1 FROM odds_asian o '
+                'WHERE o.match_id=m.id AND o.company_id=12) '
+                "AND (SELECT MAX(o.fetched_at) FROM odds_asian o "
+                "WHERE o.match_id=m.id AND o.company_id=12) "
+                "< datetime('now','+8 hours','-10 minutes') "
+                'ORDER BY m.kickoff LIMIT 40').fetchall()
+            conn.close()
+            for mid, _ko in rows:
+                try:
+                    do_fetch(mid, True)
+                except Exception:
+                    pass
+                time.sleep(3)
+        except Exception:
+            pass
 
 
 def do_screen(mid, sel=None):
@@ -3295,7 +3503,7 @@ def do_v3_featured_refresh(mid):
 def _build_v3_rec(row, now):
     """精選W 單場卡片：基本資料＋狀態＋自動結算（以入選方向計 贏/輸/走）＋conds/gap30"""
     (mid, d, res, detail, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv,
-     ho, ao, hr_, ar_) = row
+     ho, ao, hr_, ar_, shc, sgv, sho, sao, sadded) = row
     rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
            'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
            'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
@@ -3307,6 +3515,26 @@ def _build_v3_rec(row, now):
            'home_odds': ho, 'away_odds': ao,
            'state': 'finished' if hs is not None else (
                'live' if ko <= now else 'scheduled')}
+    # 2026-10-20：入選/上次檢定時嘅尾盤 vs 而家尾盤——有重大變動就標示，
+    # 等用戶知道張卡嘅六條件係邊條線下面評出嚟（資格透明度）
+    if shc is not None:
+        rec['line_at_pick'] = (screen_engine.fmt_line(shc, sgv)
+                               + (f' 主{sho}/客{sao}'
+                                  if sho is not None else ''))
+        rec['snap_at'] = sadded
+        moved = False
+        if hc is not None:
+            if abs(abs(shc) - abs(hc)) >= _LINE_MOVE_H - 1e-9:
+                moved = True
+            elif (sgv or None) != (gv or None) and (shc or hc):
+                moved = True
+            else:
+                for x, y in ((sho, ho), (sao, ao)):
+                    if x is not None and y is not None \
+                            and abs(x - y) >= _LINE_MOVE_W:
+                        moved = True
+                        break
+        rec['line_moved'] = moved
     if detail:
         try:
             det = json.loads(detail)
@@ -3345,7 +3573,10 @@ def get_v3_featured_full():
         '(SELECT g.side FROM match_goals g WHERE g.match_id=m.id '
         'ORDER BY g.seq LIMIT 1) AS fg, ht.name_tc, at.name_tc, '
         'c.req_name, oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
-        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
+        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank), '
+        # 2026-10-20：入選/上次檢定時嘅尾盤快照（v3_featured_log）——同而家尾盤
+        # 對比，變動大就喺卡片出警告（資格透明度，用戶 10-20 投訴修正）
+        'vl.handicap, vl.giver, vl.home_odds, vl.away_odds, vl.added_at '
         'FROM v3_featured f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
         'JOIN competitions c ON c.titan_id=s.titan_id '
@@ -3353,6 +3584,7 @@ def get_v3_featured_full():
         'JOIN teams at ON at.titan_id=m.away_id '
         'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
         "AND oc.label='closing' AND oc.company_id=12 "
+        'LEFT JOIN v3_featured_log vl ON vl.match_id=f.match_id '
         'LEFT JOIN match_prestandings ps ON ps.match_id=m.id '
         "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
         "AND hr.scope='total' AND hr.grp='' "
@@ -8003,6 +8235,9 @@ if __name__ == '__main__':
     else:
         print('[boot] 雲端代理模式：賽果補抓 30 分鐘一次；'
               'V2 定時窗口更新唔開（0.5C 搶資源）；全量自動更新照舊閂', flush=True)
+        threading.Thread(target=_cloud_overnight_job, daemon=True).start()
+        print('[boot] 雲端凌晨尾盤補抓已啟動（每 15 分鐘：未來 60 分鐘場次）',
+              flush=True)
     def _boot_auto_update():
         try:
             import datetime as dt

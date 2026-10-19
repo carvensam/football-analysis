@@ -1258,6 +1258,7 @@ async function loadPicksPage(){
       <div class="gaprow"><span class="lab">本場</span>上盤＝<b>${pud ? esc(pud.up) : '—'}</b>｜下盤＝<b>${pud ? esc(pud.down) : '—'}</b>${pud && pud.push ? '（平手盤：上盤＝平手主隊）' : ''}</div>
       <div class="gaprow"><span class="lab">揀時</span>${esc(p.pick_line || '—')} ${esc(p.pick_odds || '')}</div>
       <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
+    ${p.line_moved ? `<div class="gaprow" style="border:1px solid #d8a03c;background:rgba(216,160,60,.12);border-radius:8px;padding:6px 8px"><span class="lab">⚠️ 尾盤已變</span>入選/檢定時（${esc((p.snap_at || '').slice(5, 16) || '—')}）：<b>${esc(p.line_at_pick || '—')}</b> → 而家：<b>${esc(p.line || '—')} ${esc(p.odds || '')}</b>　條件已按新尾盤自動重檢</div>` : ''}
     </div>`;
   };
   let h = '';
@@ -1790,6 +1791,7 @@ function _fwCard(p){
       </span>
     </div>
     <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
+    ${p.line_moved ? `<div class="gaprow" style="border:1px solid #d8a03c;background:rgba(216,160,60,.12);border-radius:8px;padding:6px 8px"><span class="lab">⚠️ 尾盤已變</span>入選/檢定時（${esc((p.snap_at || '').slice(5, 16) || '—')}）：<b>${esc(p.line_at_pick || '—')}</b> → 而家：<b>${esc(p.line || '—')} ${esc(p.odds || '')}</b>　條件已按新尾盤自動重檢</div>` : ''}
     <div class="gaprow"><span class="lab">本場</span>上盤＝<b>${esc(ud.up)}</b>｜下盤＝<b>${esc(ud.down)}</b>${ud.push ? '（平手盤：上盤＝平手主隊）' : ''}</div>
     <div class="grid6">${conds.map((c, i) => `<div class="gi"><div class="t">條件${i + 1}</div><div class="v">${_fwCondCell(c)}<div class="sub">${esc(c.note || '')}</div></div></div>`).join('')}</div>
     ${p.lookback ? _fwLookbackHTML(p.lookback, _zone12Idx(p.up_odds)) : ''}
@@ -1961,6 +1963,7 @@ function _fwGridCard(p, g){
         <button class="btn gold ft-share">⇗</button></div>
       <div class="teams">${esc(p.home)} <span class="vs">vs</span> ${esc(p.away)}${p.score ? ` <b>${esc(p.score)}</b>` : ''} ${resBadge}</div>
       <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
+    ${p.line_moved ? `<div class="gaprow" style="border:1px solid #d8a03c;background:rgba(216,160,60,.12);border-radius:8px;padding:6px 8px"><span class="lab">⚠️ 尾盤已變</span>入選/檢定時（${esc((p.snap_at || '').slice(5, 16) || '—')}）：<b>${esc(p.line_at_pick || '—')}</b> → 而家：<b>${esc(p.line || '—')} ${esc(p.odds || '')}</b>　條件已按新尾盤自動重檢</div>` : ''}
       <div class="gaprow"><span class="lab">本場</span>上盤＝<b>${esc(ud.up)}</b>｜下盤＝<b>${esc(ud.down)}</b>${ud.push ? '（平手盤：上盤＝平手主隊）' : ''}</div>
       <div class="gaprow"><span class="lab">同聯賽</span>${_lgRateSlot(p.league, ['f' + g])}</div>
       <div class="grid6">${_fwgCellsHTML(p.cells, def.cells)}</div>
@@ -2637,6 +2640,7 @@ function _v1Card(p, z, tag){
       </span>
     </div>
     <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
+    ${p.line_moved ? `<div class="gaprow" style="border:1px solid #d8a03c;background:rgba(216,160,60,.12);border-radius:8px;padding:6px 8px"><span class="lab">⚠️ 尾盤已變</span>入選/檢定時（${esc((p.snap_at || '').slice(5, 16) || '—')}）：<b>${esc(p.line_at_pick || '—')}</b> → 而家：<b>${esc(p.line || '—')} ${esc(p.odds || '')}</b>　條件已按新尾盤自動重檢</div>` : ''}
     <div class="gaprow"><span class="lab">同聯賽</span>${_lgRateSlot(p.league, [lgRateKey])}</div>
     ${_udLegend2(p.line, p.home, p.away)}
     <div class="grid6">
