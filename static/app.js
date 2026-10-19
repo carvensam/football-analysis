@@ -1405,18 +1405,24 @@ function v3Cells9HTML(cells, curZ, zones12) {
   if (!cells || !cells.length) return '';
   let h = '';
   for (const c of cells) {
-    h += `<details style="margin:4px 0"><summary><span class="sum-t">${esc(c.tri)} × ${esc(c.scope)}</span><span class="sub">${c.n} 場</span></summary><div class="body">${v3Water12Tbl(c, curZ, zones12)}</div></details>`;
+    const ld = c.line_dist ? `<div class="note" style="margin-top:2px">樣本自身尾盤：${esc(c.line_dist)}</div>` : '';
+    h += `<details style="margin:4px 0"><summary><span class="sum-t">${esc(c.tri)} × ${esc(c.scope)}</span><span class="sub">${c.n} 場</span></summary><div class="body">${v3Water12Tbl(c, curZ, zones12)}${ld}</div></details>`;
   }
   return h;
 }
 function v3TriTxt(tri) {
   if (!tri) return '';
-  return `<table class="ck-table"><thead><tr><th>對比口徑</th><th>場數</th><th>上盤(${esc(_un())})勝率</th><th>下盤(${esc(_dn())})勝率</th><th>走盤率</th></tr></thead><tbody>` +
-    [['same', '上賽同主客場（原盤直比）'], ['swap', '上賽主客場對調（互換對比盤）'], ['all', '綜合全部（同主客＋對調）']]
-      .map(([k, lab]) => {
+  const rows = [['same', '上賽同主客場（原盤直比）'], ['swap', '上賽主客場對調（互換對比盤）'], ['all', '綜合全部（同主客＋對調）']];
+  const tbl = `<table class="ck-table"><thead><tr><th>對比口徑</th><th>場數</th><th>上盤(${esc(_un())})勝率</th><th>下盤(${esc(_dn())})勝率</th><th>走盤率</th></tr></thead><tbody>` +
+    rows.map(([k, lab]) => {
         const o = tri[k];
         return `<tr><td>${lab}</td><td>${o ? o.n : 0}</td><td class="${o ? _winCls(o.up_r, o.down_r, 'u') : ''}">${o ? pct(o.up_r) : '—'}</td><td class="${o ? _winCls(o.up_r, o.down_r, 'd') : ''}">${o ? pct(o.down_r) : '—'}</td><td>${o ? pct(o.push_r) : '—'}</td></tr>`;
       }).join('') + '</tbody></table>';
+  const notes = rows.map(([k, lab]) => {
+    const o = tri[k];
+    return (o && o.line_dist) ? `<div class="note" style="margin:1px 0">${lab}・樣本自身尾盤：${esc(o.line_dist)}</div>` : '';
+  }).join('');
+  return tbl + notes;
 }
 function v3ScopesTbl(scopes) {
   if (!scopes || !scopes.length) return '';

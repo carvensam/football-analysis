@@ -269,6 +269,36 @@ def _n(m):
     return 0 if m is None else int(np.count_nonzero(m))
 
 
+def _line_dist_txt(df, mask, top=8):
+    """樣本自身尾盤盤口分佈（解釋走盤來源用，2026-10-19）。
+    H2H 項（7–20）嘅篩選條件係「上賽尾盤＝今場盤口」，但樣本場自己嘅
+    尾盤盤口各異；走盤只會嚟自樣本場本身係平手／整球盤。回傳例如
+    '主讓平/半 138・平手 65・主讓半球 54'；冇樣本 → ''。"""
+    if mask is None:
+        return ''
+    sub = df[mask]
+    if not len(sub):
+        return ''
+    from collections import Counter
+    cnt = Counter()
+    hs = sub['c_h'].to_numpy(dtype=float)
+    gs = sub['c_g'].astype(object).to_numpy()
+    for h, g in zip(hs, gs):
+        if np.isnan(h):
+            cnt['無尾盤'] += 1
+        else:
+            cnt[fmt_line(h, g if isinstance(g, str) else None)] += 1
+    return '・'.join(f'{k} {v}' for k, v in cnt.most_common(top))
+
+
+# 走盤說明（H2H 項共用）：用戶 2026-10-19 質疑「平半盤唔會有走盤」——
+# 查證後結算公式無誤，走盤嚟自樣本場自身尾盤係平手／整球盤嘅場次
+_H2H_PUSH_NOTE = ('注意：呢個表嘅樣本係「上賽尾盤同今場一樣」嘅賽事，'
+                  '佢哋自己嗰場嘅尾盤盤口各異（見每格「樣本自身尾盤」）——'
+                  '走盤只會來自樣本場本身係平手／整球盤（整球盤啱好贏咁多球）。'
+                  '今場本身係平/半盤嘅話，實盤係唔會走盤嘅。')
+
+
 # ---------- build_context ----------
 
 def build_context(conn, t):
@@ -399,10 +429,13 @@ def item_h2h_line_v3(ctx, no):
     res_np = df['res'].to_numpy()
 
     def oc(mask):
-        return _oc(_res_code(res_np[np.nonzero(mask)[0]]))
+        o = _oc(_res_code(res_np[np.nonzero(mask)[0]]))
+        if o is not None:
+            o['line_dist'] = _line_dist_txt(df, mask)
+        return o
     return {'no': no, 'title': f'上賽尾盤 對 今場{name}（盤口100%一樣＋水位±3%）',
             'ref': (f'今場{name}：{fmt_line(T["h"], T["g"])} 主{T["ho"]}/客{T["ao"]}　'
-                    '上賽尾盤已做主客互換對比'),
+                    '上賽尾盤已做主客互換對比。' + _H2H_PUSH_NOTE),
             'tri': {'same': oc(m & pv_same),
                     'swap': oc(m & has_pv & ~pv_same),
                     'all': oc(m)}}
@@ -425,12 +458,13 @@ def item_h2h_water_v3(ctx, no):
         for sc in ('同一聯賽', '聯賽類', '全庫'):
             w = _water12(df, tm & scopes[sc])
             cells.append({'tri': tri, 'scope': sc, 'n': w['n'],
-                          'zones': w['zones']})
+                          'zones': w['zones'],
+                          'line_dist': _line_dist_txt(df, tm & scopes[sc])})
     return {'no': no,
             'title': f'上賽尾盤 對 今場{name}（12段水位 × 同主客/對調/綜合 × 3範圍）',
             'ref': (f'今場{name}：{fmt_line(T["h"], T["g"])} 主{T["ho"]}/客{T["ao"]}　'
                     '盤口100%一樣＋水位±0.03（上賽尾盤互換對比）；'
-                    '黃底＝今場上盤水位所處段位'),
+                    '黃底＝今場上盤水位所處段位。' + _H2H_PUSH_NOTE),
             'cells': cells, 'cur_zone12': ctx['cur_zone12'], 'zones12': ZONES12}
 
 
