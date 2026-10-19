@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""好波 50 項大細分析引擎（2026-10-06 重做 49 項＋2026-10-20 第50項 8X 因素）——概念完全照 FootballAnalysis
+"""好波 51 項大細分析引擎（2026-10-06 重做 49 項＋2026-10-20 第50項 8X、第51項 新精選）——概念完全照 FootballAnalysis
 上下盤 45 項（scope masks／16格／12段水位／走勢狀態／對賽 h2h／上次完全相同），
 改做大細（Over/Under）口徑。
 
@@ -128,9 +128,10 @@ class HBItems:
             line_c, over_c, under_c, line_i, over_i, under_i,
             line_4, over_4, under_4,
             home_gf_h, home_ga_h, away_gf_a, away_ga_a,
-            x8dir=None):
-        """回傳 {'items': [...50...], 'consensus': {...}, 'pick': {...}}
-        x8dir：8X 上下盤預測（'up'/'down'/None；2026-10-20 用戶——作為大小因素）"""
+            x8dir=None, jxdir=None):
+        """回傳 {'items': [...51...], 'consensus': {...}, 'pick': {...}}
+        x8dir：8X 上下盤預測（'up'/'down'/None；2026-10-20 用戶——作為大小因素）
+        jxdir：新精選上下盤預測（'up'/'down'/None；2026-10-20 用戶——同上）"""
         A = self
         lg_code = self._lg_uniques.get(league, -1)
         rd_code = self._rd_uniques.get(str(round_label or ''), -1)
@@ -362,6 +363,18 @@ class HBItems:
                  'push_r': 0.0}, side='細')
         else:
             add('50', '8X 上下盤預測（冇記錄，唔表態）', None)
+        # ---- 51：新精選 上下盤預測（如有）——同一套全庫統計：
+        # 上盤開出場 大球 53.95%；下盤開出場 細球 53.26%（2026-10-20 用戶）
+        if jxdir == 'up':
+            add('51', '新精選預測上盤開出＝偏大球（全庫上盤開出 大53.9%）',
+                {'n': 39835, 'over_r': 0.5395, 'under_r': 0.4605,
+                 'push_r': 0.0}, side='大')
+        elif jxdir == 'down':
+            add('51', '新精選預測下盤開出＝偏細球（全庫下盤開出 細53.3%）',
+                {'n': 40448, 'over_r': 0.4674, 'under_r': 0.5326,
+                 'push_r': 0.0}, side='細')
+        else:
+            add('51', '新精選 上下盤預測（冇記錄，唔表態）', None)
 
         # ---------------------------------------------------------------- 共識
         votes = {'大': 0, '細': 0}

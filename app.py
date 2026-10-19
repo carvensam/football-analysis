@@ -4832,14 +4832,18 @@ def _hb_predict_compute(mid):
     (hid, aid, hs, aws, hhs, haws, lg, rd, ln, oo, uo, iln, ioo, iuo,
      l4, o4o, o4u, ahc, agv) = r
     ctx = _hb_context()
-    # 2026-10-20 用戶：8X 上下盤預測（如有）作為好波大小第50項因素
+    # 2026-10-20 用戶：8X（第50項）＋新精選（第51項）上下盤預測作為好波大小因素
     x8dir = None
+    jxdir = None
     try:
         c3 = db()
         try:
             _r = c3.execute('SELECT direction FROM fw8x_log WHERE match_id=?',
                             (mid,)).fetchone()
             x8dir = _r[0] if _r else None
+            _r2 = c3.execute('SELECT dir FROM newjx_log WHERE match_id=?',
+                             (mid,)).fetchone()
+            jxdir = _r2[0] if _r2 else None
         finally:
             c3.close()
     except Exception:
@@ -4847,8 +4851,9 @@ def _hb_predict_compute(mid):
     res = ctx.predict(hid, aid, lg, rd, ou_line=ln, ou_over=oo,
                       ou_under=uo, oi_line=iln, oi_over=ioo, oi_under=iuo,
                       ah_hc=ahc, o4_line=l4, o4_over=o4o, o4_under=o4u,
-                      x8dir=x8dir)
+                      x8dir=x8dir, jxdir=jxdir)
     res['x8dir'] = x8dir
+    res['jxdir'] = jxdir
     res['match'] = {'id': mid, 'league': lg, 'home_id': hid, 'away_id': aid,
                     'score': f'{hs}-{aws}' if hs is not None else None,
                     'half': f'{hhs}-{haws}' if hhs is not None else None,
