@@ -1332,6 +1332,83 @@ def _cloud_overnight_job():
             pass
 
 
+# ---------- 熱數據增量同步（2026-10-20）----------
+# sync_delta.py（PC 每 30 分鐘）推 gzipped sqlite 過嚟，呢度逐表 INSERT OR REPLACE。
+# 所有熱表都有自然主鍵（matches.id / 各表 match_id 或複合 PK），replace 冇重複。
+SYNC_KEY = os.environ.get('SYNC_KEY') or 'fa-sync-2026'
+# 白名單：只接受呢啲表，防人亂推野入嚟
+_INGEST_WHITELIST = {
+    'matches', 'match_derived', 'match_prestandings', 'match_goals',
+    'match_corners', 'odds_asian', 'odds_ou', 'odds_ou_half', 'odds_ah_half',
+    'odds_1x2', 'odds_1x2_half', 'odds_1x2_all', 'odds_corner',
+    'v3_featured', 'v3_featured_log', 'featured', 'featured_log',
+    'featured_z', 'featured_z_log', 'v1_featured', 'v1_featured_z',
+    'fw_grid_featured', 'hb_pick_log', 'k3_log', 'newjx_log', 'w88_log',
+    'fw8s_log', 'fw8x_log', 'fw8x_bt2026', 'fw8s_bt', 'feat_hourly',
+}
+
+
+def _apply_delta(path):
+    """套用增量 sqlite：白名單內嘅表 INSERT OR REPLACE，回傳每表行數。
+    用雙連線（delta 獨立開）而唔係 ATTACH——Windows 下 ATTACH 新檔
+    好易被防毒短鎖搞到成盤失敗。"""
+    conn = db()
+    rep = {}
+    try:
+        src = sqlite3.connect(path, timeout=30)
+        tables = [r[0] for r in src.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")]
+        for t in tables:
+            if t not in _INGEST_WHITELIST:
+                rep[t] = 'skip（唔喺白名單）'
+                continue
+            dst_cols = {r[1] for r in conn.execute(f'PRAGMA table_info({t})')}
+            cols = [r[1] for r in src.execute(f'PRAGMA table_info({t})')]
+            if not dst_cols or set(cols) - dst_cols:
+                rep[t] = 'skip（schema 唔夾）'
+                continue
+            collist = ','.join(cols)
+            ph = ','.join('?' * len(cols))
+            n = 0
+            while True:
+                rows = src.execute(
+                    f'SELECT {collist} FROM {t} LIMIT 2000 OFFSET {n}').fetchall()
+                if not rows:
+                    break
+                conn.executemany(
+                    f'INSERT OR REPLACE INTO {t} ({collist}) VALUES ({ph})',
+                    rows)
+                n += len(rows)
+            rep[t] = n
+        src.close()
+        conn.commit()
+        # 同步完即刻清相關快取（唔等 TTL），手機即刻見到新 pick
+        for _c in (_featured_full_cache, _v1_featured_full_cache):
+            try:
+                with _c['lock']:
+                    for _k in (False, True):
+                        if isinstance(_c.get(_k), dict):
+                            _c[_k]['ts'] = 0.0
+            except Exception:
+                pass
+        for _name in ('_FW8S_RULES_CACHE', '_FW8S_BT_CACHE'):
+            try:
+                globals()[_name]['ts'] = 0.0
+                globals()[_name]['data'] = None
+            except Exception:
+                pass
+        for _name in ('_check_combo_cache', '_v2_item_cache', '_v3_item_cache',
+                      '_pk_full_cache'):
+            try:
+                globals()[_name].clear()
+            except Exception:
+                pass
+    finally:
+        conn.close()
+    print(f'[ingest] {rep}', flush=True)
+    return rep
+
+
 def do_screen(mid, sel=None):
     conn = db()
     t = screen_engine.get_target(conn, mid)
@@ -7354,6 +7431,37 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path != '/' and u.path.endswith('/'):
             u = u._replace(path=u.path.rstrip('/'))
+        if u.path == '/api/admin/ingest':
+            # 熱數據增量同步入口（sync_delta.py 每 30 分鐘推一次）
+            # 收 gzipped sqlite，內含同 schema 嘅熱表，全部 INSERT OR REPLACE
+            try:
+                if self.headers.get('X-Sync-Key') != SYNC_KEY:
+                    self._send(403, json.dumps({'error': 'forbidden'},
+                                               ensure_ascii=False))
+                    return
+                n = int(self.headers.get('Content-Length') or 0)
+                if n <= 0 or n > 100 * 1024 * 1024:
+                    self._send(400, json.dumps({'error': 'bad size'},
+                                               ensure_ascii=False))
+                    return
+                import gzip as _gz
+                raw = _gz.decompress(self.rfile.read(n))
+                tmp = os.path.join(PARENT_DIR, '_ingest_tmp.sqlite')
+                try:
+                    with open(tmp, 'wb') as f:
+                        f.write(raw)
+                    rep = _apply_delta(tmp)
+                finally:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                self._send(200, json.dumps(rep, ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         if u.path == '/api/8x/scan':
             try:
                 if not fw8x:
