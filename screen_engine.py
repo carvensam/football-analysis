@@ -382,9 +382,11 @@ def get_target(conn, match_id):
                 conv['ok'] = False
         t['prev_conv'] = conv
     # 今次主隊對上一次比賽（任何對手）尾盤 —— 第16/17項用
+    # CROSS JOIN 強制由 matches 行先：否則 SQLite 會由 odds_asian
+    # (label+company 幾萬行）逐行 PK 反查 matches，一場 12 秒（2026-10-14 profile 實測）
     prow = conn.execute(
         'SELECT m.id, m.home_id, oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
-        'FROM matches m JOIN odds_asian oc ON oc.match_id=m.id '
+        'FROM matches m CROSS JOIN odds_asian oc ON oc.match_id=m.id '
         "AND oc.label='closing' AND oc.company_id=12 AND oc.handicap IS NOT NULL "
         'WHERE (m.home_id=? OR m.away_id=?) AND m.home_score IS NOT NULL '
         'AND m.kickoff < ? ORDER BY m.kickoff DESC, m.id DESC LIMIT 1',

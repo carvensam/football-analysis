@@ -545,6 +545,20 @@ def _migrate_db():
         # 一勞永逸：kickoff 索引（一次性建立，秒級完成）。
         conn.execute('CREATE INDEX IF NOT EXISTS idx_matches_kickoff '
                      'ON matches(kickoff)')
+        # 2026-10-20：odds_asian/odds_ou 上嘅變動記錄 trigger（跟種子庫嚟）會寫
+        # 呢兩張 history 表——雲端舊庫冇呢兩張表，/api/admin/ingest 一 replace
+        # odds_asian 就炸「no such table: main.odds_asian_history」成盤 rollback。
+        # 開機補建（schema 同本機 master 一致）。
+        conn.execute('''CREATE TABLE IF NOT EXISTS odds_asian_history (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER, label TEXT, company_id INTEGER,
+            handicap REAL, home_odds REAL, away_odds REAL,
+            change_time TEXT, giver TEXT, fetched_at TEXT)''')
+        conn.execute('''CREATE TABLE IF NOT EXISTS odds_ou_history (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            match_id INTEGER, label TEXT, company_id INTEGER,
+            total_line REAL, over_odds REAL, under_odds REAL,
+            change_time TEXT)''')
         conn.commit()
     finally:
         conn.close()
