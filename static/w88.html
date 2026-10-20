@@ -94,6 +94,7 @@ table.lib th{color:var(--gold2);position:sticky;top:104px;background:var(--bg2)}
 </div>
 <div id="main">
   <div class="sumbar" id="sum"></div>
+  <div id="mktbar" style="margin:6px 0;display:flex;gap:6px;flex-wrap:wrap"></div>
   <div class="note">全市場逐聯賽方法庫（2026-10-19 挖掘）：每個聯賽/杯賽 ≥4 個方法，訓練期 ≤2024 ＋ 驗證期 2025+ 兩邊命中率都 ≥72.5%。市場：<b class="mkt-up" style="border:0">K3上盤</b>／<b class="mkt-down" style="border:0">K3下盤</b>／<b class="mkt-draw" style="border:0">K3開發雙數和波</b>／<b class="mkt-even" style="border:0">雙數</b>／<b class="mkt-over" style="border:0">K3大球</b>／<b class="mkt-under" style="border:0">K3細球</b>／<b class="mkt-home" style="border:0">K3主勝</b>／<b class="mkt-away" style="border:0">K3客勝</b>。和波一定係雙數。</div>
   <h2 class="sec">🎯 預測紀錄（全部市場）</h2>
   <div id="predbody"></div>
@@ -153,6 +154,13 @@ async function load(){
       `<div class="si"><div class="t">實戰命中率</div><div class="v ${dec && st.w/dec>=0.725?'up':'gold'}">${hr}</div></div>` +
       `<div class="si"><div class="t">待定</div><div class="v gold">${st.pending}</div></div>` +
       `<div class="si"><div class="t">走盤</div><div class="v">${st.push}</div></div>`;
+    /* 2026-10-21：市場細分（K3上盤／下盤／主勝／和波／雙數／大細...）：幾中幾＋% */
+    const bm = st.by_market || [];
+    $('#mktbar').innerHTML = bm.length ? bm.map(m => {
+      const dec = (m.w||0) + (m.l||0), r = dec ? m.w/dec : null;
+      const mc = MKT_CLASS[m.market] || '';
+      return `<span class="tag ${mc}" style="font-size:13px">${esc(m.label || m.market)} <b>${m.w||0}中${dec}</b>${r==null?'':` ${(r*100).toFixed(1)}%`}${m.p?` 走${m.p}`:''}<small style="color:var(--dim)"> n=${m.n}</small></span>`;
+    }).join(' ') : '';
     let h = '';
     if (!d.rows.length) h = '<div class="note">暫無記錄。背景每 20 分鐘自動掃描未來 7 日場次，亦可按「⚡ 一鍵掃描預測」。</div>';
     for (const r of d.rows){

@@ -54,6 +54,21 @@
   }
   _hfetch('/api/lg_hit_rates', 1).then(function (d) {
     _lgRatesHb = (d && d.lg) || {};
+    /* 2026-10-21：大/細方向細分：幾中幾＋% */
+    var sb = (d && d.hb_side) || [];
+    if (sb.length) {
+      var bar = document.createElement('div');
+      bar.style.cssText = 'margin:6px 0;display:flex;gap:6px;flex-wrap:wrap';
+      bar.innerHTML = sb.map(function (m) {
+        var dec = (m.w || 0) + (m.l || 0), r = dec ? m.w / dec : null;
+        return '<span class="ln" style="border:1px solid var(--line);border-radius:12px;padding:2px 10px">' +
+          (m.side === '大' ? '大球' : '細球') + ' <b>' + (m.w || 0) + '中' + dec + '</b>' +
+          (r == null ? '' : ' ' + (r * 100).toFixed(1) + '%') +
+          (m.p ? ' 走' + m.p : '') + '<small style="color:var(--dim)"> n=' + m.n + '</small></span>';
+      }).join('');
+      var list = document.getElementById('list');
+      if (list && list.parentNode) list.parentNode.insertBefore(bar, list);
+    }
     Array.prototype.forEach.call(document.querySelectorAll('[data-hblgr]'), function (el) {
       el.innerHTML = _hbLgRateTxt(el.getAttribute('data-hblgr'));
     });

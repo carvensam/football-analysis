@@ -2254,6 +2254,15 @@ async function loadHtftRules(){
     <span>贏 <b class="r-up">${s.wins || 0}</b></span><span>輸 <b class="r-down">${s.losses || 0}</b></span>
     <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>${distBar}
     <div class="note">四項＝主和／主客／客和／客主（半場有領先、全場冇贏到）；半場和局完全唔計。同一場多方法命中：👑＝預計機會率最高嗰項；機會率＝驗證期（2025+）命中率，已過訓練期（≤2024）＋驗證期雙重驗證，兩段都要 ≥2× 同聯賽基率先入庫。已完場按判定格自動結算，近 7 日保留。方法卡更新：${esc(d.rules_updated || '—')}。</div>`;
+  /* 2026-10-21：四項目標細分（主和/主客/客和/客主）：幾中幾＋% */
+  const _bt = d.by_target || {};
+  const _btK = Object.keys(_bt);
+  if (_btK.length){
+    $('#htftmStats').insertAdjacentHTML('beforeend', '<div class="statbar" style="margin-top:4px">🎯 目標細分：' +
+      _btK.map(k => { const e = _bt[k], dec = e.w + e.l, r = dec ? e.w/dec : null;
+        return `<span>${esc(e.name)} <b>${e.w}中${dec}</b>${r==null?'':` ${(r*100).toFixed(1)}%`}<small style="color:var(--dim)"> n=${e.n}</small></span>`;
+      }).join('｜') + '</div>');
+  }
   const scan = d.scan || {};
   $('#htftmScanInfo').textContent = scan.running
     ? '掃描中…'
@@ -3122,6 +3131,13 @@ async function loadX8(){
       h += '</div></div>';
     }
     $('#x8Stats').innerHTML = h;
+    /* 2026-10-21：上/下盤方向細分：幾中幾＋% */
+    if ((d.by_dir || []).length){
+      $('#x8Stats').insertAdjacentHTML('afterbegin', '<div class="fcard" style="margin:8px 0"><div class="f-top" style="flex-wrap:wrap;gap:6px"><b>方向細分</b>　' +
+        d.by_dir.map(m => { const dec = (m.w||0)+(m.l||0), r = dec ? m.w/dec : null;
+          return `<span class="tag" style="border-color:#6b5510">${m.dir==='up'?'上盤':'下盤'} <b>${m.w||0}中${dec}</b>${r==null?'':` ${(r*100).toFixed(1)}%`}${m.p?` 走${m.p}`:''}<small style="color:var(--dim)"> n=${m.n}</small></span>`;
+        }).join(' ') + '</div></div>');
+    }
     let b = '';
     if (!d.rows.length) b = '<div class="note">暫無記錄。背景每 20 分鐘自動掃描未來 7 日場次，有公式全中嘅場次會自動記錄並彈窗通知。</div>';
     for (const r of d.rows){

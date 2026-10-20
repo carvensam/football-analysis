@@ -4303,6 +4303,17 @@ def get_htft_rules_full():
     out = dict(data)
     out['scan'] = {k: _htft_rules_scan[k] for k in
                    ('running', 'done', 'total', 'added', 'last', 'error')}
+    # 2026-10-21：四項目標（主和/主客/客和/客主）細分 幾中幾＋%
+    _bt = {}
+    for _r in out.get('played') or []:
+        _t, _s = _r.get('target'), _r.get('settle')
+        if not _t or _s not in ('贏', '輸'):
+            continue
+        _e = _bt.setdefault(_t, {'n': 0, 'w': 0, 'l': 0,
+                                 'name': _r.get('target_name') or _t})
+        _e['n'] += 1
+        _e['w' if _s == '贏' else 'l'] += 1
+    out['by_target'] = _bt
     return out
 
 
@@ -5085,11 +5096,17 @@ def api_lg_hit_rates():
             _add('hb', conn.execute(
                 "SELECT league, COUNT(*), SUM(result = 'W') FROM hb_pick_log "
                 "WHERE result IN ('W','L') GROUP BY league").fetchall())
+            _hb_side = [dict(zip(('side', 'n', 'w', 'l', 'p'), r)) for r in
+                        conn.execute(
+                            "SELECT side, COUNT(*), SUM(result = 'W'), "
+                            "SUM(result = 'L'), SUM(result = 'P') "
+                            "FROM hb_pick_log GROUP BY side")]
         except sqlite3.Error:
-            pass
+            _hb_side = []
     finally:
         conn.close()
-    data = {'lg': out, 'ts': time.strftime('%Y-%m-%d %H:%M:%S')}
+    data = {'lg': out, 'hb_side': _hb_side,
+            'ts': time.strftime('%Y-%m-%d %H:%M:%S')}
     _LG_HIT_CACHE['ts'] = now
     _LG_HIT_CACHE['data'] = data
     return data

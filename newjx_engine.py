@@ -233,8 +233,13 @@ def _stats(conn):
                  "SELECT league, dir, COUNT(*), SUM(result='W'), "
                  "SUM(result='L'), SUM(result='P') FROM newjx_log "
                  'GROUP BY league ORDER BY 3 DESC')]
+    by_dir = [dict(zip(('dir', 'n', 'w', 'l', 'p'), r)) for r in
+              conn.execute(
+                  "SELECT dir, COUNT(*), SUM(result='W'), SUM(result='L'), "
+                  "SUM(result='P') FROM newjx_log GROUP BY dir")]
     return {'total': st[0] or 0, 'w': st[1] or 0, 'l': st[2] or 0,
-            'push': st[3] or 0, 'pending': st[4] or 0, 'by_league': by_lg}
+            'push': st[3] or 0, 'pending': st[4] or 0,
+            'by_dir': by_dir, 'by_league': by_lg}
 
 
 def full(conn, limit=300):

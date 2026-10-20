@@ -136,6 +136,14 @@ async function load(){
       `<div class="si"><div class="t">實戰 中/唔中</div><div class="v"><span style="color:var(--up)">${st.w}</span>/<span style="color:var(--down)">${st.l}</span></div></div>` +
       `<div class="si"><div class="t">實戰命中率</div><div class="v ${dec && st.w/dec>=0.725?'up':'gold'}">${hr}</div></div>` +
       `<div class="si"><div class="t">待定</div><div class="v gold">${st.pending}</div></div>`;
+    /* 2026-10-21：上/下盤方向細分：幾中幾＋% */
+    const bd = st.by_dir || [];
+    if (bd.length){
+      $('#sum').insertAdjacentHTML('afterend', '<div style="margin:6px 0;display:flex;gap:6px;flex-wrap:wrap">' + bd.map(m => {
+        const dec = (m.w||0) + (m.l||0), r = dec ? m.w/dec : null;
+        return `<span class="tag ${m.dir==='up'?'up':'down'}" style="font-size:13px">${m.dir==='up'?'上盤':'下盤'} <b>${m.w||0}中${dec}</b>${r==null?'':` ${(r*100).toFixed(1)}%`}${m.p?` 走${m.p}`:''}<small style="color:var(--dim)"> n=${m.n}</small></span>`;
+      }).join('') + '</div>');
+    }
     let h = '';
     if (!d.rows.length) h = '<div class="note">暫無記錄。背景每 20 分鐘自動掃描未來 7 日場次，亦可按「⚡ 一鍵掃描預測」。</div>';
     for (const r of d.rows){

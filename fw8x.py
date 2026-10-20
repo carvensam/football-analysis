@@ -500,6 +500,9 @@ def stats_and_list(conn, limit=300):
         "SUM(CASE WHEN result='L' THEN 1 ELSE 0 END) "
         "FROM fw8x_log WHERE result IN ('W','L') GROUP BY league "
         'ORDER BY COUNT(*) DESC').fetchall()
+    by_dir = [dict(zip(('dir', 'n', 'w', 'l', 'p'), r)) for r in conn.execute(
+        "SELECT direction, COUNT(*), SUM(result='W'), SUM(result='L'), "
+        "SUM(result='P') FROM fw8x_log GROUP BY direction")]
     rows = conn.execute(
         'SELECT match_id, kickoff, league, home, away, direction, hit_back,'
         ' n_back, line_h, giver, upw, dnw, created_ts, result, preds '
@@ -511,6 +514,7 @@ def stats_and_list(conn, limit=300):
             'p': st[3] or 0, 'pending': st[4] or 0,
             'by_league': [{'league': r[0], 'n': r[1], 'w': r[2] or 0,
                            'l': r[3] or 0} for r in by_lg],
+            'by_dir': by_dir,
             'rows': [{'match_id': r[0], 'kickoff': r[1], 'league': r[2],
                       'home': r[3], 'away': r[4], 'dir': r[5],
                       'hit_back': r[6], 'n_back': r[7], 'line_h': r[8],
