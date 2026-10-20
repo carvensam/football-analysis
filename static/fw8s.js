@@ -87,6 +87,16 @@
       '<span class="ln">聯賽歷史 <b>' + pct(r.hist_up_r) + '</b>（n=' +
         (r.hist_n || 0) + '）</span>' +
       '</div>';
+    /* 2026-10-21：每格（細規則）命中率——grid 型公式每格 up/down 歷史%＋n */
+    if (isPick && r.cells && r.cells.length) {
+      h += '<div class="sub">每格：' + r.cells.map(function (c) {
+        var cr = c.dir === 'down' ? c.down_r : c.up_r;
+        return '<b>' + esc(c.cell) + '</b> ' +
+          (c.dir === 'up' ? '上' : c.dir === 'down' ? '下' : '—') +
+          (cr != null ? ' ' + (cr * 100).toFixed(1) + '%' : '') +
+          '<span style="color:var(--dim)">(n=' + (c.n || 0) + ')</span>';
+      }).join('｜') + '</div>';
+    }
     if (r.mode === 'refine' && r.conds && r.conds.length)
       h += '<div class="sub">精煉條件：' + esc(r.conds.join('、')) + '</div>';
     if (r.mode === 'refine_miss' && r.miss_conds && r.miss_conds.length)

@@ -1192,6 +1192,86 @@ def fbatch_status():
     return d
 
 
+# ============ 🔄 「重抓重算」掣（2026-10-21 用戶指示） ============
+# 一掣做晒：① crawl16 重抓 asian/OU 缺口 → ② crawl_mk 重抓歐盤/半場/角球
+# → ③ requalify_after_backfill.py 重算八個精選系統資格
+# （featured 家族＋格 7/8/12/8s＋新精選＋88W＋8s/8X 回測庫重建＋對比報告）。
+# 只限本機：雲端冇 crawl16/proxy_pool（偵測到就話俾用戶知）。
+_regrab_state = {'running': False, 'step': '', 'phase': '',
+                 'started': None, 'last': None, 'error': None}
+
+
+def _regrab_worker():
+    import subprocess
+    st = _regrab_state
+    base = os.path.dirname(os.path.abspath(__file__))      # screen_app/
+    root = os.path.dirname(base)                            # 工作區根
+    steps = [
+        ('crawl16', '① 重抓 asian/OU 缺口（斷點續跑）',
+         [sys.executable, 'crawl16.py', '--proxy-only'], root),
+        ('crawl_mk', '② 重抓 歐盤/半場/角球（斷點續跑）',
+         [sys.executable, 'crawl_mk.py', '--proxy-only'], root),
+        ('requalify', '③ 重算八個精選系統資格（P1–P6）',
+         [sys.executable, 'requalify_after_backfill.py'], base),
+    ]
+    for key, label, cmd, cwd in steps:
+        st.update(step=key, phase=label)
+        try:
+            logf = open(os.path.join(root, 'logs', 'regrab_%s.log' % key),
+                        'a', encoding='utf-8')
+            logf.write('\n===== 重抓重算 %s =====\n' %
+                       time.strftime('%Y-%m-%d %H:%M:%S'))
+            logf.flush()
+            p = subprocess.Popen(cmd, cwd=cwd, stdout=logf,
+                                 stderr=subprocess.STDOUT)
+            while p.poll() is None:
+                time.sleep(3)
+            logf.close()
+            st['rc_' + key] = p.returncode
+        except Exception:
+            traceback.print_exc()
+            st['error'] = traceback.format_exc(limit=3)
+            break
+    st.update(running=False, phase='',
+              last=time.strftime('%Y-%m-%d %H:%M:%S'))
+    print('[regrab] 完成 rc=%s' % {k: st.get('rc_' + k)
+                                   for k in ('crawl16', 'crawl_mk',
+                                             'requalify')}, flush=True)
+
+
+def do_regrab_recompute():
+    """人手撳『🔄 重抓重算』。本機 only。"""
+    if _regrab_state['running']:
+        return {'ok': False, 'running': True, 'error': '重抓重算進行中'}
+    base = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(base)
+    if not os.path.exists(os.path.join(root, 'crawl16.py')):
+        return {'ok': False,
+                'error': '重抓重算只限本機版（雲端冇爬蟲同代理池）'}
+    if _win_state['running'] or _update_state['running'] \
+            or _fbatch_state['running']:
+        return {'ok': False, 'running': True,
+                'error': '另一個更新進行中，等佢完成先'}
+    _regrab_state.update(running=True, error=None, step='',
+                         phase='準備中…',
+                         started=time.strftime('%Y-%m-%d %H:%M:%S'))
+    threading.Thread(target=_regrab_worker, daemon=True).start()
+    return {'ok': True, 'started': True}
+
+
+def regrab_status():
+    d = dict(_regrab_state)
+    try:
+        rs = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), 'logs', 'requalify_state.json')
+        if os.path.exists(rs):
+            d['requalify'] = json.load(open(rs, encoding='utf-8'))
+    except Exception:
+        pass
+    return d
+
+
+
 # ============ 📱 手機直爬「核對」端點（2026-10-02 用戶定調） ============
 # 架構：本機係數據主人（獨立爬＋每日 06:17 推送上雲端）；手機自己爬嘅盤口賠率
 # **唔寫入任何庫**（唔使亦唔應該更新本機／雲端）——呢個端點只做「核對」：
@@ -7126,6 +7206,16 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/fetch-batch-status':
             self._send(200, json.dumps(fbatch_status(), ensure_ascii=False))
             return
+        if u.path == '/api/regrab-recompute':
+            # 🔄 重抓重算（2026-10-21）：GET 輪詢進度
+            try:
+                self._send(200, json.dumps(regrab_status(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
         if u.path == '/api/picks/full':
             try:
                 self._send(200, json.dumps(get_picks_full(), ensure_ascii=False))
@@ -7411,6 +7501,36 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/cond_hr':
+            try:
+                _out = None
+                try:
+                    _conn = db()
+                    try:
+                        if _conn.execute(
+                                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                                "AND name='cond_hr'").fetchone():
+                            _out = {}
+                            for _r in _conn.execute(
+                                    'SELECT engine,cond,market,n,w,l,p '
+                                    'FROM cond_hr'):
+                                _out.setdefault(_r[0], {}) \
+                                    .setdefault(_r[1], {})[_r[2]] = \
+                                    [_r[3], _r[4], _r[5], _r[6]]
+                    finally:
+                        _conn.close()
+                except Exception:
+                    _out = None
+                if not _out:
+                    _snap = os.path.join(STATIC_DIR, 'cond_hr.json')
+                    if os.path.isfile(_snap):
+                        _out = json.load(open(_snap, encoding='utf-8'))
+                self._send(200, json.dumps(_out or {},
+                                           ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)},
+                                           ensure_ascii=False))
+            return
         if u.path == '/api/lgalerts':
             try:
                 q = parse_qs(u.query)
@@ -7611,6 +7731,24 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/regrab-recompute':
+            # 🔄 重抓重算（2026-10-21）：POST 開始 / GET 輪詢進度
+            try:
+                if self.command == 'POST':
+                    n = int(self.headers.get('Content-Length', 0))
+                    if n:
+                        self.rfile.read(n)
+                    self._send(200, json.dumps(
+                        do_regrab_recompute(), ensure_ascii=False))
+                else:
+                    self._send(200, json.dumps(
+                        regrab_status(), ensure_ascii=False))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
             return
         if u.path == '/api/phone-odds':
             n = int(self.headers.get('Content-Length', 0))

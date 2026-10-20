@@ -7,6 +7,21 @@ const $$ = s => [...document.querySelectorAll(s)];
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function pct(v){ return v==null ? '—' : (v*100).toFixed(1)+'%'; }
 function rn(name, rank){ return rank ? `(${rank}) ${name}` : name; }
+/* 2026-10-21：逐條件命中率——每種預測每個細規則嘅單獨歷史命中率（/api/cond_hr） */
+let _CHR = {};
+async function loadCondHr(){
+  if (!Object.keys(_CHR).length){
+    try { _CHR = await jget('/api/cond_hr') || {}; } catch(e) { _CHR = {}; }
+  }
+}
+function condHrTxt(engine, cond, mkt){
+  const m = _CHR[engine] && _CHR[engine][cond];
+  if (!m) return '';
+  const a = (mkt && m[mkt]) || m[Object.keys(m)[0]];
+  if (!a || !a[0]) return '';
+  const dec = a[1] + a[2], r = dec ? a[1] / dec : null;
+  return ` <span style="color:var(--dim)">單計${r == null ? '—' : (r*100).toFixed(1)+'%'}(n=${a[0]})</span>`;
+}
 let toastTimer = null;
 function toast(msg){
   const t = $('#toast'); t.textContent = msg; t.style.display = 'block';
@@ -1018,50 +1033,41 @@ $('#btnOddsNow').onclick = async function(){
   if (window.PhoneCrawl && PhoneCrawl.modeOn) { phoneBatchAll(this); return; }
   serverFetchBatch(this);
 };
-
-/* 🔄 重抓重算（2026-10-21） */
-var _regrabPoll = null;
-function regrabBtnBind(){
-  var b = document.getElementById('btnRegrab');
-  if (!b) return;
-  b.onclick = async function(){
-    if (b.disabled) return;
-    if (!confirm('🔄 重抓重算：\n① 重抓 asian/OU 缺口 → ② 重抓 歐盤/半場/角球 → ③ 重算八個精選系統資格。\n需時數小時，期間可繼續用其他功能。而家開始？')) return;
-    b.disabled = true;
-    var info = document.getElementById('updInfo');
-    if (info) info.textContent = '🔄 重抓重算啟動中…';
-    var r = null;
-    try { r = await fetch('/api/regrab-recompute', {method: 'POST'}).then(function(x){return x.json();}); } catch (e) {}
-    if (!r || !r.ok) {
-      alert((r && r.error) || '連線失敗');
-      if (info) info.textContent = '';
-      b.disabled = false;
-      return;
-    }
-    regrabPoll();
-  };
-}
-async function regrabPoll(){
-  var st = null;
-  try { st = await fetch('/api/regrab-recompute').then(function(x){return x.json();}); } catch (e) {}
-  var info = document.getElementById('updInfo');
-  if (!st) { _regrabPoll = setTimeout(regrabPoll, 8000); return; }
+/* 🔄 重抓重算（2026-10-21）：重抓全部缺口盤口 → 重算八個精選系統資格 */
+$('#btnRegrab').onclick = async function(){
+  if (this.disabled) return;
+  if (!confirm('🔄 重抓重算：\n① 重抓 asian/OU 缺口 → ② 重抓 歐盤/半場/角球 → ③ 重算八個精選系統資格（合資格加入、唔合資格踢走，含 8s/8X 回測庫重建）。\n全過程需時數小時，期間可繼續用其他功能。而家開始？')) return;
+  this.disabled = true;
+  $('#updInfo').textContent = '🔄 重抓重算啟動中…';
+  const r = await fetch('/api/regrab-recompute', {method: 'POST'})
+    .then(x => x.json()).catch(() => null);
+  if (!r || !r.ok) {
+    toast((r && r.error) || '連線失敗');
+    $('#updInfo').textContent = '';
+    this.disabled = false;
+    return;
+  }
+  pollRegrab();
+};
+async function pollRegrab(){
+  const st = await fetch('/api/regrab-recompute').then(x => x.json()).catch(() => null);
+  if (!st) { setTimeout(pollRegrab, 8000); return; }
   if (st.error) {
-    if (info) info.textContent = '🔄 重抓重算出錯：' + st.error;
-    var b = document.getElementById('btnRegrab'); if (b) b.disabled = false;
+    $('#updInfo').textContent = '🔄 重抓重算出錯：' + st.error;
+    $('#btnRegrab').disabled = false;
     return;
   }
   if (!st.running) {
-    if (info) info.textContent = '🔄 重抓重算完成（' + (st.last || '') + '）——八個精選系統資格已重算';
-    var b2 = document.getElementById('btnRegrab'); if (b2) b2.disabled = false;
-    if (typeof loadHome === 'function') loadHome();
+    $('#updInfo').textContent = '🔄 重抓重算完成（' + (st.last || '') + '）——八個精選系統資格已重算';
+    $('#btnRegrab').disabled = false;
+    toast('🔄 重抓重算完成');
+    loadHome();
     return;
   }
-  if (info) info.textContent = '🔄 重抓重算進行中：' + (st.phase || '') +
+  $('#updInfo').textContent = '🔄 重抓重算進行中：' + (st.phase || '') +
     (st.requalify && st.requalify.phase ? '（' + st.requalify.phase + '）' : '');
-  _regrabPoll = setTimeout(regrabPoll, 8000);
+  setTimeout(pollRegrab, 8000);
 }
-regrabBtnBind();
 async function phoneBatchAll(btn){
   btn.disabled = true;
   /* 即將開賽全部 ＋ 進行中（已開賽未有賽果）——後者尾盤即最新參考盤 */
@@ -2209,7 +2215,7 @@ function _htftCard(p){
         <button class="btn gold ft-share">⇗</button></div>
       <div class="teams">${esc(p.home)} <span class="vs">vs</span> ${esc(p.away)}${scoreTxt}</div>
       <div class="gaprow"><span class="lab">目標</span><b style="font-size:22px;color:var(--gold2)">${esc(p.target_name || '')}</b>　<span class="tag dim">${esc(p.target || '')}</span>${p.predicted ? '　<span class="tag" style="color:var(--gold2);border-color:#6b5510">👑 預計嗰項</span>' : ''}</div>
-      <div class="gaprow"><span class="lab">方法</span>${esc(p.method_id || '')}｜${esc(p.cond_text || '')}</div>
+      <div class="gaprow"><span class="lab">方法</span>${esc(p.method_id || '')}｜${(p.conds || []).map(c => esc(c) + condHrTxt('htft', c, p.target)).join('、') || esc(p.cond_text || '')}</div>
       ${p.prob != null ? `<div class="gaprow"><span class="lab">機會率</span><b class="r-up" style="font-size:16px">${pct(p.prob)}</b>（驗證期 n=${p.prob_n || '—'}；同聯賽基率 ${pct(p.base)}）</div>` : ''}
       <div class="gaprow"><span class="lab">統計</span>訓練 ${esc(p.train || '—')}｜WF ${esc(p.wf || '—')}</div>
       ${winsRow ? `<div class="gaprow"><span class="lab">窗口</span>${winsRow}</div>` : ''}
@@ -2231,7 +2237,7 @@ async function loadHtftRules(){
   const listEl = $('#htftmList');
   listEl.innerHTML = '<div class="note">載入中…</div>';
   let d;
-  try { d = await jget('/api/htft_rules'); }
+  try { d = await jget('/api/htft_rules'); await loadCondHr(); }
   catch (e) { listEl.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
   if (d.error) { listEl.innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
   const s = d.stats || {};
@@ -3068,6 +3074,7 @@ function x8UpDown(r){
 async function loadX8(){
   try {
     const d = await jget('/api/8x/list');
+    await loadCondHr();
     const decided = d.w + d.l;
     const hr = decided ? d.w / decided : null;
     let h = `<div class="fcard" style="margin:8px 0"><div class="f-top" style="flex-wrap:wrap;gap:8px">
@@ -3134,7 +3141,10 @@ async function loadX8(){
         ${resBadge}</div>
         <div class="sub" style="margin-top:4px">預測：<b style="color:${isUp ? '#3fb950' : '#f85149'}">${isUp ? 'K3上盤' : '下盤'}＝${esc(predTeam)}</b>
         　回測基數 ${r.n_back || 0} 場・命中率 ${r.hit_back == null ? '—' : (r.hit_back * 100).toFixed(1) + '%'}
-        　<span style="color:var(--dim)">記錄於 ${new Date(r.ts * 1000).toLocaleString('zh-HK', {hour12: false})}</span></div></div>`;
+        　<span style="color:var(--dim)">記錄於 ${new Date(r.ts * 1000).toLocaleString('zh-HK', {hour12: false})}</span></div>` +
+        ((r.preds || []).length
+          ? `<div class="sub" style="margin-top:2px">公式條件：${r.preds.map(p => esc(p) + condHrTxt('k3', p, r.market)).join('｜')}</div>`
+          : '') + `</div>`;
     }
     $('#x8Body').innerHTML = b;
     $('#x8Msg').textContent = `最後更新 ${new Date().toLocaleTimeString('zh-HK', {hour12: false})}`;

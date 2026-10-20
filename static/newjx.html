@@ -112,9 +112,18 @@ const COND_TXT = {
   hh_wr_hi:'主隊主場勝率≥60%', aa_wr_hi:'客隊客場勝率≥55%',
   avg_hi:'場均總入球≥2.8'};
 const condTxt = c => COND_TXT[c] || c;
+/* 2026-10-21：逐條件命中率——每個細規則單獨嘅歷史命中率（/api/cond_hr） */
+let CHR = {};
+function chrT(engine, cond, mkt){ const m = CHR[engine] && CHR[engine][cond];
+  if (!m) return '';
+  const a = (mkt && m[mkt]) || m[Object.keys(m)[0]];
+  if (!a || !a[0]) return '';
+  const dec = a[1] + a[2], r = dec ? a[1] / dec : null;
+  return ` <span style="color:var(--dim)">單計${r == null ? '—' : (r*100).toFixed(1)+'%'}(n=${a[0]})</span>`; }
 async function load(){
   $('#status').textContent = '載入緊…';
   try {
+    CHR = await fetch('/api/cond_hr').then(x => x.json()).catch(() => ({})) || {};
     const r = await fetch('/api/newjx/full');
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.status);
@@ -141,7 +150,7 @@ async function load(){
         <span class="lg">${esc(r.league)}</span>
         <b class="tm">${esc(r.home)} <span style="color:var(--dim)">vs</span> ${esc(r.away)}</b>
         <span class="tag ${dc}">${esc(r.label)}</span>${badge}</div>
-        <div class="sub">條件：${r.conds.map(condTxt).join('＋')}　盤口：${fmtLine(r.hc, r.giver)}
+        <div class="sub">條件：${r.conds.map(c => condTxt(c) + chrT('jx', c, r.dir)).join('＋')}　盤口：${fmtLine(r.hc, r.giver)}
         ${r.score ? `　賽果：<b>${esc(r.score)}</b>` : ''}</div></div>`;
     }
     $('#predbody').innerHTML = h;
@@ -151,7 +160,7 @@ async function load(){
       const dc = L.dir === 'up' ? 'up' : 'down';
       t += `<tr><td style="white-space:nowrap">${esc(L.league)}</td>
         <td><span class="rlab ${dc}">${esc(L.label)}</span>
-        <span class="rmeta">${L.conds.map(condTxt).join('＋')}｜訓練 ${(L.train_hit*100).toFixed(1)}%(n=${L.train_n})・驗證 ${(L.test_hit*100).toFixed(1)}%(n=${L.test_n})・全期 ${(L.all_hit*100).toFixed(1)}%(n=${L.all_n})</span></td></tr>`;
+        <span class="rmeta">${L.conds.map(c => condTxt(c) + chrT('jx', c, L.dir)).join('＋')}｜訓練 ${(L.train_hit*100).toFixed(1)}%(n=${L.train_n})・驗證 ${(L.test_hit*100).toFixed(1)}%(n=${L.test_n})・全期 ${(L.all_hit*100).toFixed(1)}%(n=${L.all_n})</span></td></tr>`;
     }
     $('#lib').innerHTML = t + '</table>';
     $('#status').textContent = '最後更新 ' + new Date().toLocaleTimeString('zh-HK', {hour12:false});

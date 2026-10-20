@@ -127,9 +127,18 @@ const COND_TXT = {
   hh_gf_hi:'主隊主場场均入≥1.8', aa_gf_hi:'客隊客場场均入≥1.8',
   hh_ga_hi:'主隊主場场均失≥1.5', aa_ga_hi:'客隊客場场均失≥1.5'};
 const condTxt = c => COND_TXT[c] || c;
+/* 2026-10-21：逐條件命中率——每個細規則單獨嘅歷史命中率（/api/cond_hr） */
+let CHR = {};
+function chrT(engine, cond, mkt){ const m = CHR[engine] && CHR[engine][cond];
+  if (!m) return '';
+  const a = (mkt && m[mkt]) || m[Object.keys(m)[0]];
+  if (!a || !a[0]) return '';
+  const dec = a[1] + a[2], r = dec ? a[1] / dec : null;
+  return ` <span style="color:var(--dim)">單計${r == null ? '—' : (r*100).toFixed(1)+'%'}(n=${a[0]})</span>`; }
 async function load(){
   $('#status').textContent = '載入緊…';
   try {
+    CHR = await fetch('/api/cond_hr').then(x => x.json()).catch(() => ({})) || {};
     const r = await fetch('/api/w88/full');
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.status);
@@ -158,7 +167,7 @@ async function load(){
         <span class="lg">${esc(r.league)}</span>
         <b class="tm">${esc(r.home)} <span style="color:var(--dim)">vs</span> ${esc(r.away)}</b>
         <span class="tag ${mc}">${esc(r.label || r.market)}</span>${r.hist_hit != null ? `<span class="rmeta" style="margin-left:2px">歷史命中 ${(r.hist_hit*100).toFixed(1)}%${r.hist_n ? `(n=${r.hist_n})` : ''}</span>` : ''}${badge}</div>
-        <div class="sub">條件：${r.conds.map(condTxt).join('＋')}　盤口：${fmtLine(r.hc, r.giver)}　大小線：${r.ou_line ?? '—'}
+        <div class="sub">條件：${r.conds.map(c => condTxt(c) + chrT('w88', c, r.market)).join('＋')}　盤口：${fmtLine(r.hc, r.giver)}　大小線：${r.ou_line ?? '—'}
         ${r.score ? `　賽果：<b>${esc(r.score)}</b>` : ''}</div></div>`;
     }
     $('#predbody').innerHTML = h;
@@ -169,7 +178,7 @@ async function load(){
       if (L.formula) cells.push(`<div><span class="rlab ${L.formula.dir==='up'?'mkt-up':'mkt-down'}" style="border:0">${esc(L.formula.label)}</span> <span class="rmeta">8X公式・命中率 ${(L.formula.hit*100).toFixed(1)}%・n=${L.formula.n}</span></div>`);
       for (const m of (L.methods || [])){
         const mc = MKT_CLASS[m.market] || '';
-        cells.push(`<div><span class="rlab ${mc}" style="border:0">${esc(m.label || m.market)}</span> <span class="rmeta">${m.conds.map(condTxt).join('＋')}｜訓練 ${(m.train_hit*100).toFixed(1)}%(n=${m.train_n})・驗證 ${(m.test_hit*100).toFixed(1)}%(n=${m.test_n})</span></div>`);
+        cells.push(`<div><span class="rlab ${mc}" style="border:0">${esc(m.label || m.market)}</span> <span class="rmeta">${m.conds.map(c => condTxt(c) + chrT('w88', c, m.market)).join('＋')}｜訓練 ${(m.train_hit*100).toFixed(1)}%(n=${m.train_n})・驗證 ${(m.test_hit*100).toFixed(1)}%(n=${m.test_n})</span></div>`);
       }
       t += `<tr><td style="white-space:nowrap">${esc(L.league)}</td><td>${cells.join('')}</td></tr>`;
     }

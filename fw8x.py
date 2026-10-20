@@ -502,9 +502,11 @@ def stats_and_list(conn, limit=300):
         'ORDER BY COUNT(*) DESC').fetchall()
     rows = conn.execute(
         'SELECT match_id, kickoff, league, home, away, direction, hit_back,'
-        ' n_back, line_h, giver, upw, dnw, created_ts, result '
+        ' n_back, line_h, giver, upw, dnw, created_ts, result, preds '
         'FROM fw8x_log ORDER BY (result IS NULL) DESC, kickoff DESC '
         'LIMIT ?', (limit,)).fetchall()
+    _mkt = {lg: (f.get('market') or 'draw')
+            for lg, f in load_formulas().items()}
     return {'total': st[0] or 0, 'w': st[1] or 0, 'l': st[2] or 0,
             'p': st[3] or 0, 'pending': st[4] or 0,
             'by_league': [{'league': r[0], 'n': r[1], 'w': r[2] or 0,
@@ -514,7 +516,9 @@ def stats_and_list(conn, limit=300):
                       'hit_back': r[6], 'n_back': r[7], 'line_h': r[8],
                       'giver': r[9], 'upw': r[10], 'dnw': r[11],
                       'sline': signed_line(r[8], r[9]),
-                      'ts': r[12], 'result': r[13]} for r in rows]}
+                      'ts': r[12], 'result': r[13],
+                      'preds': json.loads(r[14]) if r[14] else [],
+                      'market': _mkt.get(r[2], 'draw')} for r in rows]}
 
 
 def newsince(conn, since):
