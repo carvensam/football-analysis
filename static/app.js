@@ -1018,6 +1018,50 @@ $('#btnOddsNow').onclick = async function(){
   if (window.PhoneCrawl && PhoneCrawl.modeOn) { phoneBatchAll(this); return; }
   serverFetchBatch(this);
 };
+
+/* 🔄 重抓重算（2026-10-21） */
+var _regrabPoll = null;
+function regrabBtnBind(){
+  var b = document.getElementById('btnRegrab');
+  if (!b) return;
+  b.onclick = async function(){
+    if (b.disabled) return;
+    if (!confirm('🔄 重抓重算：\n① 重抓 asian/OU 缺口 → ② 重抓 歐盤/半場/角球 → ③ 重算八個精選系統資格。\n需時數小時，期間可繼續用其他功能。而家開始？')) return;
+    b.disabled = true;
+    var info = document.getElementById('updInfo');
+    if (info) info.textContent = '🔄 重抓重算啟動中…';
+    var r = null;
+    try { r = await fetch('/api/regrab-recompute', {method: 'POST'}).then(function(x){return x.json();}); } catch (e) {}
+    if (!r || !r.ok) {
+      alert((r && r.error) || '連線失敗');
+      if (info) info.textContent = '';
+      b.disabled = false;
+      return;
+    }
+    regrabPoll();
+  };
+}
+async function regrabPoll(){
+  var st = null;
+  try { st = await fetch('/api/regrab-recompute').then(function(x){return x.json();}); } catch (e) {}
+  var info = document.getElementById('updInfo');
+  if (!st) { _regrabPoll = setTimeout(regrabPoll, 8000); return; }
+  if (st.error) {
+    if (info) info.textContent = '🔄 重抓重算出錯：' + st.error;
+    var b = document.getElementById('btnRegrab'); if (b) b.disabled = false;
+    return;
+  }
+  if (!st.running) {
+    if (info) info.textContent = '🔄 重抓重算完成（' + (st.last || '') + '）——八個精選系統資格已重算';
+    var b2 = document.getElementById('btnRegrab'); if (b2) b2.disabled = false;
+    if (typeof loadHome === 'function') loadHome();
+    return;
+  }
+  if (info) info.textContent = '🔄 重抓重算進行中：' + (st.phase || '') +
+    (st.requalify && st.requalify.phase ? '（' + st.requalify.phase + '）' : '');
+  _regrabPoll = setTimeout(regrabPoll, 8000);
+}
+regrabBtnBind();
 async function phoneBatchAll(btn){
   btn.disabled = true;
   /* 即將開賽全部 ＋ 進行中（已開賽未有賽果）——後者尾盤即最新參考盤 */
@@ -2164,8 +2208,9 @@ function _htftCard(p){
         <span class="lg">${esc(p.league || '')}</span>
         <button class="btn gold ft-share">⇗</button></div>
       <div class="teams">${esc(p.home)} <span class="vs">vs</span> ${esc(p.away)}${scoreTxt}</div>
-      <div class="gaprow"><span class="lab">目標</span><b style="font-size:22px;color:var(--gold2)">${esc(p.target_name || '')}</b>　<span class="tag dim">${esc(p.target || '')}</span></div>
+      <div class="gaprow"><span class="lab">目標</span><b style="font-size:22px;color:var(--gold2)">${esc(p.target_name || '')}</b>　<span class="tag dim">${esc(p.target || '')}</span>${p.predicted ? '　<span class="tag" style="color:var(--gold2);border-color:#6b5510">👑 預計嗰項</span>' : ''}</div>
       <div class="gaprow"><span class="lab">方法</span>${esc(p.method_id || '')}｜${esc(p.cond_text || '')}</div>
+      ${p.prob != null ? `<div class="gaprow"><span class="lab">機會率</span><b class="r-up" style="font-size:16px">${pct(p.prob)}</b>（驗證期 n=${p.prob_n || '—'}；同聯賽基率 ${pct(p.base)}）</div>` : ''}
       <div class="gaprow"><span class="lab">統計</span>訓練 ${esc(p.train || '—')}｜WF ${esc(p.wf || '—')}</div>
       ${winsRow ? `<div class="gaprow"><span class="lab">窗口</span>${winsRow}</div>` : ''}
       ${htTxt}
@@ -2175,7 +2220,8 @@ function _htftShareText(p){
   const L = [];
   L.push(`【半全場方法】${p.league} ${(p.kickoff || '').slice(5, 16)}`);
   L.push(`${p.home} vs ${p.away}${p.home_score != null ? `（全場 ${p.home_score}-${p.away_score}）` : ''}`);
-  L.push(`目標：${p.target_name}（${p.target}）｜方法 ${p.method_id}（${p.cond_text}）`);
+  L.push(`目標：${p.target_name}（${p.target}）${p.predicted ? '👑預計嗰項' : ''}｜方法 ${p.method_id}（${p.cond_text}）`);
+  if (p.prob != null) L.push(`預計機會率：${pct(p.prob)}（驗證期 n=${p.prob_n || '—'}；基率 ${pct(p.base)}）`);
   L.push(`訓練 ${p.train || '—'}｜WF ${p.wf || '—'}`);
   if (p.settle) L.push(`結果：${p.settle === '贏' ? '✅贏' : '❌輸'}` +
     `（半場 ${p.half_home}-${p.half_away} → 全場 ${p.home_score}-${p.away_score}，格 ${p.cell}）`);
@@ -2190,11 +2236,18 @@ async function loadHtftRules(){
   if (d.error) { listEl.innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
   const s = d.stats || {};
   $('#htftmCnt').textContent = s.upcoming ? `(${s.upcoming})` : '';
+  const DN = {HD: '主和', HA: '主客', AD: '客和', AH: '客主'};
+  const distBar = d.dist && d.dist_total ? (() => {
+    const t = d.dist_total, h = d.dist_htnd || 1;
+    const cells = ['HD', 'HA', 'AD', 'AH'].map(k =>
+      `<span style="${k === d.dist_best ? 'color:var(--gold2);font-weight:800' : ''}">${DN[k]} <b>${pct(d.dist[k] / t)}</b><small style="color:var(--dim)">（半場非和計 ${pct(d.dist[k] / h)}）</small></span>`).join('｜');
+    return `<div class="statbar" style="margin-top:4px">📊 四項分佈（全庫 ${t.toLocaleString()} 場・半場和局已剔走）：${cells}　👉 佔比最高：<b style="color:var(--gold2)">${DN[d.dist_best]}</b></div>`;
+  })() : '';
   $('#htftmStats').innerHTML = `<div class="statbar">
     <span>未開賽出手 <b>${s.upcoming || 0}</b></span><span>近7日已評 <b>${s.played || 0}</b></span>
     <span>贏 <b class="r-up">${s.wins || 0}</b></span><span>輸 <b class="r-down">${s.losses || 0}</b></span>
-    <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>
-    <div class="note">出手邏輯：方法條件全部命中先出，多個方法命中各自獨立出卡（HT/FT 唔設方向衝突觀望）。已完場場次按半場×全場九格自動結算（贏／輸，XH=半主→全唔贏 {HD,HA}、XA=半客→全唔贏 {AD,AA}），近 7 日保留。方法卡更新：${esc(d.rules_updated || '—')}。</div>`;
+    <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>${distBar}
+    <div class="note">四項＝主和／主客／客和／客主（半場有領先、全場冇贏到）；半場和局完全唔計。同一場多方法命中：👑＝預計機會率最高嗰項；機會率＝驗證期（2025+）命中率，已過訓練期（≤2024）＋驗證期雙重驗證，兩段都要 ≥2× 同聯賽基率先入庫。已完場按判定格自動結算，近 7 日保留。方法卡更新：${esc(d.rules_updated || '—')}。</div>`;
   const scan = d.scan || {};
   $('#htftmScanInfo').textContent = scan.running
     ? '掃描中…'

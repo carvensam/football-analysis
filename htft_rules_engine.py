@@ -23,7 +23,9 @@ import time
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(BASE_DIR)
 DB = os.environ.get('DB_PATH') or os.path.join(PARENT_DIR, 'football.db')
-RULES_PATH = os.path.join(BASE_DIR, 'htft_rules.json')
+# 2026-10-21 起改用四項方法卡（主和/主客/客和/客主；半場和局完全剔走，
+# 用戶指定「半場和完全無關係」）；舊九格卡 htft_rules.json 停用留檔
+RULES_PATH = os.path.join(BASE_DIR, 'htft4_rules.json')
 
 # 尾盤快照優先序：closing 冇就用臨場前最新一份（同 ou_rules_engine 口徑）
 TAIL_LABELS = ('closing', 'pre_5m', 'pre_10m', 'pre_15m', 'pre_30m', 'pre_4h')
@@ -230,7 +232,10 @@ def build_card(row, m):
             'conds': m.get('conds') or [],
             'cond_text': '、'.join(m.get('conds') or []),
             'train': m.get('train'), 'wf': m.get('wf'),
-            'wins': m.get('wins') or {}}
+            'wins': m.get('wins') or {},
+            # 2026-10-21：預計機會率（test 期命中率）＋樣本＋基率
+            'prob': m.get('test_hit'), 'prob_n': m.get('test_n'),
+            'base': m.get('base')}
 
 # ---------------------------------------------------------------- 主入口
 def _lg_filter(methods):
@@ -277,14 +282,24 @@ def scan(hours=48):
             ' ORDER BY m.kickoff DESC', ('-%d days' % PLAYED_DAYS,) + lg_args).fetchall()
         upcoming, played = [], []
         w = l = 0
+        # 未開賽：逐場評；同一場多方法命中→按預計機會率（test_hit）高至低排，
+        # 最高嗰張標 predicted=True（「預計嗰一項」，2026-10-21 用戶要求）
+        by_match = {}
         for row in up_rows:
             try:
                 snaps = snapshots(conn, row[0])
                 hits, tail = eval_match(methods, row[2], snaps)
-                for m in hits:
-                    upcoming.append(build_card(row, m))
+                if hits:
+                    by_match.setdefault(row[0], (row, []))[1].extend(hits)
             except Exception:
                 continue
+        for mid, (row, ms) in by_match.items():
+            ms.sort(key=lambda m: -(m.get('test_hit') or 0))
+            for j, m in enumerate(ms):
+                card = build_card(row, m)
+                if j == 0:
+                    card['predicted'] = True
+                upcoming.append(card)
         for row in played_rows:
             try:
                 snaps = snapshots(conn, row[0])
@@ -311,7 +326,23 @@ def scan(hours=48):
                  'upcoming': len(upcoming), 'played': len(played),
                  'wins': w, 'losses': l,
                  'hit_rate': (w / (w + l)) if (w + l) else None}
+        # 四項分佈（半場和局剔走）：全庫統計＋佔比最高項（2026-10-21）
+        dist = {'HD': 0, 'HA': 0, 'AD': 0, 'AH': 0}
+        tot = htnd = 0
+        for hh, ha, hs, aws in conn.execute(
+                'SELECT half_home, half_away, home_score, away_score '
+                'FROM matches WHERE home_score IS NOT NULL '
+                'AND half_home IS NOT NULL'):
+            tot += 1
+            c = cell(hh, ha, hs, aws)
+            if c[0] != 'D':
+                htnd += 1
+                if c in dist:
+                    dist[c] += 1
+        best = max(dist, key=lambda k: dist[k]) if tot else None
         return {'upcoming': upcoming, 'played': played, 'stats': stats,
+                'dist': dist, 'dist_total': tot, 'dist_htnd': htnd,
+                'dist_best': best,
                 'rules_updated': meta.get('updated'),
                 'rules_note': meta.get('note'),
                 'generated': time.strftime('%Y-%m-%d %H:%M:%S')}
