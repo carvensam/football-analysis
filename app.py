@@ -6512,9 +6512,15 @@ def api_fw8s_history():
         l = sum(1 for r in out if r['result'] == 'L')
         p = sum(1 for r in out if r['result'] == 'P')
         eff = w + l
+        by_mode = [dict(zip(('mode', 'n', 'w', 'l', 'p'), r)) for r in
+                   conn.execute(
+                       "SELECT mode, COUNT(*), SUM(result='W'), "
+                       "SUM(result='L'), SUM(result='P') "
+                       "FROM fw8s_log GROUP BY mode")]
         return {'ok': True, 'rows': out,
                 'stats': {'n': n, 'w': w, 'l': l, 'p': p,
-                          'hit_r': round(w / eff * 100, 1) if eff else None}}
+                          'hit_r': round(w / eff * 100, 1) if eff else None,
+                          'by_mode': by_mode}}
     finally:
         conn.close()
 

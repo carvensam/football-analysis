@@ -194,6 +194,18 @@
       si('走盤', st.p || 0, '') +
       si('命中率', st.hit_r == null ? '—' : st.hit_r + '%', 'up') +
       '</div>';
+    /* 2026-10-21：模式細分（全庫 fw8s_log）：直選／精煉 各幾中幾＋% */
+    var MODE_TXT2 = { direct: '直選', refine: '精煉', watch: '觀望' };
+    if (st.by_mode && st.by_mode.length) {
+      h += '<div style="margin:6px 0;display:flex;gap:6px;flex-wrap:wrap">' +
+        st.by_mode.map(function (m) {
+          var dec = (m.w || 0) + (m.l || 0), r = dec ? m.w / dec : null;
+          return '<span class="ln" style="border:1px solid var(--line);border-radius:12px;padding:2px 10px">' +
+            esc(MODE_TXT2[m.mode] || m.mode) + ' <b>' + (m.w || 0) + '中' + dec + '</b>' +
+            (r == null ? '' : ' ' + (r * 100).toFixed(1) + '%') +
+            (m.p ? ' 走' + m.p : '') + '<small style="color:var(--dim)"> n=' + m.n + '</small></span>';
+        }).join('') + '</div>';
+    }
     if (!(d.rows && d.rows.length)) {
       h += '<div class="empty">暫無入選紀錄（每次掃描自動記低入選場次，開賽後自動結算）</div>';
       body.innerHTML = h; return;
