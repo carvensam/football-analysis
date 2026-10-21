@@ -196,7 +196,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.2.10'
+SERVER_VERSION = '5.3.0'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -466,18 +466,34 @@ def _scan_with_retry(scan_fn, settle_fn, tries=5, wait=8):
 
 
 _bg_scan_state = {}
+_bg_scan_info = {}   # 2026-10-22：最近一次背景掃描結果（/api/scan-status?kind= 用）
+
+
+def _bg_scan_public(kind):
+    """/api/scan-status 讀取：running＋最近一次 added/settled/錯誤/時間。
+    2026-10-22：running 兼容統一掃描（newjx/w88 掣行統一 job，進度寫入
+    _bg_scan_info，running 要跟 _unified_scan 走）。"""
+    t = _bg_scan_state.get(kind)
+    info = dict(_bg_scan_info.get(kind) or {})
+    info['running'] = bool((t and t.is_alive())
+                           or _unified_scan['running'])
+    return info
 
 
 def _start_bg_scan(kind):
     """一鍵掃描改背景作業（2026-10-19 用戶報告撳完無反應）：
     爬蟲間中長時間攞住寫鎖（實測 >160 秒連續鎖），同步等會令按鈕
     好似死咗。依家 API 即刻回，背景線程每 15 秒等空窗重試（最多 10 分鐘），
-    寫入動作本身已改兩段式短事務，一有空窗即入。已在跑就唔重複開。"""
+    寫入動作本身已改兩段式短事務，一有空窗即入。已在跑就唔重複開。
+    2026-10-22：過程寫入 _bg_scan_info——前端可以 5 秒輪詢真實狀態，
+    唔再係盲等 12 秒。"""
     t = _bg_scan_state.get(kind)
     if t and t.is_alive():
         return False
 
     def job():
+        _bg_scan_info[kind] = {
+            'started_at': time.strftime('%Y-%m-%d %H:%M:%S')}
         for att in range(40):
             c = db()
             try:
@@ -488,10 +504,15 @@ def _start_bg_scan(kind):
                     s8 = fw8x.settle(c) if fw8x else 0
                     print('[bg-scan] 88W +%s settle %s｜8X +%s settle %s'
                           % (a, s, a8, s8), flush=True)
+                    _bg_scan_info[kind].update(
+                        {'added': a, 'settled': s, 'added_8x': a8,
+                         'settled_8x': s8, 'error': None})
                 else:
                     a = newjx_engine.scan(c)
                     s = newjx_engine.settle(c)
                     print('[bg-scan] 新精選 +%s settle %s' % (a, s), flush=True)
+                    _bg_scan_info[kind].update(
+                        {'added': a, 'settled': s, 'error': None})
                 c.close()
                 return
             except sqlite3.OperationalError as e:
@@ -501,7 +522,10 @@ def _start_bg_scan(kind):
                     pass
                 if 'locked' not in str(e):
                     traceback.print_exc()
+                    _bg_scan_info[kind]['error'] = str(e)[:400]
                     return
+                _bg_scan_info[kind]['error'] = (
+                    '資料庫忙緊，等緊寫入空窗（第 %d/40 次重試）' % (att + 1))
                 time.sleep(15)
             except Exception:
                 try:
@@ -509,7 +533,10 @@ def _start_bg_scan(kind):
                 except Exception:
                     pass
                 traceback.print_exc()
+                _bg_scan_info[kind]['error'] = traceback.format_exc(limit=2)[-400:]
                 return
+        _bg_scan_info[kind]['error'] = (
+            '等咗 10 分鐘都入唔到寫鎖，今次放棄（20 分鐘背景循環會繼續補）')
         print('[bg-scan] %s 等咗 10 分鐘都入唔到寫鎖，今次放棄'
               '（20 分鐘背景循環會繼續補）' % kind, flush=True)
 
@@ -742,100 +769,285 @@ def _line_changed(a, b):
     return False
 
 
-def _pick_revalidate(conn, mid):
-    """單場精選資格重檢（評估-only：唔重抓、唔清歷史池——歷史場次尾盤
-    永不變，變嘅只有目標場自己）。回傳動作列表（供日誌）。"""
-    import v2_engine
-    import v3_engine
-    import fw_grid_engine
+class _EvalCtx:
+    """單場統一評估上下文（2026-10-22 加速重構核心）：
+    同一場嘅 target / featured_letters / featured_w / grid_report(7/8/12) /
+    fw8s_report / features——全部系統共用。舊邏輯每個系統各自掃描：
+    V1、V2 各算一次 featured_letters（426ms/場）；精選8、格8s、8s引擎
+    各算一次 grid_report('8')（743ms/場）；而家每樣至多計一次。
+    統一掃描 / 即時更新重檢 / 各引擎 scan 行緊同一套評估，結果必然一致。"""
+    __slots__ = ('conn', 'mid', '_t', '_letters', '_fw', '_grids')
+
+    def __init__(self, conn, mid):
+        self.conn = conn
+        self.mid = mid
+        self._t = None
+        self._letters = None
+        self._fw = None
+        self._grids = {}
+
+    def target(self):
+        if self._t is None:
+            self._t = screen_engine.get_target(self.conn, self.mid)
+        return self._t
+
+    def letters(self):
+        if self._letters is None:
+            import v2_engine
+            self._letters = (v2_engine.featured_letters(
+                self.conn, self.target()) or {})
+        return self._letters
+
+    def fw(self):
+        if self._fw is None:
+            import v3_engine
+            self._fw = v3_engine.featured_w(self.conn, self.target())
+        return self._fw
+
+    def grid(self, g):
+        if g not in self._grids:
+            import fw_grid_engine
+            self._grids[g] = fw_grid_engine.grid_report(
+                self.conn, self.target(), g)
+        return self._grids[g]
+
+    def rep8s(self):
+        """8s 報告——grid 型重用已計嘅 grid('8')（冇計過先即場計）。"""
+        import fw8s_engine
+        return fw8s_engine.fw8s_report(
+            self.conn, self.target(), grid8_rep=self._grids.get('8'))
+
+
+def _eval_all(conn, ctx, light=False):
+    """單場全系統評估＋寫表（12 張）：精選W、V1、V1Z、V2(letters 共用）、
+    V2Z、格7/8/12/8s、8s紀錄、8X、88W、新精選。寫法＝upsert 合格／DELETE
+    唔合格未結算列——同舊逐系統 scan 最終狀態一致。回傳動作列表。
+    light=True（雲端 512MB 用）：淨做純 SQL 嘅 8X/88W/新精選——唔預熱
+    v2/v3/screen 數據池，RAM 用量接近零（舊雲端循環同一水平）。"""
     import fw8s_engine
+    mid = ctx.mid
     acts = []
     try:
-        t = screen_engine.get_target(conn, mid)
+        t = ctx.target()
     except Exception:
         t = None
     if not t:
         return acts
     now = time.strftime('%Y-%m-%d %H:%M:%S')
-    # 精選W（V3 六條件）
-    try:
-        fw = v3_engine.featured_w(conn, t)
-        row = conn.execute('SELECT result FROM v3_featured WHERE match_id=?',
-                           (mid,)).fetchone()
-        if fw.get('pass'):
-            conn.execute(
-                'INSERT INTO v3_featured(match_id,direction,detail,added_at) '
-                'VALUES(?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                'direction=excluded.direction, detail=excluded.detail',
-                (mid, fw['direction'], _fw_meta(fw), now))
-            log_v3_featured(conn, mid, fw['direction'])
-            acts.append('W保留' if row else 'W新增')
-        elif row and row[0] is None:
-            conn.execute('DELETE FROM v3_featured WHERE match_id=?', (mid,))
-            acts.append('W移出')
-    except Exception:
-        traceback.print_exc(limit=3)
-    # V1 十六字頭（＋同主隊 Z）
-    try:
-        fl = v2_engine.featured_letters(conn, t) or {}
-        d = fl.get('direction')
-        passed = fl.get('passed_letters') or []
-        zpass = [e for e in (fl.get('letters') or [])
-                 if e.get('mix') == '同主隊' and e['letter'] in passed]
-        dz = zpass[0]['dir'] if zpass else None
-        row = conn.execute('SELECT result FROM v1_featured WHERE match_id=?',
-                           (mid,)).fetchone()
-        if d:
-            conn.execute(
-                'INSERT INTO v1_featured(match_id,direction,added_at) '
-                'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                'direction=excluded.direction',
-                (mid, d, now))
-            log_featured(conn, mid, d)
-        elif row and row[0] is None:
-            conn.execute('DELETE FROM v1_featured WHERE match_id=?', (mid,))
-            acts.append('V1移出')
-        rowz = conn.execute('SELECT result FROM v1_featured_z WHERE match_id=?',
-                            (mid,)).fetchone()
-        if dz:
-            conn.execute(
-                'INSERT INTO v1_featured_z(match_id,direction,added_at) '
-                'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                'direction=excluded.direction',
-                (mid, dz, now))
-            log_featured_z(conn, mid, dz)
-        elif rowz and rowz[0] is None:
-            conn.execute('DELETE FROM v1_featured_z WHERE match_id=?', (mid,))
-    except Exception:
-        traceback.print_exc(limit=3)
-    # 格 7／8／12／8s
-    try:
-        for g in ('7', '8', '12', '8s'):
-            try:
-                rep = (fw8s_engine.fw8s_report(conn, t) if g == '8s'
-                       else fw_grid_engine.grid_report(conn, t, g))
-            except Exception:
-                continue
-            row = conn.execute(
-                'SELECT result FROM fw_grid_featured WHERE grid=? AND match_id=?',
-                (g, mid)).fetchone()
-            if rep.get('pass'):
+    if not light:
+        # 精選W（V3 六條件）
+        try:
+            fw = ctx.fw()
+            row = conn.execute('SELECT result FROM v3_featured WHERE match_id=?',
+                               (mid,)).fetchone()
+            if fw.get('pass'):
                 conn.execute(
-                    'INSERT INTO fw_grid_featured(grid,match_id,direction,'
-                    'detail,added_at) VALUES(?,?,?,?,?) '
-                    'ON CONFLICT(grid,match_id) DO UPDATE SET '
+                    'INSERT INTO v3_featured(match_id,direction,detail,added_at) '
+                    'VALUES(?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
                     'direction=excluded.direction, detail=excluded.detail',
-                    (g, mid, rep['direction'],
-                     fw8s_engine.fw8s_meta(rep) if g == '8s'
-                     else _fw_grid_meta(rep), now))
+                    (mid, fw['direction'], _fw_meta(fw), now))
+                log_v3_featured(conn, mid, fw['direction'])
+                acts.append('W保留' if row else 'W新增')
             elif row and row[0] is None:
+                conn.execute('DELETE FROM v3_featured WHERE match_id=?', (mid,))
+                acts.append('W移出')
+        except Exception:
+            traceback.print_exc(limit=3)
+        # V1 十六字頭（＋同主隊 Z）——letters 同 V2 共用 ctx 計算
+        # 2026-10-22 統一化：V2（featured/featured_z）同一 letters 結果一併寫
+        # （舊邏輯 V2 只有独立全掃先更新，單場重檢唔會同步——而家一致）
+        try:
+            fl = ctx.letters()
+            d = fl.get('direction')
+            passed = fl.get('passed_letters') or []
+            meta = json.dumps({'letters': passed, 'states': fl.get('states')},
+                              ensure_ascii=False)
+            zpass = [e for e in (fl.get('letters') or [])
+                     if e.get('mix') == '同主隊' and e['letter'] in passed]
+            dz = zpass[0]['dir'] if zpass else None
+            row = conn.execute('SELECT result FROM v1_featured WHERE match_id=?',
+                               (mid,)).fetchone()
+            if d:
                 conn.execute(
-                    'DELETE FROM fw_grid_featured WHERE grid=? AND match_id=?',
-                    (g, mid))
-                acts.append('格%s移出' % g)
+                    'INSERT INTO v1_featured(match_id,direction,added_at) '
+                    'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                    'direction=excluded.direction',
+                    (mid, d, now))
+                log_featured(conn, mid, d)
+                acts.append('V1保留' if row else 'V1新增')
+            elif row and row[0] is None:
+                conn.execute('DELETE FROM v1_featured WHERE match_id=?', (mid,))
+                acts.append('V1移出')
+            row2 = conn.execute('SELECT result FROM featured WHERE match_id=?',
+                                (mid,)).fetchone()
+            if d:
+                conn.execute(
+                    'INSERT INTO featured(match_id,direction,letters,added_at) '
+                    'VALUES(?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                    'direction=excluded.direction, letters=excluded.letters',
+                    (mid, d, meta, now))
+                log_featured(conn, mid, d)
+                acts.append('V2保留' if row2 else 'V2新增')
+            elif row2 and row2[0] is None:
+                conn.execute('DELETE FROM featured WHERE match_id=?', (mid,))
+                acts.append('V2移出')
+            rowz = conn.execute('SELECT result FROM v1_featured_z WHERE match_id=?',
+                                (mid,)).fetchone()
+            if dz:
+                conn.execute(
+                    'INSERT INTO v1_featured_z(match_id,direction,added_at) '
+                    'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                    'direction=excluded.direction',
+                    (mid, dz, now))
+                log_featured_z(conn, mid, dz)
+                acts.append('V1Z保留' if rowz else 'V1Z新增')
+            elif rowz and rowz[0] is None:
+                conn.execute('DELETE FROM v1_featured_z WHERE match_id=?', (mid,))
+                acts.append('V1Z移出')
+            rowz2 = conn.execute(
+                'SELECT result FROM featured_z WHERE match_id=?', (mid,)).fetchone()
+            if dz:
+                conn.execute(
+                    'INSERT INTO featured_z(match_id,direction,letters,added_at) '
+                    'VALUES(?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                    'direction=excluded.direction, letters=excluded.letters',
+                    (mid, dz, meta, now))
+                log_featured_z(conn, mid, dz)
+                acts.append('V2Z保留' if rowz2 else 'V2Z新增')
+            elif rowz2 and rowz2[0] is None:
+                conn.execute('DELETE FROM featured_z WHERE match_id=?', (mid,))
+                acts.append('V2Z移出')
+        except Exception:
+            traceback.print_exc(limit=3)
+        # 格 7／8／12／8s——grid('8') 俾 8s/grid8s/8s紀錄共用
+        rep8s = None
+        try:
+            for g in ('7', '8', '12', '8s'):
+                try:
+                    rep = ctx.rep8s() if g == '8s' else ctx.grid(g)
+                    if g == '8s':
+                        rep8s = rep
+                except Exception:
+                    continue
+                row = conn.execute(
+                    'SELECT result FROM fw_grid_featured WHERE grid=? AND match_id=?',
+                    (g, mid)).fetchone()
+                if rep.get('pass'):
+                    conn.execute(
+                        'INSERT INTO fw_grid_featured(grid,match_id,direction,'
+                        'detail,added_at) VALUES(?,?,?,?,?) '
+                        'ON CONFLICT(grid,match_id) DO UPDATE SET '
+                        'direction=excluded.direction, detail=excluded.detail',
+                        (g, mid, rep['direction'],
+                         fw8s_engine.fw8s_meta(rep) if g == '8s'
+                         else _fw_grid_meta(rep), now))
+                    acts.append('格%s保留' % g if row else '格%s新增' % g)
+                elif row and row[0] is None:
+                    conn.execute(
+                        'DELETE FROM fw_grid_featured WHERE grid=? AND match_id=?',
+                        (g, mid))
+                    acts.append('格%s移出' % g)
+        except Exception:
+            traceback.print_exc(limit=3)
+    # 2026-10-22 擴充（用戶規格：更新盤口後唔合資格嘅未開賽賽事要剔走）：
+    # 88W／新精選／8X／8s紀錄表——用新線重檢，唔合 → DELETE 未結算列
+    # （20 分鐘循環會照新線補返；已結算歷史永不刪）。評估邏輯同各引擎
+    # scan 共用 eval_match，唔會漂移。
+    # 88W（一場可中多條市場方法）
+    try:
+        import w88_engine
+        hits = w88_engine.eval_match(conn, mid)
+        now_keys = {(k[1], k[2]) for k, _v in hits}
+        have = {(r[0], r[1]) for r in conn.execute(
+            'SELECT market, conds FROM w88_log WHERE match_id=? '
+            'AND result IS NULL', (mid,))}
+        for k, v in hits:
+            if (k[1], k[2]) not in have:
+                conn.execute(
+                    'INSERT OR IGNORE INTO w88_log '
+                    '(match_id, market, conds, league, label, ou_line, hc, '
+                    ' giver, added_at) VALUES(?,?,?,?,?,?,?,?,?)', v)
+                acts.append('88W新增')
+        for mkt, conds in have - now_keys:
+            conn.execute(
+                'DELETE FROM w88_log WHERE match_id=? AND market=? '
+                'AND conds=? AND result IS NULL', (mid, mkt, conds))
+            acts.append('88W移出')
     except Exception:
         traceback.print_exc(limit=3)
+    # 新精選
+    try:
+        import newjx_engine
+        v = newjx_engine.eval_match(conn, mid)
+        row = conn.execute('SELECT result FROM newjx_log WHERE match_id=?',
+                           (mid,)).fetchone()
+        if v:
+            if not row:
+                conn.execute('INSERT OR IGNORE INTO newjx_log '
+                             'VALUES(?,?,?,?,?,?,?,?,?)', v + (None, None))
+                acts.append('新精選新增')
+        elif row and row[0] is None:
+            conn.execute('DELETE FROM newjx_log WHERE match_id=?', (mid,))
+            acts.append('新精選移出')
+    except Exception:
+        traceback.print_exc(limit=3)
+    # 8X
+    try:
+        import fw8x
+        got = fw8x.eval_match(conn, mid)
+        row = conn.execute('SELECT result FROM fw8x_log WHERE match_id=?',
+                           (mid,)).fetchone()
+        if got:
+            if not row:
+                info, f = got
+                conn.execute(
+                    'INSERT OR IGNORE INTO fw8x_log VALUES(?,?,?,?,?,?,?,?,?,'
+                    '?,?,?,?,?,?,?)',
+                    (mid, info['kickoff'], info['league'], info['home'],
+                     info['away'], f['dir'], json.dumps(
+                         f['preds'], ensure_ascii=False),
+                     f.get('hit'), f.get('n'), info['hc'], info['gv'],
+                     info['cho'], info['cao'], time.time(), None, 0))
+                acts.append('8X新增')
+        elif row and row[0] is None:
+            conn.execute('DELETE FROM fw8x_log WHERE match_id=?', (mid,))
+            acts.append('8X移出')
+    except Exception:
+        traceback.print_exc(limit=3)
+    # 8s 紀錄表（fw8s_log；rep8s 喺上面格循環已計，唔使重計。light 模式冇
+    # 格報告，成塊跳過——否則會誤刪雲端由本機同步嚟嘅 8s 入選）
+    if not light:
+        try:
+            row = conn.execute('SELECT result FROM fw8s_log WHERE match_id=?',
+                               (mid,)).fetchone()
+            if rep8s and rep8s.get('pass'):
+                if not row:
+                    oc = (t.get('odds') or {}).get('closing') or {}
+                    fw8s_engine.log_picks(conn, [{
+                        'match_id': mid,
+                        'league': t.get('league'),
+                        'mode': 'direct',
+                        'conds': [(rep8s.get('formula') or '8s公式')
+                                  .split('：', 1)[-1]],
+                        'line': (screen_engine.fmt_line(oc.get('h'),
+                                                        oc.get('g'))
+                                 if oc.get('h') is not None else None),
+                        'odds': ('主{}/客{}'.format(oc.get('ho'), oc.get('ao'))
+                                 if oc.get('ho') is not None else None),
+                    }])
+                    acts.append('8s新增')
+            elif row and row[0] is None:
+                conn.execute('DELETE FROM fw8s_log WHERE match_id=?', (mid,))
+                acts.append('8s移出')
+        except Exception:
+            traceback.print_exc(limit=3)
     return acts
+
+
+def _pick_revalidate(conn, mid):
+    """單場精選資格重檢（評估-only：唔重抓、唔清歷史池——歷史場次尾盤
+    永不變，變嘅只有目標場自己）。回傳動作列表（供日誌）。"""
+    return _eval_all(conn, _EvalCtx(conn, mid))
 
 
 def after_odds_update(mid, before):
@@ -873,6 +1085,493 @@ def after_odds_update(mid, before):
         threading.Thread(target=_bg, daemon=True).start()
     except Exception:
         pass
+
+
+def _requalify_sweep(mids, cap=300):
+    """2026-10-22 用戶規格「即時更新全部賠率後工具要有動作」：對成批更新咗
+    盤口嘅場次，逐場用新線重檢八個精選系統資格——仍合→保留；唔合→剔走
+    （DELETE 未結算列，20 分鐘循環照新線補返）；新合→加入。回傳計數俾
+    /api/fetch-batch-status 顯示「保留X・移出Y・新增Z」。逐場短事務＋鎖重試，
+    唔會同爬蟲長寫交易死鎖。上限 cap 場防止極端批量拖垮成個流程。"""
+    summary = {'checked': 0, 'kept': 0, 'removed': 0, 'added': 0}
+    if not mids:
+        return summary
+    for mid in list(mids)[:cap]:
+        for _attempt in range(3):
+            try:
+                conn = db()
+                try:
+                    acts = _pick_revalidate(conn, mid)
+                    conn.commit()
+                finally:
+                    conn.close()
+                summary['checked'] += 1
+                for a in acts:
+                    if '移出' in a:
+                        summary['removed'] += 1
+                    elif '新增' in a:
+                        summary['added'] += 1
+                    else:
+                        summary['kept'] += 1
+                # 同 after_odds_update 嘅 600 秒節流共享——背景線程先唔會重做
+                _last_reval[mid] = time.time()
+                break
+            except sqlite3.OperationalError:
+                time.sleep(4)
+            except Exception:
+                traceback.print_exc(limit=3)
+                break
+    if len(mids) > cap:
+        summary['capped'] = len(mids) - cap
+    return summary
+
+
+# ============ 2026-10-22 統一掃描（用戶：掃描／更新預測／更新結果 合一且快） ============
+# 舊邏輯：11 個系統各自全掃描——同一場重複計 featured_letters（V1+V2）、
+# grid_report('8')（精選8+格8s+8s引擎）、features（8X/88W/新精選），
+# 80 場 × ~4.8 秒/系統組合 ≈ 6 分鐘。新邏輯：一場一次過評全部系統
+# （_EvalCtx 共享計算），加「變動跳過」——盤口冇新資料兼開賽>24h 嘅場
+# 冇可能變資格，直接跳。手动掃描通常只涉及近期變動嘅 5-15 場，秒級完成。
+_unified_scan = {'running': False, 'phase': '', 'done': 0, 'total': 0,
+                 'added': 0, 'removed': 0, 'kept': 0, 'error': None,
+                 'full': False, 'last': None, 'passes': 0}
+_LAST_UNIFIED = [None]   # 上次統一掃描完成時間（HK，文字）；None＝未掃過
+
+# acts 字首 → 工具計數桶（注意次序：V1Z 先於 V1、格8s 先於格8）
+_ACT_BUCKET = (('W', 'v3'), ('V2Z', 'featz'), ('V2', 'feat'),
+               ('V1Z', 'v1z'), ('V1', 'v1'),
+               ('格7', 'f7'), ('格8s', 'f8s'), ('格8', 'f8'),
+               ('格12', 'f12'), ('88W', 'w88'), ('新精選', 'jx'),
+               ('8X', 'x8'), ('8s', 's8log'))
+
+
+def _act_bucket(a):
+    for p, b in _ACT_BUCKET:
+        if a.startswith(p):
+            return b
+    return None
+
+
+def _never_evaluated(conn, mid):
+    return not conn.execute(
+        'SELECT 1 WHERE EXISTS(SELECT 1 FROM v3_featured WHERE match_id=?) '
+        'OR EXISTS(SELECT 1 FROM featured WHERE match_id=?) '
+        'OR EXISTS(SELECT 1 FROM v1_featured WHERE match_id=?) '
+        'OR EXISTS(SELECT 1 FROM fw_grid_featured WHERE match_id=?) '
+        'OR EXISTS(SELECT 1 FROM fw8x_log WHERE match_id=?) '
+        'OR EXISTS(SELECT 1 FROM w88_log WHERE match_id=?) '
+        'OR EXISTS(SELECT 1 FROM newjx_log WHERE match_id=?) '
+        'OR EXISTS(SELECT 1 FROM fw8s_log WHERE match_id=?) LIMIT 1',
+        (mid, mid, mid, mid, mid, mid, mid, mid)).fetchone()
+
+
+def _unified_candidates(conn, full):
+    """變動跳過揀選：full/首次＝全部；否則淨揀 ①開賽 4 小時內（臨場
+    數據先至值得重評）②盤口 fetched_at 新過上次掃描 ③從未評估過嘅場。
+    （排名驅動嘅資格變化由每 6 小時一次嘅全量掃描兜住——24h 窗實測同
+    全量差唔多，失去增量意義。）"""
+    rows = conn.execute(
+        "SELECT m.id, m.kickoff, MAX(oc.fetched_at) FROM matches m "
+        "JOIN odds_asian oc ON oc.match_id=m.id AND oc.label='closing' "
+        "AND oc.company_id=12 AND oc.handicap IS NOT NULL "
+        "WHERE m.home_score IS NULL "
+        "AND m.kickoff >= datetime('now','+8 hours') "
+        'GROUP BY m.id ORDER BY m.kickoff').fetchall()
+    if full or not _LAST_UNIFIED[0]:
+        return [r[0] for r in rows]
+    from datetime import datetime, timedelta
+    soon = (datetime.now() + timedelta(hours=8 + 4)
+            ).strftime('%Y-%m-%d %H:%M')
+    last = _LAST_UNIFIED[0]
+    out = []
+    for mid, ko, fa in rows:
+        if ko <= soon or fa is None or fa > last \
+                or _never_evaluated(conn, mid):
+            out.append(mid)
+    return out
+
+
+def _unified_scan_job(mids=None, full=False, light=False):
+    """一場一次過評 12 表＋結算。各工具自家狀態 dict 同步更新——
+    所有舊進度條／scan-status 接口照舊有得顯示，前端零改動。
+    light=True（雲端 512MB）：淨做純 SQL 系統（8X/88W/新精選），
+    唔預熱數據池，RAM 接近零——同舊雲端三循環總負載相若。"""
+    st = _unified_scan
+    if st['running']:
+        return False
+    st.update(running=True, error=None, phase='準備中…', done=0,
+              added=0, removed=0, kept=0, full=full)
+    tools = (_feat_scan, _v1_scan, _v3_scan,
+             _fw_grid_scan['7'], _fw_grid_scan['8'],
+             _fw_grid_scan['12'], _fw_grid_scan['8s'])
+    for d in tools:
+        d['running'] = True
+        d['done'] = 0
+        d['error'] = None
+    _bg_scan_info['newjx'] = {
+        'started_at': time.strftime('%Y-%m-%d %H:%M:%S')}
+    _bg_scan_info['w88'] = {
+        'started_at': time.strftime('%Y-%m-%d %H:%M:%S')}
+    try:
+        conn = db()
+        try:
+            cands = (list(mids) if mids is not None
+                     else _unified_candidates(conn, full))
+            st['total'] = len(cands)
+            for d in tools:
+                d['total'] = len(cands)
+            cnt = {}
+            for i, mid in enumerate(cands):
+                st['phase'] = '統一掃描 %d/%d' % (i + 1, len(cands))
+                acts = None
+                for _att in range(4):
+                    try:
+                        acts = _eval_all(conn, _EvalCtx(conn, mid),
+                                         light=light)
+                        break
+                    except sqlite3.OperationalError:
+                        time.sleep(4)
+                if acts is None:
+                    continue
+                for a in acts:
+                    if '移出' in a:
+                        st['removed'] += 1
+                    elif '新增' in a:
+                        st['added'] += 1
+                    else:
+                        st['kept'] += 1
+                    b = _act_bucket(a)
+                    if b and '新增' in a:
+                        cnt[b] = cnt.get(b, 0) + 1
+                st['done'] = i + 1
+                for d in tools:
+                    d['done'] = i + 1
+                if (i + 1) % 20 == 0:
+                    conn.commit()
+            conn.commit()
+            st['phase'] = '結算已完場結果…'
+            settled = _settle_finished_tools(conn)
+            import v3_engine
+            hk = v3_engine.hk_now_str()
+            _LAST_UNIFIED[0] = hk
+            st['last'] = hk
+            st['passes'] += 1
+            st['error'] = None
+            _feat_scan.update(running=False, added=cnt.get('feat', 0),
+                              added_z=cnt.get('featz', 0), error=None)
+            _v1_scan.update(running=False, added=cnt.get('v1', 0),
+                            added_z=cnt.get('v1z', 0), error=None)
+            _v3_scan.update(running=False, added=cnt.get('v3', 0),
+                            error=None)
+            _fw_grid_scan['7'].update(running=False, added=cnt.get('f7', 0),
+                                      error=None)
+            _fw_grid_scan['8'].update(running=False, added=cnt.get('f8', 0),
+                                      error=None)
+            _fw_grid_scan['12'].update(running=False,
+                                       added=cnt.get('f12', 0), error=None)
+            _fw_grid_scan['8s'].update(running=False,
+                                       added=cnt.get('f8s', 0), error=None)
+            _bg_scan_info['newjx'].update(
+                added=cnt.get('jx', 0),
+                settled=settled.get('newjx_log', 0), error=None)
+            _bg_scan_info['w88'].update(
+                added=cnt.get('w88', 0),
+                settled=settled.get('w88_log', 0),
+                added_8x=cnt.get('x8', 0),
+                settled_8x=settled.get('fw8x_log', 0), error=None)
+            print('[unified] 掃描 %d 場（%s）：新增 %d・移出 %d・保留 %d｜'
+                  '結算 %s' % (len(cands), 'light' if light else 'full',
+                             st['added'], st['removed'],
+                             st['kept'], settled or '無'), flush=True)
+        finally:
+            conn.close()
+    except Exception:
+        traceback.print_exc(limit=3)
+        st['error'] = traceback.format_exc(limit=2)[-300:]
+        for d in tools:
+            d['error'] = st['error']
+            d['running'] = False
+        _bg_scan_info['newjx']['error'] = st['error']
+        _bg_scan_info['w88']['error'] = st['error']
+    finally:
+        st['running'] = False
+        st['phase'] = ''
+        if not st['error']:
+            for d in tools:
+                d['running'] = False
+    return True
+
+
+def _unified_loop():
+    """每 20 分鐘統一掃描（變動跳過）；每 18 次（約 6 小時）做一次全量，
+    兜實排名變化等冇盤口訊號嘅資格變動。雲端（DISABLE_UPDATE）永久行
+    light 模式：淨做純 SQL 系統——512MB 預熱數據池會 OOM。"""
+    time.sleep(180)
+    while True:
+        try:
+            light = bool(DISABLE_UPDATE)
+            full = (not light and _unified_scan['passes'] > 0
+                    and _unified_scan['passes'] % 18 == 0)
+            _unified_scan_job(full=full, light=light)
+        except Exception:
+            traceback.print_exc(limit=3)
+        time.sleep(1200)
+
+
+def _start_unified_scan(mids=None, full=False, light=None):
+    """所有「重新掃描」掣共用入口：已在跑就回 running，否則背景啟動。
+    light 預設跟環境行（雲端 light），本機全量評估。"""
+    if light is None:
+        light = bool(DISABLE_UPDATE)
+    if _unified_scan['running']:
+        return {'running': True, 'started': False}
+    threading.Thread(target=_unified_scan_job,
+                     kwargs={'mids': mids, 'full': full, 'light': light},
+                     daemon=True).start()
+    return {'running': True, 'started': True}
+
+
+# ============ 2026-10-22 完場賽事主動結算（用戶規格：完場後自動更新到
+# 精選W／精選7／8／8s／8X／88W／新精選／精選12／半全場／V1／V2／好波 全部結果） ============
+def _settle_finished_tools(conn):
+    """主動幫全部精選/紀錄表「已完場但未結算」嘅列做結算——語義逐字對齊
+    各頁 lazy settle（pick_result＋入選方向＋company12 尾盤；好波=總入球對
+    大小線），只係由「被讀先結」變「循環主動全結」。回傳 {表: 結算場數}。
+    只 UPDATE result IS NULL 嘅列，歷史永不改動。"""
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    out = {}
+
+    def _dir_tbl(tbl):
+        # featured 系五張平表：direction up/down + company12 尾盤
+        rows = conn.execute(
+            'SELECT x.match_id, x.direction, o.handicap, o.giver, '
+            'm.home_score, m.away_score FROM %s x JOIN matches m '
+            'ON m.id=x.match_id LEFT JOIN odds_asian o '
+            "ON o.match_id=x.match_id AND o.label='closing' "
+            'AND o.company_id=12 WHERE x.result IS NULL '
+            'AND m.home_score IS NOT NULL' % tbl).fetchall()
+        n = 0
+        for mid, d, hc, gv, hs, aws in rows:
+            if d not in ('up', 'down'):
+                continue
+            r = pick_result(hc, gv, hs, aws)
+            if r is None:
+                continue
+            res = 'P' if r == 'P' else ('W' if (r == 'A') == (d == 'up')
+                                        else 'L')
+            conn.execute('UPDATE %s SET result=?, settled_at=? '
+                         'WHERE match_id=?' % tbl, (res, now, mid))
+            n += 1
+        if n:
+            out[tbl] = n
+            conn.commit()   # 每表即 commit：一個表出錯唔會拖累其他表
+
+    for _t in ('featured', 'featured_z', 'v1_featured', 'v1_featured_z',
+               'v3_featured'):
+        try:
+            _dir_tbl(_t)
+        except sqlite3.Error:
+            pass
+    # fw_grid_featured：PK 係 (grid, match_id)——同一場可入多格，方向各自計
+    try:
+        rows = conn.execute(
+            'SELECT x.grid, x.match_id, x.direction, o.handicap, o.giver, '
+            'm.home_score, m.away_score FROM fw_grid_featured x '
+            'JOIN matches m ON m.id=x.match_id LEFT JOIN odds_asian o '
+            "ON o.match_id=x.match_id AND o.label='closing' "
+            'AND o.company_id=12 WHERE x.result IS NULL '
+            'AND m.home_score IS NOT NULL').fetchall()
+        n = 0
+        for g, mid, d, hc, gv, hs, aws in rows:
+            if d not in ('up', 'down'):
+                continue
+            r = pick_result(hc, gv, hs, aws)
+            if r is None:
+                continue
+            res = 'P' if r == 'P' else ('W' if (r == 'A') == (d == 'up')
+                                        else 'L')
+            conn.execute(
+                'UPDATE fw_grid_featured SET result=?, settled_at=? '
+                'WHERE grid=? AND match_id=?', (res, now, g, mid))
+            n += 1
+        if n:
+            out['fw_grid_featured'] = n
+            conn.commit()
+    except sqlite3.Error:
+        pass
+    # fw8s_log：重用現有實作
+    try:
+        n = _fw8s_settle(conn)
+        if n:
+            out['fw8s_log'] = n
+    except Exception:
+        traceback.print_exc(limit=3)
+    # 引擎自帶結算（語义同各頁一致）
+    try:
+        import fw8x
+        n = fw8x.settle(conn)
+        if n:
+            out['fw8x_log'] = n
+    except Exception:
+        traceback.print_exc(limit=3)
+    try:
+        import w88_engine
+        n = w88_engine.settle(conn)
+        if n:
+            out['w88_log'] = n
+    except Exception:
+        traceback.print_exc(limit=3)
+    try:
+        import newjx_engine
+        n = newjx_engine.settle(conn)
+        if n:
+            out['newjx_log'] = n
+    except Exception:
+        traceback.print_exc(limit=3)
+    # 好波（語義同 api_lg_hit_rates lazy 結算：走＝P 唔計入分母）
+    try:
+        conn.execute('''CREATE TABLE IF NOT EXISTS hb_pick_log(
+            match_id INTEGER PRIMARY KEY, league TEXT, side TEXT, rate REAL,
+            line REAL, added_at TEXT, result TEXT, settled_at TEXT)''')
+        cur = conn.execute(
+            "UPDATE hb_pick_log AS h SET result = CASE "
+            "WHEN m.home_score + m.away_score = h.line THEN 'P' "
+            "WHEN (m.home_score + m.away_score > h.line) = (h.side = '大') "
+            "THEN 'W' ELSE 'L' END, settled_at = ? "
+            'FROM matches m WHERE h.match_id = m.id '
+            'AND m.home_score IS NOT NULL AND h.result IS NULL', (now,))
+        if cur.rowcount:
+            out['hb_pick_log'] = cur.rowcount
+    except sqlite3.Error:
+        pass
+    # feat_hourly（語義同 _result_settle.py）
+    try:
+        rows = conn.execute(
+            'SELECT x.id, x.match_id, x.direction FROM feat_hourly x '
+            'JOIN matches m ON m.id=x.match_id '
+            'WHERE x.settled=0 AND m.home_score IS NOT NULL').fetchall()
+        n = 0
+        for rid, mid, direction in rows:
+            if direction not in ('up', 'down'):
+                continue
+            r = conn.execute(
+                'SELECT o.handicap, o.giver, m.home_score, m.away_score '
+                'FROM matches m LEFT JOIN odds_asian o ON o.match_id=m.id '
+                "AND o.label='closing' AND o.company_id=12 "
+                'WHERE m.id=?', (mid,)).fetchone()
+            if not r or r[0] is None or r[2] is None:
+                continue
+            pr = pick_result(r[0], r[1], r[2], r[3])
+            if pr is None:
+                continue
+            res = 'P' if pr == 'P' else ('W' if (pr == 'A')
+                                         == (direction == 'up') else 'L')
+            conn.execute('UPDATE feat_hourly SET settled=1, result=? '
+                         'WHERE id=?', (res, rid))
+            n += 1
+        if n:
+            out['feat_hourly'] = n
+    except sqlite3.Error:
+        pass
+    if out:
+        try:
+            conn.commit()
+        except sqlite3.Error:
+            pass
+    return out
+
+
+def _settle_finished_tools_bg():
+    """_settle_finished_tools 嘅背景包裝：自己開 conn、鎖重試，
+    唔阻呼叫方（掃描/更新流程行完即走）。"""
+    def _bg():
+        for _att in range(3):
+            try:
+                conn = db()
+                try:
+                    r = _settle_finished_tools(conn)
+                finally:
+                    conn.close()
+                if r:
+                    print('[settle-all] ' + ', '.join(
+                        '%s %d' % kv for kv in r.items()), flush=True)
+                return
+            except sqlite3.OperationalError:
+                time.sleep(5)
+            except Exception:
+                traceback.print_exc(limit=3)
+                return
+    threading.Thread(target=_bg, daemon=True).start()
+
+
+def _crawl_live_scores(limit_leagues=6, budget=50):
+    """2026-10-22「重新掃瞄掣加即時爬進行中賽果」：開賽 0-3 小時仲未有
+    比分嘅場次，按聯賽即場重抓現行賽季檔——同賽果巡邏同一條 save_season
+    通道（真係寫入 matches.home_score）。限聯賽數同秒數，best-effort，
+    爬唔到都唔會影響後續掃描。回傳成功補到賽果嘅聯賽數。"""
+    try:
+        conn = db()
+        try:
+            rows = conn.execute(
+                'SELECT DISTINCT s.titan_id FROM matches m '
+                'JOIN seasons s ON s.id=m.season_id '
+                'WHERE m.home_score IS NULL '
+                "AND m.kickoff > datetime('now','+8 hours','-3 hours') "
+                "AND m.kickoff <= datetime('now','+8 hours') "
+                'LIMIT ?', (limit_leagues,)).fetchall()
+        finally:
+            conn.close()
+        if not rows:
+            return 0
+        crawler, fetcher = get_crawler()
+        conn = db()
+        try:
+            fixed = 0
+            t0 = time.time()
+            for (tid,) in rows:
+                if time.time() - t0 > budget:
+                    break
+                try:
+                    seasons = crawler.get_season_list(fetcher, tid)
+                    if not seasons:
+                        continue
+                    prefix = crawler.resolve_prefix(fetcher, tid)
+                    if not prefix:
+                        continue
+                    url = (f'https://zq.titan007.com/jsData/matchResult/'
+                           f'{seasons[0]}/{prefix}.js?version=1')
+                    text = fetcher.get(url)
+                    if not text or text.lstrip().startswith('<'):
+                        continue
+                    parsed = crawler.parse_season_js(text)
+                    crawler.save_season(conn, tid, seasons[0], 1, parsed)
+                    fixed += 1
+                except Exception:
+                    pass
+            if fixed:
+                try:
+                    conn.commit()
+                except sqlite3.Error:
+                    pass
+            return fixed
+        finally:
+            conn.close()
+    except Exception:
+        traceback.print_exc(limit=3)
+        return 0
+
+
+def _scan_extras():
+    """所有「重新掃描」掣嘅公共尾巴（2026-10-22 用戶規格）：
+    ①先即時爬進行中賽事賽果 ②主動結算全部精選表已完場列。
+    背景執行、best-effort——唔阻掃描本身，唔會令掣冇反應。"""
+    def _bg():
+        try:
+            _crawl_live_scores()
+        except Exception:
+            traceback.print_exc(limit=3)
+        _settle_finished_tools_bg()
+    threading.Thread(target=_bg, daemon=True).start()
 
 
 # ============ 一鍵更新賽事（賽果＋新場次＋已存在場次嘅盤口及賠率全部刷新） ============
@@ -1138,12 +1837,14 @@ def _fetch_batch_worker(hours):
             'ORDER BY m.kickoff', args).fetchall()
         _fbatch_state.update(total=len(todo), done=0, ok=0, fail=0)
         fetcher = crawler.Fetcher(conn, cfg)
+        ok_mids = []
         for i, (mid, ko) in enumerate(todo):
             _fbatch_state['phase'] = f'即時更新盤口及賠率 {i + 1}/{len(todo)}'
             try:
                 before = _closing_now(conn, mid)
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
                     _fbatch_state['ok'] += 1
+                    ok_mids.append(mid)
                     after_odds_update(mid, before)   # 2026-10-20 尾盤變動→重檢
                 elif not conn.execute(
                         'SELECT 1 FROM odds_asian WHERE match_id=? AND company_id=12',
@@ -1151,6 +1852,7 @@ def _fetch_batch_worker(hours):
                         and crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 3):
                     # 易胜博未開盤 → Crown(3) 後備
                     _fbatch_state['ok'] += 1
+                    ok_mids.append(mid)
                     after_odds_update(mid, before)
                 else:
                     _fbatch_state['fail'] += 1
@@ -1161,6 +1863,22 @@ def _fetch_batch_worker(hours):
         _fbatch_state['error'] = None
         print(f"[fbatch] 完成：{_fbatch_state['ok']} 成 / "
               f"{_fbatch_state['fail']} 敗 / 共 {len(todo)} 場", flush=True)
+        # 2026-10-22 用戶規格「更新後要有動作同反應」：成批搞掂→即刻對全部
+        # 更新咗嘅場次做八系統資格重檢（唔合資格剔走／新合資格加入），
+        # 計數擺落狀態俾前端顯示「保留X・移出Y・新增Z」。
+        _fbatch_state['phase'] = '重檢各精選系統資格…'
+        try:
+            _fbatch_state['reval'] = _requalify_sweep(ok_mids)
+            print('[fbatch] 資格重檢：%s' % _fbatch_state['reval'],
+                  flush=True)
+        except Exception:
+            traceback.print_exc(limit=3)
+            _fbatch_state['reval'] = None
+        # 順手主動結算（完場場次嘅結果即刻寫入全部工具表）
+        try:
+            _settle_finished_tools_bg()
+        except Exception:
+            pass
     except Exception:
         traceback.print_exc()
         _fbatch_state['error'] = traceback.format_exc(limit=3)
@@ -3403,6 +4121,63 @@ V3_ITEM_CACHE_TTL = 600
 _STALE_LIVE_HOURS = 26   # 開賽逾 26 小時仍無比分 → 唔再當「進行中」（取消/延期/數據缺失）
 
 
+_SRCS_CACHE = {'ts': 0.0, 'data': {}}
+
+
+def _attach_srcs(ms):
+    """2026-10-22 用戶規格「主頁每個數據講明由邊個篩選出嚟」：標記每場
+    入選咗邊啲精選系統（m['srcs'] = ['W','V2','F8',...]），前端砌可見
+    來源徽章。
+    2026-10-22b 優化：13 條細查詢合一條 UNION ALL（鎖等待由 13 次變 1
+    次）＋60 秒記憶體快取（主頁 60 秒自動刷新會不停打呢度）＋短
+    busy_timeout（爬蟲鎖庫時快閃降級——冇徽章唔會冇反應）。包含已完場
+    （事後回查都係真實入選紀錄）。"""
+    if not ms:
+        return
+    ids = [m['id'] for m in ms if m.get('id')]
+    if not ids:
+        return
+    now = time.time()
+    cache = _SRCS_CACHE['data'] if now - _SRCS_CACHE['ts'] < 60 else {}
+    miss = [i for i in ids if i not in cache]
+    if miss:
+        ph = ','.join('?' * len(miss))
+        parts = []
+        for flag, sql in (
+                ('W', 'SELECT match_id FROM v3_featured WHERE match_id IN (%s)'),
+                ('V2', 'SELECT match_id FROM featured WHERE match_id IN (%s)'),
+                ('V2Z', 'SELECT match_id FROM featured_z WHERE match_id IN (%s)'),
+                ('V1', 'SELECT match_id FROM v1_featured WHERE match_id IN (%s)'),
+                ('V1Z', 'SELECT match_id FROM v1_featured_z WHERE match_id IN (%s)'),
+                ('F7', "SELECT match_id FROM fw_grid_featured WHERE grid='7' AND match_id IN (%s)"),
+                ('F8', "SELECT match_id FROM fw_grid_featured WHERE grid='8' AND match_id IN (%s)"),
+                ('F12', "SELECT match_id FROM fw_grid_featured WHERE grid='12' AND match_id IN (%s)"),
+                ('F8S', "SELECT match_id FROM fw_grid_featured WHERE grid='8s' AND match_id IN (%s)"),
+                ('S8', 'SELECT match_id FROM fw8s_log WHERE match_id IN (%s)'),
+                ('X8', 'SELECT match_id FROM fw8x_log WHERE match_id IN (%s)'),
+                ('W88', 'SELECT match_id FROM w88_log WHERE match_id IN (%s)'),
+                ('JX', 'SELECT match_id FROM newjx_log WHERE match_id IN (%s)')):
+            parts.append("SELECT match_id, '%s' AS f FROM (%s)" % (flag, sql % ph))
+        conn = sqlite3.connect(DB_PATH, timeout=8)
+        try:
+            conn.execute('PRAGMA busy_timeout=3000')
+            for mid, f in conn.execute(' UNION ALL '.join(parts),
+                                       miss * len(parts)):
+                e = cache.setdefault(mid, {})
+                if f not in e:
+                    e[f] = True
+        except sqlite3.Error:
+            pass   # 鎖庫：今次冇徽章，下個循環補
+        finally:
+            conn.close()
+        _SRCS_CACHE['ts'] = now
+        _SRCS_CACHE['data'] = cache
+    for m in ms:
+        s = cache.get(m.get('id'))
+        if s:
+            m['srcs'] = sorted(s.keys())
+
+
 def api_v3_list(hours=48, fin_hours=120, fin_cat='all'):
     """V3 主頁清單：即將開賽（唔設上限由前端 hours 控制）＋已開賽（預設 120h，
     可用 fin_hours/fin_cat 回查）。每場附 state（scheduled/live/finished/unknown，
@@ -3420,6 +4195,7 @@ def api_v3_list(hours=48, fin_hours=120, fin_cat='all'):
     for m in pl:
         m['state'] = 'finished' if m.get('score') else (
             'unknown' if (m.get('kickoff') or '') <= stale else 'live')
+    _attach_srcs(up)
     return {'upcoming': up, 'played': pl, 'now': now}
 
 
@@ -5636,6 +6412,10 @@ def api_health():
             'version': SERVER_VERSION,
             'data_host_ok': _health_cache['data_host_ok'],
             'crawl_mode': 'cloud' if DISABLE_UPDATE else 'server',
+            # 2026-10-22 用戶規格「確定本機 APP 讀本機資料庫」：白紙黑字標明
+            # 而家讀緊邊個 DB 檔案＋係咪本機（冇 DB_PATH 環境覆寫＝本機）。
+            'db_path': DB_PATH,
+            'db_local': not os.environ.get('DB_PATH'),
             'last_data_update': last_upd,
             'update': {'running': _update_state['running'],
                        'phase': _update_state['phase'],
@@ -6705,6 +7485,10 @@ def _feat_hourly_migrate(conn):
                  ('ou_under', 'REAL')):
         if c not in cols:
             conn.execute('ALTER TABLE feat_hourly ADD COLUMN %s %s' % (c, t))
+    # 2026-10-22：/api/feathourly 加咗 45 日窗口（kickoff 條件）——冇索引每個
+    # kind 都全表掃 30 萬行；複合索引一勞永逸（建一次，秒級）
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_feat_hourly_kind_ko '
+                 'ON feat_hourly(kind, kickoff)')
 
 
 def _feat_hourly_log(conn, ts):
@@ -6903,7 +7687,10 @@ def _feat_hourly_tick():
 def _result_settle_loop():
     """賽果回填+精選結算（2026-10-10 用戶規格）：開賽逾120分鐘冇比分→爬賽果；
     已完場嘅精選/7/8/12 紀錄補結算。每 15 分鐘一次；雲端爬唔到安全跳過（NO_DATA），
-    結算照做（比分經每日推庫到達後自動補）。"""
+    結算照做（比分經每日推庫到達後自動補）。
+    2026-10-22：subprocess 之後加 _settle_finished_tools_bg——子進程淨結算
+    feat_hourly，其餘精選表（featured/v1/v3/格/fw8s/8X/88W/新精選/好波）
+    由呢度主動全結算（用戶規格：完場後自動更新到全部工具結果）。"""
     time.sleep(300)   # 等啟動穩定先
     while True:
         try:
@@ -6911,6 +7698,10 @@ def _result_settle_loop():
             subprocess.run([sys.executable,
                             os.path.join(PARENT_DIR, '_result_settle.py'), '40'],
                            timeout=600, capture_output=True)
+        except Exception:
+            pass
+        try:
+            _settle_finished_tools_bg()
         except Exception:
             pass
         time.sleep(900)
@@ -6927,7 +7718,11 @@ def _feat_hourly_loop():
 
 
 def get_feat_hourly():
-    """每小時紀錄頁：逐 kind 統計＋逐場資格時間線。"""
+    """每小時紀錄頁：逐 kind 統計＋逐場資格時間線。
+    2026-10-22 修正「頁面等足兩分鐘都打唔開」：feat_hourly 已累積 32 萬行
+    （每 2 小時快照），全表讀出砌 JSON 成 30MB+——改為只取近 45 日開賽場次
+    （監控頁用途＝睇近期資格變化；舊場次結果喺過往紀錄／事後回查睇）。
+    加埋每 kind 場數上限做雙保險，頁面回復秒開。"""
     conn = db()
     _feat_hourly_migrate(conn)
     cats = dict(conn.execute('SELECT req_name, category FROM competitions'))
@@ -6940,6 +7735,7 @@ def get_feat_hourly():
             'f.settled, f.ah_handicap, f.ah_giver, f.ah_home, f.ah_away, '
             'f.ou_line, f.ou_over, f.ou_under '
             'FROM feat_hourly f WHERE f.kind=? '
+            "AND f.kickoff >= datetime('now','+8 hours','-45 days') "
             'ORDER BY f.match_id, f.ts', (kind,)).fetchall()
         matches = {}
         for (mid, ko, lg, h, a, d, elig, ts, res, fin, st,
@@ -6963,6 +7759,9 @@ def get_feat_hourly():
             M['now_elig'] = bool(M['hist'] and M['hist'][-1]['elig'])
             M['snaps'] = len(M['hist'])
             M['cat'] = cats.get(M['league'], '')
+        # 雙保險：每 kind 最多留 1500 場（最新開賽排先），頁面同回應包都 bounded
+        recs.sort(key=lambda M: M['kickoff'], reverse=True)
+        recs = recs[:1500]
         played = [M for M in recs if M.get('result')]
         wins = sum(1 for M in played if M['result'] == 'W')
         losses = sum(1 for M in played if M['result'] == 'L')
@@ -6970,6 +7769,7 @@ def get_feat_hourly():
         dropped = [M for M in recs if M.get('final_eligible') == 0]
         out[kind] = {
             'name': '精選W' if kind == 'W' else '精選' + kind,
+            'window_days': 45,
             'stats': {'tracked': len(recs),
                       'now_eligible': sum(1 for M in recs if M['now_elig']),
                       'ever_eligible': sum(1 for M in recs if M['ever']),
@@ -6978,7 +7778,7 @@ def get_feat_hourly():
                       'pushes': pushes,
                       'hit_r': round(wins / (wins + losses) * 100, 1)
                       if (wins + losses) else None},
-            'matches': sorted(recs, key=lambda M: M['kickoff'], reverse=True)}
+            'matches': recs}
     st = {k: _feat_hourly.get(k) for k in ('running', 'last', 'error', 'runs')}
     conn.close()
     return {'kinds': out, 'scan': st}
@@ -7291,6 +8091,21 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == '/api/fetch-batch-status':
             self._send(200, json.dumps(fbatch_status(), ensure_ascii=False))
+            return
+        if u.path == '/api/scan-status':
+            # 2026-10-22 通用掃描狀態（newjx／w88 背景作業真實進度）：
+            # ?kind=newjx|w88 → {running, added, settled, error, started_at}
+            try:
+                q = parse_qs(u.query)
+                kind = str(q.get('kind', [''])[0])
+                if kind not in ('newjx', 'w88'):
+                    self._send(400, json.dumps(
+                        {'error': 'kind 只可以係 newjx / w88'}, ensure_ascii=False))
+                    return
+                self._send(200, json.dumps(_bg_scan_public(kind),
+                                           ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/regrab-recompute':
             # 🔄 重抓重算（2026-10-21）：GET 輪詢進度
@@ -7711,6 +8526,7 @@ class Handler(BaseHTTPRequestHandler):
                 a = fw8x.scan(c)
                 s = fw8x.settle(c)
                 c.close()
+                _scan_extras()   # 2026-10-22：順手爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps({'added': a, 'settled': s},
                                            ensure_ascii=False))
             except Exception as e:
@@ -7726,9 +8542,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(500, json.dumps({'error': 'w88_engine 模組未載入'},
                                                ensure_ascii=False))
                     return
-                started = _start_bg_scan('w88')
+                started = _start_unified_scan()
+                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps(
-                    {'running': True, 'started': started}, ensure_ascii=False))
+                    {'running': True, 'started': started.get('started')},
+                    ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -7741,9 +8559,11 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(500, json.dumps({'error': 'newjx_engine 模組未載入'},
                                                ensure_ascii=False))
                     return
-                started = _start_bg_scan('newjx')
-                self._send(200, json.dumps({'running': True, 'started': started},
-                                           ensure_ascii=False))
+                started = _start_unified_scan()
+                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
+                self._send(200, json.dumps(
+                    {'running': True, 'started': started.get('started')},
+                    ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -7889,7 +8709,8 @@ class Handler(BaseHTTPRequestHandler):
                     conn.commit()
                     conn.close()
                 if not _feat_scan['running']:
-                    _scan_thread(_featured_scan_job)
+                    _start_unified_scan()
+                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps({'started': True, 'running': True,
                                             'reset': bool(body.get('reset'))},
                                            ensure_ascii=False))
@@ -7900,6 +8721,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if not _check_scan['running']:
                     _scan_thread(_check_scan_job)
+                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps({'started': True, 'running': True},
                                            ensure_ascii=False))
             except Exception as e:
@@ -7916,7 +8738,8 @@ class Handler(BaseHTTPRequestHandler):
                     conn.commit()
                     conn.close()
                 if not _v1_scan['running']:
-                    threading.Thread(target=_v1_scan_job, daemon=True).start()
+                    _start_unified_scan()
+                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps({'started': True, 'running': True,
                                             'reset': bool(body.get('reset'))},
                                            ensure_ascii=False))
@@ -7952,7 +8775,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 if not _fw_grid_scan[g]['running']:
-                    _scan_thread(_fw_grid_scan_job, g)
+                    _start_unified_scan()
+                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
@@ -7975,6 +8799,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if not _ou_rules_scan['running']:
                     _scan_thread(_ou_rules_scan_job)
+                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
@@ -7984,6 +8809,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if not _htft_rules_scan['running']:
                     _scan_thread(_htft_rules_scan_job)
+                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
@@ -8026,7 +8852,8 @@ class Handler(BaseHTTPRequestHandler):
                     conn.commit()
                     conn.close()
                 if not _v3_scan['running']:
-                    _scan_thread(_v3_featured_scan_job)
+                    _start_unified_scan()
+                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps({'started': True, 'running': True,
                                             'reset': bool(body.get('reset'))},
                                            ensure_ascii=False))
@@ -8329,6 +9156,11 @@ def _result_catchup_job():
         _result_catchup['running'] = True
         try:
             _result_catchup['fixed'] = _result_catchup_once()
+            # 2026-10-22：賽果一補到，即刻主動結算全部精選表（完場自動更新到所有工具）
+            try:
+                _settle_finished_tools_bg()
+            except Exception:
+                pass
             # 12BET 優先政策：每日（巡邏節奏）用 12BET 重試 crown 暫代場次
             try:
                 _cr, _fw = get_crawler()
@@ -8687,19 +9519,12 @@ if __name__ == '__main__':
     else:
         print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '
               'restart loop）；紀錄由本機每小時做、每日推送', flush=True)
-    # 8X 循環照開（雲端都開）：每次 scan 先 ~20s CPU／20 分鐘，唔會搶 health check；
-    # 冇佢嘅話手機版 8X 永遠唔會自動有預測。
-    if fw8x:
-        fw8x.start_loop()
-        print('[boot] 8X 背景循環已啟動（每 20 分鐘 scan+settle）', flush=True)
-    # 88W／K3 雙數和波循環（2026-10-19）：純 SQL 掃描，資源用量極低
-    if w88_engine:
-        w88_engine.start_loop()
-        print('[boot] 88W 背景循環已啟動（每 20 分鐘 K3 scan+settle）', flush=True)
-    # 新精選循環（2026-10-19）：純 SQL＋按需 ps 特徵，資源用量低
-    if newjx_engine:
-        newjx_engine.start_loop()
-        print('[boot] 新精選背景循環已啟動（每 20 分鐘 scan+settle）', flush=True)
+    # 2026-10-22 統一循環（本機＋雲端都開）：取代 8X／88W／新精選三個各自
+    # 獨立循環——一場一次過評全部系統（共享計算）＋變動跳過，約 6 小時一次
+    # 全量。冇佢嘅話手機版 8X/88W/新精選永遠唔會自動有預測。
+    threading.Thread(target=_unified_loop, daemon=True).start()
+    print('[boot] 統一背景循環已啟動（每 20 分鐘變動掃描＋全表結算）',
+          flush=True)
     # 2026-10-12 雲端爬蟲節點：ENABLE_CLOUD_CRAWL=1 時喺背景線程探測 titan007
     # 各主機並爬佢通到嘅市場（寫 /data/football.db；本機 IP 被硬封鎖，雲端
     # 出口 IP 直達唔使代理）。本機（冇呢個 env）永遠唔會行呢段。

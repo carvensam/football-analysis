@@ -439,24 +439,19 @@ def scan(conn, hours=168, grace_min=10):
         if conn.execute('SELECT 1 FROM fw8x_log WHERE match_id=?',
                         (mid,)).fetchone():
             continue
-        f = formulas.get(lg)
-        if not f:
+        got = eval_match(conn, mid, lg)
+        if not got:
             continue
-        # 只有公式用到 ps_/md_ 特徵先付即場計算嘅成本
-        info = features_for(conn, mid, fill_live=_needs_live(f))
-        if not info:
-            continue
-        feat = info['feat']
-        if all(pred_match(feat, p) for p in f['preds']):
-            conn.execute(
-                'INSERT OR IGNORE INTO fw8x_log VALUES(?,?,?,?,?,?,?,?,?,'
-                '?,?,?,?,?,?,?)',
-                (mid, info['kickoff'], info['league'], info['home'],
-                 info['away'], f['dir'], json.dumps(f['preds'],
-                                                    ensure_ascii=False),
-                 f.get('hit'), f.get('n'), info['hc'], info['gv'],
-                 info['cho'], info['cao'], now, None, 0))
-            added += 1
+        info, f = got
+        conn.execute(
+            'INSERT OR IGNORE INTO fw8x_log VALUES(?,?,?,?,?,?,?,?,?,'
+            '?,?,?,?,?,?,?)',
+            (mid, info['kickoff'], info['league'], info['home'],
+             info['away'], f['dir'], json.dumps(f['preds'],
+                                                ensure_ascii=False),
+             f.get('hit'), f.get('n'), info['hc'], info['gv'],
+             info['cho'], info['cao'], now, None, 0))
+        added += 1
     conn.commit()
     return added
 
@@ -527,10 +522,36 @@ def stats_and_list(conn, limit=300):
 
 def newsince(conn, since):
     migrate(conn)
-    return [dict(r) for r in conn.execute(
+    # 2026-10-22 修正：conn 行工廠係預設元組，dict(元組) 會 TypeError
+    # 「object is not iterable」——/api/8x/new 500 元兇。改用 zip 配欄位名。
+    cur = conn.execute(
         'SELECT match_id, kickoff, league, home, away, direction, '
         'created_ts FROM fw8x_log WHERE created_ts > ? '
-        'ORDER BY created_ts', (since,))]
+        'ORDER BY created_ts', (since,))
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def eval_match(conn, mid, lg=None):
+    """單場評估（2026-10-22 資格重檢 sweep 用）：聯賽有公式且條件全中
+    → (info, formula)；否則 None。同 scan 用緊同一套邏輯，唔會漂移。"""
+    if lg is None:
+        row = conn.execute(
+            'SELECT c.req_name FROM matches m '
+            'JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'WHERE m.id=?', (mid,)).fetchone()
+        lg = row[0] if row else None
+    formulas = load_formulas()
+    if not lg or lg not in formulas:
+        return None
+    f = formulas[lg]
+    info = features_for(conn, mid, fill_live=_needs_live(f))
+    if not info:
+        return None
+    if all(pred_match(info['feat'], p) for p in f['preds']):
+        return info, f
+    return None
 
 
 _stop = threading.Event()

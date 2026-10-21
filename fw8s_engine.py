@@ -44,8 +44,10 @@ def _signed(T):
     return T['h'] * {'home': 1, 'away': -1, 'none': 0}.get(T.get('g') or 'none', 0)
 
 
-def fw8s_report(conn, t):
-    """精選8s 單場檢查。回傳同 fw_grid_engine.grid_report 相容嘅精簡結構。"""
+def fw8s_report(conn, t, grid8_rep=None):
+    """精選8s 單場檢查。回傳同 fw_grid_engine.grid_report 相容嘅精簡結構。
+    grid8_rep（2026-10-22 加速重構）：grid 型公式要用嘅 12 格報告——統一掃描
+    已經計過嘅話傳入嚟慳一次重複運算（grid_report 約 0.75 秒/場）。"""
     lg_tc = _name_tc_map(conn).get(t.get('league'), t.get('league'))
     f = FORMULAS.get(lg_tc)
     if f is None:
@@ -76,8 +78,9 @@ def fw8s_report(conn, t):
                         {'cell': 'SC', 'name': '尾盤盤口', 'dir': 'up',
                          'n': 0, 'up_r': None, 'down_r': None}]
         return out
-    # grid 型：借 fw_grid_engine 計全部 12 格方向
-    rep = fw_grid_engine.grid_report(conn, t, '8')
+    # grid 型：借 fw_grid_engine 計全部 12 格方向（統一掃描已計嘅重用）
+    rep = grid8_rep if grid8_rep is not None \
+        else fw_grid_engine.grid_report(conn, t, '8')
     cells = {c['cell']: c for c in rep.get('cells', [])}
     dirs_, missing, downs = [], [], []
     for cn in f['cells']:

@@ -140,6 +140,38 @@ def _ps_feats(feat):
     return f
 
 
+def eval_match(conn, mid, lg=None):
+    """單場評估（2026-10-22 資格重檢 sweep 用）：該聯賽方法條件全中
+    → INSERT 用 vals 元組；否則 None。同 scan 共用同一套邏輯，唔會漂移。"""
+    if lg is None:
+        row = conn.execute(
+            'SELECT c.req_name FROM matches m '
+            'JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'WHERE m.id=?', (mid,)).fetchone()
+        lg = row[0] if row else None
+    rule = load_rules().get(lg) if lg else None
+    if not rule:
+        return None
+    got = _odds_feats(conn, mid)
+    if not got:
+        return None
+    of, ah = got
+    conds = rule['conds']
+    if not all(of.get(c) for c in conds if c not in PS_CONDS):
+        return None
+    if any(c in PS_CONDS for c in conds):
+        import fw8x
+        info = fw8x.features_for(conn, mid, fill_live=True)
+        psf = _ps_feats(info['feat']) if info else {}
+        if not all(psf.get(c) for c in conds if c in PS_CONDS):
+            return None
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    return (mid, lg, rule['dir'],
+            json.dumps(conds, ensure_ascii=False),
+            ah.get('handicap'), ah.get('giver'), now)
+
+
 def scan(conn, hours=168, grace_min=10):
     """賽前掃描：未來 hours 小時、聯賽有新精選方法、條件全中 → 記入 newjx_log。"""
     migrate(conn)
@@ -156,29 +188,12 @@ def scan(conn, hours=168, grace_min=10):
         % (grace_min, hours, ','.join('?' * len(rules))),
         tuple(rules.keys())).fetchall()
     added = 0
-    now = time.strftime('%Y-%m-%d %H:%M:%S')
-    import fw8x
     hits = []
     for mid, lg in rows:
-        rule = rules.get(lg)
-        if not rule:
-            continue
         try:
-            got = _odds_feats(conn, mid)
-            if not got:
-                continue
-            of, ah = got
-            conds = rule['conds']
-            if not all(of.get(c) for c in conds if c not in PS_CONDS):
-                continue
-            if any(c in PS_CONDS for c in conds):
-                info = fw8x.features_for(conn, mid, fill_live=True)
-                psf = _ps_feats(info['feat']) if info else {}
-                if not all(psf.get(c) for c in conds if c in PS_CONDS):
-                    continue
-            hits.append((mid, lg, rule['dir'],
-                         json.dumps(conds, ensure_ascii=False),
-                         ah.get('handicap'), ah.get('giver'), now))
+            vals = eval_match(conn, mid, lg)
+            if vals:
+                hits.append(vals)
         except Exception:
             traceback.print_exc()
     for vals in hits:

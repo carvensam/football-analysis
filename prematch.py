@@ -158,6 +158,10 @@ def build_season(conn, season_id, category):
             vals += h_avg + a_avg + [combined]
             conn.execute(UPSERT, [mid] + vals)
             n += 1
+            if n % 200 == 0:
+                conn.commit()   # 分段提交：成季一條交易，爭用下可以鎖成
+                # 幾十分鐘（2026-10-08 獵手 stacks 實證 build_season
+                # 係餘下寫鎖僵死元兇；每隔 200 場放一次鎖）
     return n
 
 

@@ -21,16 +21,15 @@
 
   function render(d) {
     btn.disabled = false;
-    var via = d && d.via ? '（' + d.via + '）' : '';
     if (d && d.cmd === 'stop') {
       btn.textContent = '▶ 繼續爬';
       btn.className = 'go';
-      btn.title = '爬取已停止（' + (d.workers_alive || 0) + ' 線待退出）' + via;
+      btn.title = '爬取已停止（' + (d.workers_alive || 0) + ' 線待退出）';
     } else {
       btn.textContent = '■ 停止';
       btn.className = 'halt';
       btn.title = '爬取中（' + (d ? d.workers_alive : '?') + '/' +
-        (d ? d.workers_total : '?') + ' 線）——撳即停' + via;
+        (d ? d.workers_total : '?') + ' 線）——撳即停';
     }
   }
 
@@ -58,16 +57,7 @@
     fetch(stopping ? '/api/crawl/stop' : '/api/crawl/run',
           { method: 'POST' })
       .then(function (r) { return r.json(); })
-      .then(function (d) {
-        /* 中繼模式：真正爬蟲喺本機，等佢攞指令＋回報狀態（約 1 分鐘） */
-        if (d && d.relay) {
-          btn.textContent = '已通知本機…';
-          setTimeout(poll, 8000);
-          setTimeout(poll, 20000);
-        } else {
-          setTimeout(poll, 1200);
-        }
-      })
+      .then(function () { setTimeout(poll, 1200); })
       .catch(function () { btn.textContent = '錯誤，重試'; btn.disabled = false; });
   };
 

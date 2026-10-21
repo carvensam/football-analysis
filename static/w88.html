@@ -197,24 +197,42 @@ async function load(){
     $('#predbody').innerHTML = '<div class="err">載入失敗：' + esc(e.message || e) + '</div>';
   }
 }
+/* 2026-10-22：真狀態輪詢——/api/scan-status?kind=w88 每 5 秒更新進度。 */
+let _scanPoll = null;
 async function doScan(){
   const b = $('#btnScan');
   b.disabled = true;
-  $('#status').textContent = '啟動緊…';
+  $('#status').textContent = '啟動緊…（會先爬進行中賽事賽果＋補結算各精選表）';
   try {
     const r = await fetch('/api/w88/scan', {method: 'POST'});
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || r.status);
-    $('#status').textContent = d.started === false
-      ? '⚡ 掃描已經喺背景跑緊，完成後列表會更新——12 秒後自動刷新…'
-      : '⚡ 已開始背景掃描＋結算（數據庫忙會自動等空窗補寫）——12 秒後自動刷新…';
-    setTimeout(load, 12000);
-    setTimeout(() => { b.disabled = false; }, 12000);
+    pollScan();
     return;
   } catch (e) {
     $('#status').textContent = '掃描失敗：' + (e.message || e);
   }
   b.disabled = false;
+}
+async function pollScan(){
+  clearTimeout(_scanPoll);
+  let s;
+  try { s = await (await fetch('/api/scan-status?kind=w88')).json(); }
+  catch (e) { _scanPoll = setTimeout(pollScan, 5000); return; }
+  if (s.running) {
+    $('#status').textContent = '⚡ 掃描緊：' +
+      (s.error ? s.error + '——' : '') +
+      (s.added != null
+        ? `88W 新增 ${s.added}・結算 ${s.settled}｜8X 新增 ${s.added_8x || 0}・結算 ${s.settled_8x || 0}`
+        : '準備中…');
+    _scanPoll = setTimeout(pollScan, 5000);
+    return;
+  }
+  $('#status').textContent = s.error
+    ? '⚠ ' + s.error
+    : `✅ 掃描完成：88W 新增 ${s.added || 0}・結算 ${s.settled || 0}｜8X 新增 ${s.added_8x || 0}・結算 ${s.settled_8x || 0}（${s.started_at || ''}）`;
+  $('#btnScan').disabled = false;
+  load();
 }
 load();
 </script>

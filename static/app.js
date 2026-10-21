@@ -784,6 +784,35 @@ function _fillLgSlots(){
 LgHit.load();
 setInterval(() => { LgHit._p = null; LgHit.rates = null; LgHit.load(); }, 900000);
 
+/* ---------- 每場入選系統來源徽章（2026-10-22 用戶規格「講明每個數據由邊個篩選出嚟」） ----------
+ * 後端 /api/v3/list 嘅 m.srcs 標記咗場次入選咗邊啲精選系統；
+ * 行內藍色小徽章可見，hover 有出處說明。 */
+const SRC_META = {
+  W:   ['精選W', 'V3 六條件精選W（/api/v3/featured）'],
+  V2:  ['精V2',  '舊版本 V2 十六字頭精選（/api/featured）'],
+  V2Z: ['精V2Z', '舊版本 V2 同主隊 Z 槽（/api/featured?z=1）'],
+  V1:  ['精V1',  '舊版本 V1 十六字頭精選（/api/v1/featured）'],
+  V1Z: ['精V1Z', '舊版本 V1 同主隊 Z 槽（/api/v1/featured?z=1）'],
+  F7:  ['精7',   '精選7 格組合（/api/fwgrid?g=7）'],
+  F8:  ['精8',   '精選8 格組合（/api/fwgrid?g=8）'],
+  F12: ['精12',  '精選12 格組合（/api/fwgrid?g=12）'],
+  F8S: ['格8s',  'fw_grid 8s 格入選（/api/fwgrid?g=8s）'],
+  S8:  ['8s',    '精選8s 公式引擎（/api/fw8s）'],
+  X8:  ['8X',    '8X 上/下盤公式（/api/8x）'],
+  W88: ['88W',   '88W 全市場方法庫（/api/w88）'],
+  JX:  ['新精選', '新精選 16 欄位全組合挖掘（/api/newjx）']
+};
+function _srcChips(m){
+  const s = m.srcs;
+  if (!s || !s.length) return '';
+  const parts = s.map(k => {
+    const meta = SRC_META[k] || [k, k];
+    return `<span class="tag" style="font-size:10px;color:#9ecbff;border-color:#2b4a6b" ` +
+      `title="此場入選咗「${meta[1]}」——賽事分析同徽章數據係由呢個系統篩選出嚟">${meta[0]}</span>`;
+  });
+  return ` <span class="srcs" style="white-space:nowrap" title="呢場入選咗嘅精選系統（每個數據嘅來源標記）">｜${parts.join('')}</span>`;
+}
+
 function _mrow(m, playedSec){
   const pc = window.PhoneCrawl ? PhoneCrawl.lineFor(m.id) : null;
   const pcMark = pc ? (pc.agree === true ? ' <span style="color:var(--up);font-size:10px">✓同本機</span>'
@@ -808,7 +837,7 @@ function _mrow(m, playedSec){
   return `<div class="mrow" data-mid="${m.id}">
     <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
     <span class="lg">${esc(m.league)}</span>
-    <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}${_fwConflictBadge(m)}${_pred3Badge(m)}${_lgRateSlot(m.league, ['main','feat_v2','f7','f8','hb'])}</span>
+    <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}${_fwConflictBadge(m)}${_pred3Badge(m)}${_lgRateSlot(m.league, ['main','feat_v2','f7','f8','hb'])}${_srcChips(m)}</span>
     ${_stateTag(m.state)}${sc}${line}${oud}${od}${at}${rfb}${BetSlip.btn(m)}${Twin.btn(m)}</div>`;
 }
 /* ---------- 精選8 vs 精選8s 方向衝突（2026-10-15 用戶：主頁展示兩套規則打架嘅場次） ----------
@@ -1123,6 +1152,7 @@ async function phoneBatchAll(btn){
     }
     $('#updInfo').textContent = msg;
     loadHome();
+    refreshCurrentTool();
     /* 自測過咗但爬落嚟全部失敗（網絡中途轉死／被封）——都係自動轉伺服器通道，
      * 唔使用戶白撳（2026-10-12） */
     if (!r.stopped && r.ok === 0 && r.fail > 0) {
@@ -1147,10 +1177,43 @@ async function pollFbatch(){
   $('#btnOddsNow').disabled = false;
   if (st.error) { toast(st.error); return; }
   if (st.last) {
-    $('#updInfo').textContent =
-      `⚡ 即時更新完成（${st.last}）：成功 ${st.ok}｜失敗 ${st.fail}，已載入最新賠率`;
+    let msg = `⚡ 即時更新完成（${st.last}）：成功 ${st.ok}｜失敗 ${st.fail}`;
+    /* 2026-10-22：顯示八系統資格重檢結果——更新後唔合資格嘅場次已即時剔走 */
+    const rv = st.reval;
+    if (rv && (rv.checked || rv.removed || rv.added)) {
+      msg += `｜資格重檢 ${rv.checked} 場：保留 ${rv.kept}・剔走唔合資格 ${rv.removed}・新加入 ${rv.added}` +
+             (rv.capped ? `（另有 ${rv.capped} 場下輪補）` : '');
+    }
+    msg += '，各精選工具已一齊更新';
+    $('#updInfo').textContent = msg;
     loadHome();
+    refreshCurrentTool();
   }
+}
+/* 2026-10-22：「即時更新全部」／重抓完成後，令當前工具頁有動作——
+   同頁 tab 重跑 loader；iframe 工具（好波/8s/88W/新精選）reload 內頁。 */
+function refreshCurrentTool(){
+  try {
+    const loaders = {featw: () => loadFeaturedW(), check: () => loadCheckPage(),
+      fw7: () => loadFwGrid('7'), fwck7: () => loadFwCheck('7'),
+      fw8: () => loadFwGrid('8'), fwck8: () => loadFwCheck('8'),
+      fw12: () => loadFwGrid('12'), fwck12: () => loadFwCheck('12'),
+      review: () => loadReview(), htft: () => loadHtft(),
+      picks: () => loadPicksPage(), featlog: () => loadFeatlog(),
+      oupred: () => loadOupred(), feathourly: () => loadFeatHourly(),
+      ou: () => loadOuRules(), htftm: () => loadHtftRules(),
+      pstat: () => loadPredStats(), x8: () => loadX8(),
+      fw12lib: () => loadFw12Lib(), v1: () => loadV1()};
+    if (loaders[curPage]) return loaders[curPage]();
+    const frames = {haobao: '#hbFrame', fw8s: '#fw8sFrame',
+                    w88: '#w88Frame', newjx: '#jxFrame'};
+    const sel = frames[curPage];
+    const f = sel && $(sel);
+    if (f && f.src) {
+      try { f.contentWindow.location.reload(); return; } catch (e) {}
+      f.src = f.src;
+    }
+  } catch (e) {}
 }
 let updPoll = null;
 async function pollUpdateLoop(){

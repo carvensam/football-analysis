@@ -217,6 +217,47 @@ def _ps_feats(feat):
     return f
 
 
+def eval_match(conn, mid, lg=None):
+    """單場評估（2026-10-22 資格重檢 sweep 用）：條件全中嘅方法 hit 列表
+    [(market, conds_key, insert_vals), ...]；冇中／冇方法庫 → 空 list。
+    同 scan 共用同一套邏輯，唔會漂移。"""
+    if lg is None:
+        row = conn.execute(
+            'SELECT c.req_name FROM matches m '
+            'JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'WHERE m.id=?', (mid,)).fetchone()
+        lg = row[0] if row else None
+    rules = load_rules()
+    if not lg or lg not in rules:
+        return []
+    got = _odds_feats(conn, mid)
+    if not got:
+        return []
+    of, ah, ou = got
+    psf = None  # 惰性：有方法用到 ps 條件先計一次
+    hits = []
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    import fw8x
+    for rule in rules.get(lg, []):
+        conds = rule['conds']
+        key = (mid, rule['market'], json.dumps(conds, ensure_ascii=False))
+        # 盤口條件先過（平）；全中而又有 ps 條件先計 ps 特徵（貴）
+        if not all(of.get(c) for c in conds if c not in PS_CONDS):
+            continue
+        if any(c in PS_CONDS for c in conds):
+            if psf is None:
+                info = fw8x.features_for(conn, mid, fill_live=True)
+                psf = _ps_feats(info['feat']) if info else {}
+            if not all(psf.get(c) for c in conds if c in PS_CONDS):
+                continue
+        hits.append((key, (mid, rule['market'], key[2], lg,
+                           rule.get('label'),
+                           ou['total_line'] if ou else None,
+                           ah.get('handicap'), ah.get('giver'), now)))
+    return hits
+
+
 def scan(conn, hours=168, grace_min=10):
     """賽前掃描：未來 hours 小時、聯賽有方法庫、條件全中 → 記入 w88_log。
     兩段式：先讀取＋計算（唔攞寫鎖），最後先一次過短事務寫入——
@@ -234,32 +275,10 @@ def scan(conn, hours=168, grace_min=10):
         'AND c.req_name IN (%s) AND m.home_score IS NULL'
         % (grace_min, hours, ','.join('?' * len(rules))),
         tuple(rules.keys())).fetchall()
-    now = time.strftime('%Y-%m-%d %H:%M:%S')
-    import fw8x
     hits = []
     for mid, lg in rows:
         try:
-            got = _odds_feats(conn, mid)
-            if not got:
-                continue
-            of, ah, ou = got
-            psf = None  # 惰性：有方法用到 ps 條件先計一次
-            for rule in rules.get(lg, []):
-                conds = rule['conds']
-                key = (mid, rule['market'], json.dumps(conds, ensure_ascii=False))
-                # 盤口條件先過（平）；全中而又有 ps 條件先計 ps 特徵（貴）
-                if not all(of.get(c) for c in conds if c not in PS_CONDS):
-                    continue
-                if any(c in PS_CONDS for c in conds):
-                    if psf is None:
-                        info = fw8x.features_for(conn, mid, fill_live=True)
-                        psf = _ps_feats(info['feat']) if info else {}
-                    if not all(psf.get(c) for c in conds if c in PS_CONDS):
-                        continue
-                hits.append((key, (mid, rule['market'], key[2], lg,
-                                   rule.get('label'),
-                                   ou['total_line'] if ou else None,
-                                   ah.get('handicap'), ah.get('giver'), now)))
+            hits.extend(eval_match(conn, mid, lg))
         except Exception:
             traceback.print_exc()
     if not hits:

@@ -1181,7 +1181,10 @@ def _save_standing(conn, season_id, st, now):
          st['gf'], st['ga'], st['gd'], st['points'], now))
 
 
-def crawl_odds_for_match(conn, fetcher, match_id, kickoff_str, company_id):
+def crawl_odds_for_match(conn, fetcher, match_id, kickoff_str, company_id,
+                         fallback_company=None):
+    """fallback_company（2026-10-14 用戶指示：日聯杯冇易勝博 → 皇冠頂替，
+    company_id 欄位就係註明）：主公司 NO_DATA 時轉後備公司；兩間都冇先算無數據。"""
     kickoff = dt.datetime.strptime(kickoff_str, '%Y-%m-%d %H:%M')
     url = f'https://vip.titan007.com/changeDetail/handicap.aspx?id={match_id}&companyid={company_id}'
     html = fetcher.get(url, encoding='gbk', referer='https://zq.titan007.com/',
@@ -1189,6 +1192,9 @@ def crawl_odds_for_match(conn, fetcher, match_id, kickoff_str, company_id):
     if html is None:
         return False
     if html == 'NO_DATA':
+        if fallback_company is not None:
+            return crawl_odds_for_match(conn, fetcher, match_id, kickoff_str,
+                                        fallback_company)
         conn.execute('UPDATE matches SET odds_done=2 WHERE id=?', (match_id,))
         conn.commit()
         return True
