@@ -1051,7 +1051,11 @@ def _pick_revalidate(conn, mid):
 
 
 def after_odds_update(mid, before):
-    """任何渠道寫入盤口後call：尾盤有重大變動 → 600 秒節流下背景重檢資格。"""
+    """任何渠道寫入盤口後call：尾盤有重大變動 → 600 秒節流下背景重檢資格。
+    2026-10-22：統一掃描進行中直接讓路——掃描本身會重評全部候選場，
+    唔使再開逐場重檢線程同佢鬥（53 秒/場事件嘅第二元兇）。"""
+    if _UNIFIED_RUNNING[0]:
+        return
     try:
         conn = db()
         try:
@@ -1136,6 +1140,7 @@ _unified_scan = {'running': False, 'phase': '', 'done': 0, 'total': 0,
                  'added': 0, 'removed': 0, 'kept': 0, 'error': None,
                  'full': False, 'last': None, 'passes': 0}
 _LAST_UNIFIED = [None]   # 上次統一掃描完成時間（HK，文字）；None＝未掃過
+_UNIFIED_RUNNING = [False]   # 掃描進行中：after_odds_update 讓路＋釘住數據池
 
 # acts 字首 → 工具計數桶（注意次序：V1Z 先於 V1、格8s 先於格8）
 _ACT_BUCKET = (('W', 'v3'), ('V2Z', 'featz'), ('V2', 'feat'),
@@ -1150,6 +1155,23 @@ def _act_bucket(a):
         if a.startswith(p):
             return b
     return None
+
+
+def _pin_pools():
+    """掃描期間釘住三座數據池（2026-10-22 實測：爬蟲每寫一場盤口就
+    invalidate 池（ts=0），掃描中反覆重建 → 53 秒/場）。掃描用開工時嘅
+    池（最多舊一個掃描週期，分鐘級誤差），掃描完先正常失效。"""
+    import screen_engine
+    import v2_engine
+    import v3_engine
+    now = time.time()
+    for c in (screen_engine._pool_cache, v2_engine._v2_pool,
+              v3_engine._v3_pool):
+        try:
+            if c.get('df') is not None:
+                c['ts'] = now
+        except Exception:
+            pass
 
 
 def _never_evaluated(conn, mid):
@@ -1201,6 +1223,7 @@ def _unified_scan_job(mids=None, full=False, light=False):
         return False
     st.update(running=True, error=None, phase='準備中…', done=0,
               added=0, removed=0, kept=0, full=full)
+    _UNIFIED_RUNNING[0] = True
     tools = (_feat_scan, _v1_scan, _v3_scan,
              _fw_grid_scan['7'], _fw_grid_scan['8'],
              _fw_grid_scan['12'], _fw_grid_scan['8s'])
@@ -1213,8 +1236,30 @@ def _unified_scan_job(mids=None, full=False, light=False):
     _bg_scan_info['w88'] = {
         'started_at': time.strftime('%Y-%m-%d %H:%M:%S')}
     try:
+        # 同更新工序互斥：全量更新／即時更新行緊就等佢完（最多 15 分鐘）——
+        # 否則佢每寫一場就觸發逐場重檢＋invalidate 池，雙方鬥慢（實測
+        # 53 秒/場嘅元兇之一）。更新完咗下一個循環會補返。
+        t_wait = time.time()
+        while (_update_state['running'] or _fbatch_state['running']) \
+                and time.time() - t_wait < 900:
+            st['phase'] = '等緊更新工序完成…'
+            _bg_scan_info['newjx']['error'] = (
+                '等緊更新工序完成，掃描排緊隊（等佢搞掂自動開跑）')
+            _bg_scan_info['w88']['error'] = (
+                '等緊更新工序完成，掃描排緊隊（等佢搞掂自動開跑）')
+            time.sleep(15)
+        _bg_scan_info['newjx']['error'] = None
+        _bg_scan_info['w88']['error'] = None
         conn = db()
         try:
+            # 開工前預熱三座池並釘住——掃描期間爬蟲寫盤口唔會觸發重建
+            import screen_engine
+            import v2_engine
+            import v3_engine
+            screen_engine.load_pool(conn)
+            v2_engine.load_v2_pool(conn)
+            v3_engine.load_v3_pool(conn)
+            _pin_pools()
             cands = (list(mids) if mids is not None
                      else _unified_candidates(conn, full))
             st['total'] = len(cands)
@@ -1248,6 +1293,7 @@ def _unified_scan_job(mids=None, full=False, light=False):
                     d['done'] = i + 1
                 if (i + 1) % 20 == 0:
                     conn.commit()
+                _pin_pools()   # 爬蟲可能喺上一場之間 invalidate 咗池
             conn.commit()
             st['phase'] = '結算已完場結果…'
             settled = _settle_finished_tools(conn)
@@ -1296,6 +1342,7 @@ def _unified_scan_job(mids=None, full=False, light=False):
     finally:
         st['running'] = False
         st['phase'] = ''
+        _UNIFIED_RUNNING[0] = False
         if not st['error']:
             for d in tools:
                 d['running'] = False
@@ -1897,6 +1944,9 @@ def do_fetch_batch(hours=0):
         return {'ok': False, 'running': True, 'error': '即時更新進行中'}
     if _win_state['running'] or _update_state['running']:
         return {'ok': False, 'running': True, 'error': '另一個更新進行中，等佢完成先'}
+    if _unified_scan['running']:
+        return {'ok': False, 'running': True,
+                'error': '統一掃描進行中，等佢完成先（佢會順便重檢資格）'}
     hours = max(0, int(hours or 0))
     _fbatch_state.update(running=True, error=None, phase='準備中…',
                          done=0, total=0)
