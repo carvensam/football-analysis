@@ -1358,7 +1358,18 @@ def _unified_scan_job(mids=None, full=False, light=False):
                 # 其他頁面唔會捱饿（189 場先加 38 秒）
             conn.commit()
             st['phase'] = '結算已完場結果…'
-            settled = _settle_finished_tools(conn)
+            try:
+                settled = _settle_finished_tools(conn)
+            except sqlite3.OperationalError:
+                # 爬蟲fleet 24/7 寫庫——結算撞鎖唔應該搞到成個 pass 報錯
+                # （評估已完成；結算交返 15 分鐘巡邏循環補）
+                time.sleep(5)
+                try:
+                    settled = _settle_finished_tools(conn)
+                except Exception:
+                    settled = {}
+            except Exception:
+                settled = {}
             import v3_engine
             hk = v3_engine.hk_now_str()
             _LAST_UNIFIED[0] = hk
@@ -8823,12 +8834,16 @@ class Handler(BaseHTTPRequestHandler):
                     conn.execute('DELETE FROM featured')
                     conn.commit()
                     conn.close()
-                if not _feat_scan['running']:
-                    _start_unified_scan()
+                if not _feat_scan['running'] or not _unified_scan['running']:
+                    _st = _start_unified_scan()
+                else:
+                    _st = {'running': True, 'started': False}
                 _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
-                self._send(200, json.dumps({'started': True, 'running': True,
-                                            'reset': bool(body.get('reset'))},
-                                           ensure_ascii=False))
+                self._send(200, json.dumps(
+                    {'started': _st.get('started', False),
+                     'running': True,
+                     'reset': bool(body.get('reset'))},
+                    ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
@@ -8852,12 +8867,16 @@ class Handler(BaseHTTPRequestHandler):
                     conn.execute('DELETE FROM v1_featured_z')
                     conn.commit()
                     conn.close()
-                if not _v1_scan['running']:
-                    _start_unified_scan()
+                if not _v1_scan['running'] or not _unified_scan['running']:
+                    _st = _start_unified_scan()
+                else:
+                    _st = {'running': True, 'started': False}
                 _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
-                self._send(200, json.dumps({'started': True, 'running': True,
-                                            'reset': bool(body.get('reset'))},
-                                           ensure_ascii=False))
+                self._send(200, json.dumps(
+                    {'started': _st.get('started', False),
+                     'running': True,
+                     'reset': bool(body.get('reset'))},
+                    ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
@@ -9361,6 +9380,13 @@ class Server(ThreadingHTTPServer):
 
 
 if __name__ == '__main__':
+    # Windows 控制台預設 cp950——開機訊息/異常中文 print 會 UnicodeEncodeError
+    # 連原本的錯誤都睇唔到（2026-10-22 stderr 實測）。強制 UTF-8。
+    try:
+        sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
     # 雲端：數據庫放永久硬碟（/data），映像每次部署焗入最新種子。
     # 2026-09-30 事故：1GB 硬碟複製 908MB 中途爆滿 → 截斷庫 → 之後每次部署
     # 開機即「database disk image is malformed」崩潰死循環。所以開機必須
@@ -9599,15 +9625,28 @@ if __name__ == '__main__':
     def _data_host_watchdog():
         import crawler as _cr
         down_since = None
+        last_auto = 0.0   # 2026-10-22：復活自動更新節流——titan007 晚晚
+        # 間歇性抖動（HTTP/2 PROTOCOL_ERROR／<30 秒斷線），舊制每次抖完都
+        # 開一次 40 分鐘全量更新，統一掃描不斷讓路變相癱瘓（實測一晚 6+ 次）
         while True:
             time.sleep(30)
             try:
                 alive = _cr.data_host_probe()
                 if alive and down_since is not None:
-                    print(f'[watchdog] titan007 數據主機已復活（曾中斷 '
-                          f'{int(time.time() - down_since) // 60} 分鐘），'
-                          f'自動開始全量更新…', flush=True)
+                    down_min = int(time.time() - down_since) // 60
                     down_since = None
+                    if down_min < 3:
+                        # 抖動級中斷：數據新鮮度影響微乎其微，唔開全量
+                        print(f'[watchdog] titan007 抖動（中斷 {down_min} 分鐘'
+                              f'）——跳過自動全量更新', flush=True)
+                        continue
+                    if time.time() - last_auto < 3600:
+                        print(f'[watchdog] titan007 復活（中斷 {down_min} 分鐘）'
+                              f'——但 1 小時內已自動更新過，跳過', flush=True)
+                        continue
+                    last_auto = time.time()
+                    print(f'[watchdog] titan007 數據主機已復活（曾中斷 '
+                          f'{down_min} 分鐘），自動開始全量更新…', flush=True)
                     # 行人手模式（auto=False）跳過 30 分鐘節流——復活觸發每次中斷
                     # 只會有一次，但之前失敗嘅更新更新咗 last_done，auto 模式會
                     # 誤判做「啱啱更新過」而跳過（復活後數據其實未刷新嘅漏洞）

@@ -342,10 +342,24 @@ def settle(conn):
         'WHERE k.result IS NULL AND m.home_score IS NOT NULL').fetchall()
     now = time.strftime('%Y-%m-%d %H:%M:%S')
     todo = []
+    backfill = []
     for mid, market, hc, giver, ou_line, hs, aws in rows:
+        if market in ('over', 'under') and ou_line is None:
+            # 2026-10-22 修正：揀嗰刻未爬到大小線而滯留嘅列——而家補查
+            # closing 大小線（12 易勝博優先），搵到就回填兼結算
+            r = conn.execute(
+                "SELECT total_line FROM odds_ou WHERE match_id=? "
+                "AND label='closing' ORDER BY CASE company_id "
+                'WHEN 12 THEN 0 ELSE 1 END LIMIT 1', (mid,)).fetchone()
+            if r and r[0] is not None:
+                ou_line = r[0]
+                backfill.append((ou_line, mid, market))
         res = _settle_one(market, hs, aws, hc, giver, ou_line)
         if res is not None:
             todo.append((res, now, mid, market))
+    for ou_line, mid, market in backfill:
+        conn.execute('UPDATE w88_log SET ou_line=? '
+                     'WHERE match_id=? AND market=?', (ou_line, mid, market))
     for res, ts, mid, market in todo:
         conn.execute('UPDATE w88_log SET result=?, settled_at=? '
                      'WHERE match_id=? AND market=?', (res, ts, mid, market))
