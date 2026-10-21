@@ -52,6 +52,33 @@
     if (v && v[1] >= 10) return Math.round(v[0] / v[1] * 100) + '%（n=' + v[1] + '）';
     return '<span style="color:var(--dim)">—（記錄緊，n=' + (v ? v[1] : 0) + '）</span>';
   }
+  /* 🗃 全庫回測卡（2026-10-22） */
+  function toolBtBar(tool, beforeEl) {
+    var fmt = function (x) { return x == null ? '—' : (x * 100).toFixed(1) + '%'; };
+    fetch('/api/toolbt/summary?scope=all').then(function (r) { return r.json(); }).then(function (all) {
+      if (!all.ok || !all.tools[tool]) return;
+      return fetch('/api/toolbt/summary?scope=month&month=2026-10').then(function (r) { return r.json(); }).then(function (oct) {
+        var t = all.tools[tool];
+        var h = '<div style="margin:6px 0;padding:6px 10px;border:1px dashed #6b5510;border-radius:10px">🗃 全庫回測（成個歷史資料庫・含10月）：' +
+          '<b>' + t.n + '</b>場 命中 <b style="color:#c9a227">' + fmt(t.hit_r) + '</b>（' + t.w + 'W/' + t.l + 'L' + (t.p ? '/' + t.p + 'P' : '') + '）';
+        if (oct.ok && oct.tools[tool]) {
+          var o = oct.tools[tool];
+          h += '　<span style="opacity:.75">10月：<b>' + o.n + '</b>場 ' + fmt(o.hit_r) + '</span>';
+        }
+        var dirs = (all.by_dir[tool] || []).map(function (e) {
+          var nm = e.label || ({ up: '上盤', down: '下盤', big: '大', small: '細' }[e.direction] || e.direction);
+          return '<span style="border:1px solid var(--line);border-radius:12px;padding:1px 8px;margin:1px 3px 1px 0;display:inline-block">' + nm + ' ' + e.n + '場 ' + fmt(e.hit_r) + '</span>';
+        }).join('');
+        if (dirs) h += '<div style="margin-top:3px">方向：' + dirs + '</div>';
+        h += '</div>';
+        var tmp = document.createElement('div');
+        tmp.innerHTML = h;
+        if (tmp.firstElementChild) beforeEl.parentNode.insertBefore(tmp.firstElementChild, beforeEl);
+      });
+    }).catch(function () {});
+  }
+  var _hbList = document.getElementById('list');
+  if (_hbList) toolBtBar('haobao', _hbList);
   _hfetch('/api/lg_hit_rates', 1).then(function (d) {
     _lgRatesHb = (d && d.lg) || {};
     /* 2026-10-21：大/細方向細分：幾中幾＋% */

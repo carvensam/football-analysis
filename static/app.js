@@ -278,6 +278,37 @@ $('#tabs').addEventListener('click', e => {
   if (b && b.dataset.pg) goto(b.dataset.pg);
 });
 
+/* ---------- 🗃 十工具全庫回測統一卡（tool_bt，2026-10-22） ---------- */
+let _toolBtCache = {};
+async function toolBtCardHTML(tool){
+  /* 全庫＋10月兩個 scope；方向細分（上/下盤、大/細、半全場目標）。失敗靜靜哋略。 */
+  try{
+    const key = async (scope, month) => {
+      const q = month ? ('?scope=' + scope + '&month=' + month) : '?scope=' + scope;
+      if (!_toolBtCache[q]) _toolBtCache[q] = await jget('/api/toolbt/summary' + q);
+      return _toolBtCache[q];
+    };
+    const all = await key('all'), oct = await key('month', '2026-10');
+    if (!all.ok) return '';
+    const t = all.tools[tool];
+    if (!t) return '';
+    const fmt = x => x == null ? '—' : (x * 100).toFixed(1) + '%';
+    const line = (tag, d) => d && d.n
+      ? `<span style="margin-right:10px">${tag} <b>${d.n}</b>場 命中 <b style="color:var(--gold2)">${fmt(d.hit_r)}</b>（${d.w}W/${d.l}L${d.p ? '/' + d.p + 'P' : ''}）</span>`
+      : '';
+    let chips = (all.by_dir[tool] || []).map(e => {
+      const nm = e.label || ({up: '上盤', down: '下盤', big: '大', small: '細'}[e.direction] || e.direction);
+      return `<span class="tag" style="margin:1px 3px 1px 0">${esc(nm)} ${e.n}場 ${fmt(e.hit_r)}</span>`;
+    }).join('');
+    const ot = oct.ok && oct.tools[tool] ? oct.tools[tool] : null;
+    return `<div class="statbar" style="border:1px dashed #6b5510;margin-top:6px">🗃 全庫回測（成個歷史資料庫・含10月）：` +
+      line('', t) +
+      (ot ? `<span style="margin-right:10px;color:var(--dim)">10月：<b>${ot.n}</b>場 命中 <b>${fmt(ot.hit_r)}</b></span>` : '') +
+      (chips ? `<div style="margin-top:3px">方向：${chips}</div>` : '') +
+      `</div>`;
+  }catch(e){ return ''; }
+}
+
 /* ---------- ⚡ 半全場逆轉統計（獨立頁） ---------- */
 let htftHours = 48, htftCat = 'all';   // 已完結回查篩選（2026-10-10，二選一或二選二）
 function htftSetHours(v){ htftHours = +v; loadHtft(); }
@@ -379,6 +410,7 @@ async function loadHtft(){
   h += '</table>';
   h += `<div class="note">更新於 ${esc(b.updated || '')}｜同類＝同聯賽＋同尾盤（讓球/讓球方）；例子場次＝同類最近 4 場。資料每 5 分鐘自動更新（撳返個分頁即刷新）。</div>`;
   box.innerHTML = h;
+  box.insertAdjacentHTML('afterbegin', await toolBtCardHTML('htft'));
 }
 /* ---------- 主頁 ---------- */
 let homeData = {upcoming: [], played: []};
@@ -1945,6 +1977,7 @@ async function loadFeaturedW(){
     <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>
     <div class="note">入選準則（六條件全部同方向≥50%）：①1A 同初盤&水位＋同尾盤（淨主淨客・全庫）②1I 同上但計埋主客互換 ③19 上賽完全相同（只計同主、同客）④19＋互換 ⑤31 主主場排名−客客場排名差距淨值（±1）⑥35 主主場入失球 及 客客場（各±3）。每條件展示盤口%＋同水位區%。合格後展示方向＋30 項淺深分析。已完場場次永久保留（事後回查頁）。Any 5／Any 4 近合格場附「相同情況」四口子回查（綜合＋各水位區域）。</div>` +
     _fwLegendHTML();
+  $('#fwStats').insertAdjacentHTML('beforeend', await toolBtCardHTML('featw'));
   const scan = d.scan || {};
   $('#fwScanInfo').textContent = scan.running
     ? `掃描中 ${scan.done}/${scan.total}…`
@@ -2115,6 +2148,7 @@ async function loadFwGrid(g){
     <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>
     <div class="note">入選準則：格組合 ${FW_GRID_DEFS[g].cells.join('、')}（${FW_GRID_DEFS[g].note}）。必填格 7/19/21/25 先有共識，其餘格全部同方向先入選；黃框＝該格組合用到嘅格。已完場場次永久保留。</div>` +
     _fwgLegendHTML(FW_GRID_DEFS[g].cells);
+  $('#fw' + g + 'Stats').insertAdjacentHTML('beforeend', await toolBtCardHTML('fw' + g));
   const scan = d.scan || {};
   $('#fw' + g + 'ScanInfo').textContent = scan.running
     ? `掃描中 ${scan.done}/${scan.total}…`
@@ -3214,6 +3248,7 @@ async function loadX8(){
           return `<span class="tag" style="border-color:#6b5510">${m.dir==='up'?'上盤':'下盤'} <b>${m.w||0}中${dec}</b>${r==null?'':` ${(r*100).toFixed(1)}%`}${m.p?` 走${m.p}`:''}<small style="color:var(--dim)"> n=${m.n}</small></span>`;
         }).join(' ') + '</div></div>');
     }
+    $('#x8Stats').insertAdjacentHTML('beforeend', await toolBtCardHTML('fw8x'));
     let b = '';
     if (!d.rows.length) b = '<div class="note">暫無記錄。背景每 20 分鐘自動掃描未來 7 日場次，有公式全中嘅場次會自動記錄並彈窗通知。</div>';
     for (const r of d.rows){

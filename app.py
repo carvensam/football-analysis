@@ -2336,6 +2336,8 @@ _INGEST_WHITELIST = {
     'featured_z', 'featured_z_log', 'v1_featured', 'v1_featured_z',
     'fw_grid_featured', 'hb_pick_log', 'k3_log', 'newjx_log', 'w88_log',
     'fw8s_log', 'fw8x_log', 'fw8x_bt2026', 'fw8s_bt', 'feat_hourly',
+    # 2026-10-22：十工具全庫回測統一結果表（tool_bt.db merge 入 master 後推送）
+    'tool_bt',
     # 2026-10-21：參考表——精選8s 新引擎用 competitions 做 req_name→name_tc 映射
     'competitions', 'seasons', 'teams',
 }
@@ -7551,6 +7553,60 @@ def api_fw8s_bt():
     return data
 
 
+_TOOLBT_CACHE = {'ts': 0.0, 'data': None}
+
+
+def api_toolbt_summary(scope='all', month=None):
+    """十工具全庫回測統一統計（tool_bt 表，本機 fwgrid_bt/tool_sweep_bt 產生）。
+    scope=all 全庫｜scope=month 指定 YYYY-MM（10 月資料等）。
+    每工具 n/w/l/p/hit＋按方向（上/下盤、大/細、半全場目標）細分。"""
+    now = time.time()
+    ck = '%s|%s' % (scope, month)
+    if _TOOLBT_CACHE['data'] is not None \
+            and _TOOLBT_CACHE.get('key') == ck and now - _TOOLBT_CACHE['ts'] < 600:
+        return _TOOLBT_CACHE['data']
+    conn = db()
+    where, args = '', ()
+    if scope == 'month' and month:
+        where = ' AND substr(kickoff,1,7)=?'
+        args = (month,)
+    tools = {}
+    try:
+        for tool, n, w, l, p in conn.execute(
+                'SELECT tool, COUNT(*), SUM(result=\'W\'), SUM(result=\'L\'), '
+                'SUM(result=\'P\') FROM tool_bt WHERE 1=1' + where +
+                ' GROUP BY tool', args):
+            eff = (w or 0) + (l or 0)
+            tools[tool] = {'n': n, 'w': w or 0, 'l': l or 0, 'p': p or 0,
+                           'hit_r': round((w or 0) / eff, 4) if eff else None}
+        by_dir = {}
+        for tool, market, direction, label, n, w, l, p in conn.execute(
+                'SELECT tool, market, direction, label, COUNT(*), '
+                'SUM(result=\'W\'), SUM(result=\'L\'), SUM(result=\'P\') '
+                'FROM tool_bt WHERE 1=1' + where +
+                ' GROUP BY tool, market, direction, label', args):
+            eff = (w or 0) + (l or 0)
+            by_dir.setdefault(tool, []).append({
+                'market': market, 'direction': direction, 'label': label,
+                'n': n, 'w': w or 0, 'l': l or 0, 'p': p or 0,
+                'hit_r': round((w or 0) / eff, 4) if eff else None})
+        months = [r[0] for r in conn.execute(
+            'SELECT DISTINCT substr(kickoff,1,7) FROM tool_bt '
+            'WHERE kickoff IS NOT NULL ORDER BY 1 DESC')]
+    except sqlite3.OperationalError as e:
+        return {'ok': False, 'error': 'tool_bt 未就緒：%s' % e}
+    names = {'featw': '精選W', 'fw7': '精選7', 'fw8': '精選8', 'fw12': '精選12',
+             'fw8s': '精選8s', 'fw8x': '8X', 'w88': '88W', 'newjx': '新精選',
+             'htft': '半全場', 'haobao': '好波'}
+    data = {'ok': True, 'scope': scope, 'month': month, 'tools': tools,
+            'names': names, 'by_dir': by_dir, 'months': months,
+            'updated': time.strftime('%Y-%m-%d %H:%M:%S')}
+    _TOOLBT_CACHE['data'] = data
+    _TOOLBT_CACHE['key'] = ck
+    _TOOLBT_CACHE['ts'] = now
+    return data
+
+
 def api_oupred_panel():
     """規則說明＋回查命中%＋每聯賽獨立因子（n 最大嘅 15 個聯賽嘅盤口因子示例）。"""
     bt = _oupred_backtest()
@@ -8133,6 +8189,17 @@ class Handler(BaseHTTPRequestHandler):
             # 精選8s：全庫 8 格共識實跑回測（fw8s_bt.db，每聯賽場次+%）
             try:
                 self._send(200, json.dumps(api_fw8s_bt(), ensure_ascii=False))
+            except Exception as e:
+                import traceback; traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/toolbt/summary':
+            # 十工具全庫回測統計（tool_bt；scope=all｜scope=month&month=YYYY-MM）
+            try:
+                q = parse_qs(u.query)
+                self._send(200, json.dumps(api_toolbt_summary(
+                    q.get('scope', ['all'])[0], q.get('month', [None])[0]),
+                    ensure_ascii=False))
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
