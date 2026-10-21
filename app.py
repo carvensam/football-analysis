@@ -1141,6 +1141,33 @@ _unified_scan = {'running': False, 'phase': '', 'done': 0, 'total': 0,
                  'full': False, 'last': None, 'passes': 0}
 _LAST_UNIFIED = [None]   # 上次統一掃描完成時間（HK，文字）；None＝未掃過
 _UNIFIED_RUNNING = [False]   # 掃描進行中：after_odds_update 讓路＋釘住數據池
+_UNIFIED_STATE_PATH = os.path.join(PARENT_DIR, 'engine',
+                                   '_unified_state.json')
+
+
+def _load_unified_state():
+    """掃描進度落碟（2026-10-22 D6 體檢修正）：_LAST_UNIFIED 舊係純記憶體——
+    每次重開機第一 pass 都係全量 189 場（20 分鐘），期間其他請求捱饿。
+    落到 engine/_unified_state.json：重開後照舊增量（除非超過 6 小時週期）。"""
+    try:
+        d = json.load(open(_UNIFIED_STATE_PATH, encoding='utf-8'))
+        if d.get('ts'):
+            _LAST_UNIFIED[0] = d['ts']
+        _unified_scan['passes'] = int(d.get('passes') or 0)
+    except Exception:
+        pass
+
+
+def _save_unified_state():
+    try:
+        with open(_UNIFIED_STATE_PATH, 'w', encoding='utf-8') as f:
+            json.dump({'ts': _LAST_UNIFIED[0],
+                       'passes': _unified_scan['passes']}, f)
+    except Exception:
+        pass
+
+
+_load_unified_state()
 
 # acts 字首 → 工具計數桶（注意次序：V1Z 先於 V1、格8s 先於格8）
 _ACT_BUCKET = (('W', 'v3'), ('V2Z', 'featz'), ('V2', 'feat'),
@@ -1188,29 +1215,43 @@ def _never_evaluated(conn, mid):
 
 
 def _unified_candidates(conn, full):
-    """變動跳過揀選：full/首次＝全部；否則淨揀 ①開賽 4 小時內（臨場
-    數據先至值得重評）②盤口 fetched_at 新過上次掃描 ③從未評估過嘅場。
-    （排名驅動嘅資格變化由每 6 小時一次嘅全量掃描兜住——24h 窗實測同
-    全量差唔多，失去增量意義。）"""
+    """變動跳過揀選（2026-10-22c 修正：用『尾盤簽名』而唔係 fetched_at——
+    爬蟲fleet 24/7 重抓，fetched_at 場場都新，舊規則令增量變全量）。
+    full/首次＝全部；否則淨揀 ①開賽 4 小時內 ②未評估過（冇簽名）③尾盤
+    （讓球/讓球方/主水/客水）同上次評估時唔同。排名驅動變化由每 6 小時
+    全量兜住。回傳 (mids, sigs)——sigs 俾 job 寫返落 _unified_snap。"""
     rows = conn.execute(
-        "SELECT m.id, m.kickoff, MAX(oc.fetched_at) FROM matches m "
+        "SELECT m.id, m.kickoff, oc.handicap, oc.giver, oc.home_odds, "
+        'oc.away_odds FROM matches m '
         "JOIN odds_asian oc ON oc.match_id=m.id AND oc.label='closing' "
         "AND oc.company_id=12 AND oc.handicap IS NOT NULL "
         "WHERE m.home_score IS NULL "
         "AND m.kickoff >= datetime('now','+8 hours') "
-        'GROUP BY m.id ORDER BY m.kickoff').fetchall()
+        'ORDER BY m.kickoff').fetchall()
+    snaps = {}
+    try:
+        snaps = dict(conn.execute(
+            'SELECT match_id, sig FROM _unified_snap'))
+    except sqlite3.Error:
+        conn.execute('''CREATE TABLE IF NOT EXISTS _unified_snap(
+            match_id INTEGER PRIMARY KEY, sig TEXT, ts TEXT)''')
+
+    def _sig(hc, gv, ho, ao):
+        return '%s|%s|%s|%s' % (hc, gv, ho, ao)
+
     if full or not _LAST_UNIFIED[0]:
-        return [r[0] for r in rows]
+        return ([r[0] for r in rows],
+                {r[0]: _sig(r[2], r[3], r[4], r[5]) for r in rows})
     from datetime import datetime, timedelta
     soon = (datetime.now() + timedelta(hours=8 + 4)
             ).strftime('%Y-%m-%d %H:%M')
-    last = _LAST_UNIFIED[0]
-    out = []
-    for mid, ko, fa in rows:
-        if ko <= soon or fa is None or fa > last \
-                or _never_evaluated(conn, mid):
+    out, sigs = [], {}
+    for mid, ko, hc, gv, ho, ao in rows:
+        s = _sig(hc, gv, ho, ao)
+        if ko <= soon or snaps.get(mid) != s:
             out.append(mid)
-    return out
+            sigs[mid] = s
+    return out, sigs
 
 
 def _unified_scan_job(mids=None, full=False, light=False):
@@ -1260,8 +1301,19 @@ def _unified_scan_job(mids=None, full=False, light=False):
             v2_engine.load_v2_pool(conn)
             v3_engine.load_v3_pool(conn)
             _pin_pools()
-            cands = (list(mids) if mids is not None
-                     else _unified_candidates(conn, full))
+            cands = list(mids) if mids is not None else None
+            sigs = {}
+            if cands is None:
+                cands, sigs = _unified_candidates(conn, full)
+            elif not light:
+                # 外部指定場次：同樣記低簽名（之後先至跳得過佢）
+                for _mid in cands:
+                    _c = conn.execute(
+                        "SELECT handicap, giver, home_odds, away_odds "
+                        "FROM odds_asian WHERE match_id=? AND label='closing' "
+                        'AND company_id=12', (_mid,)).fetchone()
+                    if _c:
+                        sigs[_mid] = '%s|%s|%s|%s' % _c
             st['total'] = len(cands)
             for d in tools:
                 d['total'] = len(cands)
@@ -1278,6 +1330,14 @@ def _unified_scan_job(mids=None, full=False, light=False):
                         time.sleep(4)
                 if acts is None:
                     continue
+                _s = sigs.get(mid)
+                if _s:
+                    conn.execute(
+                        'INSERT INTO _unified_snap(match_id,sig,ts) '
+                        'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                        'sig=excluded.sig, ts=excluded.ts',
+                        (mid, _s,
+                         time.strftime('%Y-%m-%d %H:%M:%S')))
                 for a in acts:
                     if '移出' in a:
                         st['removed'] += 1
@@ -1294,6 +1354,8 @@ def _unified_scan_job(mids=None, full=False, light=False):
                 if (i + 1) % 20 == 0:
                     conn.commit()
                 _pin_pools()   # 爬蟲可能喺上一場之間 invalidate 咗池
+                time.sleep(0.2)   # 讓 GIL 俾 HTTP 線程——全量掃描期間
+                # 其他頁面唔會捱饿（189 場先加 38 秒）
             conn.commit()
             st['phase'] = '結算已完場結果…'
             settled = _settle_finished_tools(conn)
@@ -1303,6 +1365,7 @@ def _unified_scan_job(mids=None, full=False, light=False):
             st['last'] = hk
             st['passes'] += 1
             st['error'] = None
+            _save_unified_state()
             _feat_scan.update(running=False, added=cnt.get('feat', 0),
                               added_z=cnt.get('featz', 0), error=None)
             _v1_scan.update(running=False, added=cnt.get('v1', 0),
@@ -2107,7 +2170,9 @@ _PHONE_LABELS = ('initial', 'pre_4h', 'pre_30m', 'pre_15m', 'pre_10m',
 def do_phone_odds(body):
     """核對手機直爬結果 vs 雲端（本機鏡像）尾盤。只記錄，唔寫 odds_asian。"""
     try:
-        mid = int(body.get('id'))
+        mid = int(body.get('id') or 0)
+        if not mid:
+            return {'ok': False, 'error': '缺少場次 id（手機直爬協議欄位）'}
         device = str(body.get('device') or '手機')[:30]
         snaps = body.get('snaps') or {}
         close = snaps.get('closing') or snaps.get('initial') or {}
