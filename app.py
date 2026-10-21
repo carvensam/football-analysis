@@ -1208,22 +1208,59 @@ def _regrab_worker():
     root = os.path.dirname(base)                            # 工作區根
     os.makedirs(os.path.join(root, 'logs'), exist_ok=True)
     if st.get('mode') == 'cloud':
-        # 雲端：冇爬蟲/代理池，跑「重算」部分（--cloud：範圍＝精選表現有場次
-        # ＋近14日已賽＋未來8日未賽；P4/P5 回測庫重建太重留俾本機）
-        steps = [
-            ('requalify', '☁️ 雲端重算八個精選系統資格（P1→P1b→P2→P3→P6；'
-                          '歷史缺口重抓同回測庫重建要喺本機撳）',
-             [sys.executable, 'requalify_after_backfill.py', '--cloud'], base),
-        ]
-    else:
-        steps = [
-            ('crawl16', '① 重抓 asian/OU 缺口（斷點續跑）',
-             [sys.executable, 'crawl16.py', '--proxy-only'], root),
-            ('crawl_mk', '② 重抓 歐盤/半場/角球（斷點續跑）',
-             [sys.executable, 'crawl_mk.py', '--proxy-only'], root),
-            ('requalify', '③ 重算八個精選系統資格（P1–P6）',
-             [sys.executable, 'requalify_after_backfill.py'], base),
-        ]
+        # 雲端：P1/P1b 千祈唔好用 subprocess——子進程會再載一次 v2/v3 數據池
+        # （約230MB），app 本體＋子進程加埋爆 512MB 上限，10-22 實測 OOM
+        # 冧到 502。改為喺 app 進程內行（pool 同 scan job 共用一份，
+        # scan job 日日咁載，實證裝得落）。P2/P3 回查腳本唔載 pool 好輕，
+        # 照用佢哋內置嘅 subprocess 隔離。P4/P5 回測庫重建太重，雲端跳過。
+        st.update(step='requalify',
+                  phase='☁️ 雲端重算八個精選系統資格（P1→P1b→P2→P3→P6；'
+                        '歷史缺口重抓同回測庫重建要喺本機撳）')
+        logf = open(os.path.join(root, 'logs', 'regrab_requalify.log'),
+                    'a', encoding='utf-8')
+        logf.write('\n===== 重抓重算（雲端） %s =====\n'
+                   % time.strftime('%Y-%m-%d %H:%M:%S'))
+        logf.flush()
+        logf.close()   # P2/P3 子進程會自己開返寫
+        R = None
+        try:
+            if base not in sys.path:
+                sys.path.insert(0, base)
+            import requalify_after_backfill as R
+            R.CLOUD = True
+            before = R.before_stats()
+            R.state(status='running', phase='START', error=None,
+                    mode='cloud',
+                    before=json.dumps(before, ensure_ascii=False))
+            R.phase_p1()
+            R.phase_p1b()
+            R.phase_p2()
+            R.phase_p3()
+            R.phase_p6(before)
+            R.state(status='done', phase='DONE')
+            st['rc_requalify'] = 0
+        except Exception:
+            traceback.print_exc()
+            st['error'] = traceback.format_exc(limit=3)
+            try:
+                if R:
+                    R.state(status='error', error=st['error'])
+            except Exception:
+                pass
+        st.update(running=False, phase='',
+                  last=time.strftime('%Y-%m-%d %H:%M:%S'))
+        print('[regrab] 雲端重算完成 rc=%s'
+              % {k: v for k, v in st.items() if k.startswith('rc_')},
+              flush=True)
+        return
+    steps = [
+        ('crawl16', '① 重抓 asian/OU 缺口（斷點續跑）',
+         [sys.executable, 'crawl16.py', '--proxy-only'], root),
+        ('crawl_mk', '② 重抓 歐盤/半場/角球（斷點續跑）',
+         [sys.executable, 'crawl_mk.py', '--proxy-only'], root),
+        ('requalify', '③ 重算八個精選系統資格（P1–P6）',
+         [sys.executable, 'requalify_after_backfill.py'], base),
+    ]
     for key, label, cmd, cwd in steps:
         st.update(step=key, phase=label)
         try:
