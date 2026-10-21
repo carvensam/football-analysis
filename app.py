@@ -1198,22 +1198,32 @@ def fbatch_status():
 # （featured 家族＋格 7/8/12/8s＋新精選＋88W＋8s/8X 回測庫重建＋對比報告）。
 # 只限本機：雲端冇 crawl16/proxy_pool（偵測到就話俾用戶知）。
 _regrab_state = {'running': False, 'step': '', 'phase': '',
-                 'started': None, 'last': None, 'error': None}
+                 'started': None, 'last': None, 'error': None, 'mode': None}
 
 
 def _regrab_worker():
     import subprocess
     st = _regrab_state
-    base = os.path.dirname(os.path.abspath(__file__))      # screen_app/
+    base = os.path.dirname(os.path.abspath(__file__))      # screen_app/（雲端＝repo 根）
     root = os.path.dirname(base)                            # 工作區根
-    steps = [
-        ('crawl16', '① 重抓 asian/OU 缺口（斷點續跑）',
-         [sys.executable, 'crawl16.py', '--proxy-only'], root),
-        ('crawl_mk', '② 重抓 歐盤/半場/角球（斷點續跑）',
-         [sys.executable, 'crawl_mk.py', '--proxy-only'], root),
-        ('requalify', '③ 重算八個精選系統資格（P1–P6）',
-         [sys.executable, 'requalify_after_backfill.py'], base),
-    ]
+    os.makedirs(os.path.join(root, 'logs'), exist_ok=True)
+    if st.get('mode') == 'cloud':
+        # 雲端：冇爬蟲/代理池，跑「重算」部分（--cloud：範圍＝精選表現有場次
+        # ＋近14日已賽＋未來8日未賽；P4/P5 回測庫重建太重留俾本機）
+        steps = [
+            ('requalify', '☁️ 雲端重算八個精選系統資格（P1→P1b→P2→P3→P6；'
+                          '歷史缺口重抓同回測庫重建要喺本機撳）',
+             [sys.executable, 'requalify_after_backfill.py', '--cloud'], base),
+        ]
+    else:
+        steps = [
+            ('crawl16', '① 重抓 asian/OU 缺口（斷點續跑）',
+             [sys.executable, 'crawl16.py', '--proxy-only'], root),
+            ('crawl_mk', '② 重抓 歐盤/半場/角球（斷點續跑）',
+             [sys.executable, 'crawl_mk.py', '--proxy-only'], root),
+            ('requalify', '③ 重算八個精選系統資格（P1–P6）',
+             [sys.executable, 'requalify_after_backfill.py'], base),
+        ]
     for key, label, cmd, cwd in steps:
         st.update(step=key, phase=label)
         try:
@@ -1240,23 +1250,22 @@ def _regrab_worker():
 
 
 def do_regrab_recompute():
-    """人手撳『🔄 重抓重算』。本機 only。"""
+    """人手撳『🔄 重抓重算』。本機＝重抓缺口＋重算；雲端＝重算資格（P1–P3+P6）。"""
     if _regrab_state['running']:
         return {'ok': False, 'running': True, 'error': '重抓重算進行中'}
     base = os.path.dirname(os.path.abspath(__file__))
     root = os.path.dirname(base)
-    if not os.path.exists(os.path.join(root, 'crawl16.py')):
-        return {'ok': False,
-                'error': '重抓重算只限本機版（雲端冇爬蟲同代理池）'}
+    local_mode = os.path.exists(os.path.join(root, 'crawl16.py'))
     if _win_state['running'] or _update_state['running'] \
             or _fbatch_state['running']:
         return {'ok': False, 'running': True,
                 'error': '另一個更新進行中，等佢完成先'}
     _regrab_state.update(running=True, error=None, step='',
                          phase='準備中…',
+                         mode=('local' if local_mode else 'cloud'),
                          started=time.strftime('%Y-%m-%d %H:%M:%S'))
     threading.Thread(target=_regrab_worker, daemon=True).start()
-    return {'ok': True, 'started': True}
+    return {'ok': True, 'started': True, 'mode': _regrab_state['mode']}
 
 
 def regrab_status():

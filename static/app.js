@@ -1033,20 +1033,40 @@ $('#btnOddsNow').onclick = async function(){
   if (window.PhoneCrawl && PhoneCrawl.modeOn) { phoneBatchAll(this); return; }
   serverFetchBatch(this);
 };
-/* 🔄 重抓重算（2026-10-21）：重抓全部缺口盤口 → 重算八個精選系統資格 */
+/* 🔄 重抓重算（2026-10-21）：重抓全部缺口盤口 → 重算八個精選系統資格
+ * 2026-10-22 修復「撳完無反應」：
+ * ① 唔用 confirm()——部分手機內嵌瀏覽器/WebView 會靜默封殺 confirm，
+ *    撳完乜都唔出。改用「兩撳確認」（8秒內再撳一次先真開跑）。
+ * ② 後端錯誤唔再淨係一閃即逝嘅 toast，同時寫落 #updInfo 長駐顯示。
+ * ③ 雲端而家真係跑到：雲端模式＝重算八個精選資格（歷史缺口重抓留俾本機）。 */
 $('#btnRegrab').onclick = async function(){
   if (this.disabled) return;
-  if (!confirm('🔄 重抓重算：\n① 重抓 asian/OU 缺口 → ② 重抓 歐盤/半場/角球 → ③ 重算八個精選系統資格（合資格加入、唔合資格踢走，含 8s/8X 回測庫重建）。\n全過程需時數小時，期間可繼續用其他功能。而家開始？')) return;
+  if (!this.dataset.armed) {
+    this.dataset.armed = '1';
+    const old = this.textContent;
+    this.textContent = '🔄 再撳一次確認開始';
+    $('#updInfo').textContent = '🔄 重抓重算：重抓缺口盤口（本機）＋重算八個精選系統資格（合資格加入／唔合資格踢走，含新精選/88W全年回查），需時較長、期間可照常使用。8秒內再撳一次掣正式開始。';
+    const btn = this;
+    setTimeout(function(){
+      if (btn.dataset.armed) { btn.dataset.armed = ''; btn.textContent = old; }
+    }, 8000);
+    return;
+  }
+  this.dataset.armed = '';
+  this.textContent = '🔄 重抓重算';
   this.disabled = true;
   $('#updInfo').textContent = '🔄 重抓重算啟動中…';
   const r = await fetch('/api/regrab-recompute', {method: 'POST'})
     .then(x => x.json()).catch(() => null);
   if (!r || !r.ok) {
-    toast((r && r.error) || '連線失敗');
-    $('#updInfo').textContent = '';
+    const msg = (r && r.error) || '連線失敗';
+    toast(msg);
+    $('#updInfo').textContent = '🔄 重抓重算：' + msg;
     this.disabled = false;
     return;
   }
+  if (r.mode === 'cloud')
+    $('#updInfo').textContent = '🔄 雲端模式：重算八個精選系統資格中（歷史缺口重抓要喺本機版撳）…';
   pollRegrab();
 };
 async function pollRegrab(){
@@ -1058,7 +1078,13 @@ async function pollRegrab(){
     return;
   }
   if (!st.running) {
-    $('#updInfo').textContent = '🔄 重抓重算完成（' + (st.last || '') + '）——八個精選系統資格已重算';
+    if (!st.last) {
+      /* 從未跑過（或伺服器剛重啟、進行中狀態已流失）——唔好假報「完成」 */
+      $('#updInfo').textContent = '';
+      $('#btnRegrab').disabled = false;
+      return;
+    }
+    $('#updInfo').textContent = '🔄 重抓重算完成（' + st.last + '）——八個精選系統資格已重算';
     $('#btnRegrab').disabled = false;
     toast('🔄 重抓重算完成');
     loadHome();
