@@ -1034,26 +1034,13 @@ $('#btnOddsNow').onclick = async function(){
   serverFetchBatch(this);
 };
 /* 🔄 重抓重算（2026-10-21）：重抓全部缺口盤口 → 重算八個精選系統資格
- * 2026-10-22 修復「撳完無反應」：
- * ① 唔用 confirm()——部分手機內嵌瀏覽器/WebView 會靜默封殺 confirm，
- *    撳完乜都唔出。改用「兩撳確認」（8秒內再撳一次先真開跑）。
+ * 2026-10-22 修復「撳完無反應」＋一撳即跑：
+ * ① 唔用 confirm()——部分手機內嵌瀏覽器/WebView 會靜默封殺 confirm；
+ *    亦唔要兩撳確認——用戶指示：手機一撳就 update（加入合資格／踢走唔合格）。
  * ② 後端錯誤唔再淨係一閃即逝嘅 toast，同時寫落 #updInfo 長駐顯示。
- * ③ 雲端而家真係跑到：雲端模式＝重算八個精選資格（歷史缺口重抓留俾本機）。 */
+ * ③ 雲端真係跑到：雲端模式＝重算八個精選資格（歷史缺口重抓留俾本機）。 */
 $('#btnRegrab').onclick = async function(){
   if (this.disabled) return;
-  if (!this.dataset.armed) {
-    this.dataset.armed = '1';
-    const old = this.textContent;
-    this.textContent = '🔄 再撳一次確認開始';
-    $('#updInfo').textContent = '🔄 重抓重算：重抓缺口盤口（本機）＋重算八個精選系統資格（合資格加入／唔合資格踢走，含新精選/88W全年回查），需時較長、期間可照常使用。8秒內再撳一次掣正式開始。';
-    const btn = this;
-    setTimeout(function(){
-      if (btn.dataset.armed) { btn.dataset.armed = ''; btn.textContent = old; }
-    }, 8000);
-    return;
-  }
-  this.dataset.armed = '';
-  this.textContent = '🔄 重抓重算';
   this.disabled = true;
   $('#updInfo').textContent = '🔄 重抓重算啟動中…';
   const r = await fetch('/api/regrab-recompute', {method: 'POST'})
@@ -1066,7 +1053,7 @@ $('#btnRegrab').onclick = async function(){
     return;
   }
   if (r.mode === 'cloud')
-    $('#updInfo').textContent = '🔄 雲端模式：重算八個精選系統資格中（歷史缺口重抓要喺本機版撳）…';
+    $('#updInfo').textContent = '🔄 雲端重算緊：合資格加入／唔合資格踢走（新精選＋88W 全年回查都做埋）…';
   pollRegrab();
 };
 async function pollRegrab(){
