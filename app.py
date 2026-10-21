@@ -196,7 +196,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.2.9'
+SERVER_VERSION = '5.2.10'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -1224,6 +1224,13 @@ def _regrab_worker():
         logf.close()   # P2/P3 子進程會自己開返寫
         R = None
         try:
+            # 等開機 warmup 起完數據池先好開始——開機即刻撈會同 warmup
+            # 同時起兩座池，512MB 唔夠分（10-22 兩次 502 就係咁冧嘅）；
+            # 池係模組級共用，warmup 起完呢邊即刻用得，零額外記憶體。
+            t_wait = time.time()
+            while not _pool_ready['done'] and time.time() - t_wait < 900:
+                st['phase'] = '☁️ 等緊開機數據池就緒（通常幾分鐘）…'
+                time.sleep(10)
             if base not in sys.path:
                 sys.path.insert(0, base)
             import requalify_after_backfill as R
