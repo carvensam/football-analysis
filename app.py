@@ -1439,6 +1439,8 @@ _INGEST_WHITELIST = {
     'featured_z', 'featured_z_log', 'v1_featured', 'v1_featured_z',
     'fw_grid_featured', 'hb_pick_log', 'k3_log', 'newjx_log', 'w88_log',
     'fw8s_log', 'fw8x_log', 'fw8x_bt2026', 'fw8s_bt', 'feat_hourly',
+    # 2026-10-21：參考表——精選8s 新引擎用 competitions 做 req_name→name_tc 映射
+    'competitions', 'seasons', 'teams',
 }
 
 
@@ -1458,7 +1460,15 @@ def _apply_delta(path):
                 continue
             dst_cols = {r[1] for r in conn.execute(f'PRAGMA table_info({t})')}
             cols = [r[1] for r in src.execute(f'PRAGMA table_info({t})')]
-            if not dst_cols or set(cols) - dst_cols:
+            if not dst_cols:
+                # 2026-10-21：雲端舊庫冇嘅表（如 competitions）——照源庫 schema 即場起表
+                create_sql = src.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+                    (t,)).fetchone()[0]
+                conn.execute(create_sql)
+                conn.commit()
+                dst_cols = {r[1] for r in conn.execute(f'PRAGMA table_info({t})')}
+            if set(cols) - dst_cols:
                 rep[t] = 'skip（schema 唔夾）'
                 continue
             collist = ','.join(cols)
