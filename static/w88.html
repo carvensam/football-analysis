@@ -95,7 +95,8 @@ table.lib th{color:var(--gold2);position:sticky;top:104px;background:var(--bg2)}
 <div id="main">
   <div class="sumbar" id="sum"></div>
   <div id="mktbar" style="margin:6px 0;display:flex;gap:6px;flex-wrap:wrap"></div>
-  <div class="note">全市場逐聯賽方法庫（2026-10-19 挖掘）：每個聯賽/杯賽 ≥4 個方法，訓練期 ≤2024 ＋ 驗證期 2025+ 兩邊命中率都 ≥72.5%。市場：<b class="mkt-up" style="border:0">K3上盤</b>／<b class="mkt-down" style="border:0">K3下盤</b>／<b class="mkt-draw" style="border:0">K3開發雙數和波</b>／<b class="mkt-even" style="border:0">雙數</b>／<b class="mkt-over" style="border:0">K3大球</b>／<b class="mkt-under" style="border:0">K3細球</b>／<b class="mkt-home" style="border:0">K3主勝</b>／<b class="mkt-away" style="border:0">K3客勝</b>。和波一定係雙數。</div>
+  <div id="btbar"></div>
+  <div class="note">全市場逐聯賽方法庫（2026-10-19 挖掘）：每個聯賽/杯賽 ≥4 個方法，訓練期 ≤2024 ＋ 驗證期 2025+ 兩邊命中率都 ≥72.5%。市場：<b class="mkt-up" style="border:0">K3上盤</b>／<b class="mkt-down" style="border:0">K3下盤</b>／<b class="mkt-draw" style="border:0">K3開發雙數和波</b>／<b class="mkt-even" style="border:0">雙數</b>／<b class="mkt-over" style="border:0">K3大球</b>／<b class="mkt-under" style="border:0">K3細球</b>／<b class="mkt-home" style="border:0">K3主勝</b>／<b class="mkt-away" style="border:0">K3客勝</b>。和波一定係雙數。<br>2026-10-22 修正：1X2 市場（主勝/客勝）嘅讓球幅度條件（深盤/半球/半一）必須指向預測嗰方——舊版「客讓深」都會誤報「主勝」（實證：美冠聯客讓深 4 場主勝 0%，10-22 運動Jax 0-2 中招）。</div>
   <h2 class="sec">🎯 預測紀錄（全部市場）</h2>
   <div id="predbody"></div>
   <h2 class="sec">📚 逐聯賽方法庫（<span id="libn"></span> 個聯賽/杯賽）</h2>
@@ -161,22 +162,26 @@ async function load(){
       const mc = MKT_CLASS[m.market] || '';
       return `<span class="tag ${mc}" style="font-size:13px">${esc(m.label || m.market)} <b>${m.w||0}中${dec}</b>${r==null?'':` ${(r*100).toFixed(1)}%`}${m.p?` 走${m.p}`:''}<small style="color:var(--dim)"> n=${m.n}</small></span>`;
     }).join(' ') : '';
-    /* 🗃 全庫回測卡（2026-10-22）：成個歷史資料庫＋10月＋方向細分 */
-    fetch('/api/toolbt/summary?scope=all').then(x => x.json()).then(async all => {
-      if (!all.ok || !all.tools.w88) return;
-      const oct = await fetch('/api/toolbt/summary?scope=month&month=2026-10').then(x => x.json());
-      const fmt = x => x == null ? '—' : (x * 100).toFixed(1) + '%';
-      const t = all.tools.w88;
-      let h = `<div style="margin:6px 0;padding:6px 10px;border:1px dashed #6b5510;border-radius:10px">🗃 全庫回測（成個歷史資料庫・含10月）：<b>${t.n}</b>場 命中 <b style="color:var(--gold2)">${fmt(t.hit_r)}</b>（${t.w}W/${t.l}L${t.p ? '/' + t.p + 'P' : ''}）`;
-      if (oct.ok && oct.tools.w88) h += `　<span style="opacity:.75">10月：<b>${oct.tools.w88.n}</b>場 ${fmt(oct.tools.w88.hit_r)}</span>`;
-      const dirs = (all.by_dir.w88 || []).map(e => {
-        const nm = e.label || e.direction;
-        return `<span class="tag" style="font-size:12px">${esc(nm)} ${e.n}場 ${fmt(e.hit_r)}</span>`;
-      }).join(' ');
-      if (dirs) h += `<div style="margin-top:3px">方向：${dirs}</div>`;
-      h += '</div>';
-      $('#sum').insertAdjacentHTML('afterend', h);
-    }).catch(() => {});
+    /* 2026-10-22：全庫回測（新篩選回跑全部歷史）——八市場命中率
+       全期 + 2025 起（近似樣本外）；由 w88_backtest.py 生成 w88_bt.json */
+    const bt = d.bt;
+    if (bt && bt.markets) {
+      const MKT_NAME = {ah_up:'K3上盤', ah_down:'K3下盤', draw:'K3和波', even:'雙數',
+        over:'K3大球', under:'K3細球', home_win:'K3主勝', away_win:'K3客勝'};
+      const cell = (v) => v == null ? '—'
+        : `<b>${v.hit}%</b><small style="color:var(--dim)">（${v.W}中${v.W+v.L}，走${v.P}，n=${v.n}）</small>`;
+      let rows = '';
+      for (const k of ['ah_up','ah_down','draw','even','over','under','home_win','away_win']) {
+        const a = bt.markets[k], r = (bt.markets_recent || {})[k];
+        if (!a && !r) continue;
+        rows += `<tr><td style="white-space:nowrap"><span class="tag ${MKT_CLASS[k]||''}">${MKT_NAME[k]||k}</span></td>` +
+          `<td>${cell(a)}</td><td>${cell(r)}</td></tr>`;
+      }
+      $('#btbar').innerHTML =
+        `<h2 class="sec">🧪 全庫回測（2026-10-22 修正後新篩選・回跑全部歷史 ${bt.matches ? bt.matches.total : ''} 場）</h2>` +
+        `<table class="lib"><tr><th>市場（八個標準）</th><th>全期命中率</th><th>2025 起（近似樣本外）</th></tr>${rows}</table>` +
+        `<div class="note">${esc(bt.note || '')} 生成於 ${esc(bt.generated || '')}${bt.partial ? '（部分結果）' : ''}</div>`;
+    }
     let h = '';
     if (!d.rows.length) h = '<div class="note">暫無記錄。背景每 20 分鐘自動掃描未來 7 日場次，亦可按「⚡ 一鍵掃描預測」。</div>';
     for (const r of d.rows){

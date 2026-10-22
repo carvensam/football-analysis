@@ -220,7 +220,13 @@ def _ps_feats(feat):
 def eval_match(conn, mid, lg=None):
     """單場評估（2026-10-22 資格重檢 sweep 用）：條件全中嘅方法 hit 列表
     [(market, conds_key, insert_vals), ...]；冇中／冇方法庫 → 空 list。
-    同 scan 共用同一套邏輯，唔會漂移。"""
+    同 scan 共用同一套邏輯，唔會漂移。
+    2026-10-22 K3 方向 bug 修正：1X2 市場（home_win/away_win）用咗
+    hc_deep/hc025/hc05/hc075 幅度條件但冇寫明 gv_home/gv_away——
+    舊制會喺『客讓深』場照 fire『K3主勝』（實證：美冠聯客讓深 4 場主勝
+    0%，10-22 運動Jax 0-2 中招）。而家：home_win 規則含幅度條件
+    但冇 gv_away → 隱式要求 gv_home；away_win 反之。挖掘期訓練命中率
+    （主讓深 82.5%）證明原意係主隊方向。"""
     if lg is None:
         row = conn.execute(
             'SELECT c.req_name FROM matches m '
@@ -242,6 +248,15 @@ def eval_match(conn, mid, lg=None):
     for rule in rules.get(lg, []):
         conds = rule['conds']
         key = (mid, rule['market'], json.dumps(conds, ensure_ascii=False))
+        # 2026-10-22 方向守衛（見 docstring）：1X2 市場嘅幅度條件
+        # 必須指向預測嗰一方
+        if set(conds) & {'hc_deep', 'hc025', 'hc05', 'hc075'}:
+            if rule['market'] == 'home_win' and 'gv_away' not in conds \
+                    and not of.get('gv_home'):
+                continue
+            if rule['market'] == 'away_win' and 'gv_home' not in conds \
+                    and not of.get('gv_away'):
+                continue
         # 盤口條件先過（平）；全中而又有 ps 條件先計 ps 特徵（貴）
         if not all(of.get(c) for c in conds if c not in PS_CONDS):
             continue
@@ -387,6 +402,25 @@ def _stats(conn):
             'by_market': by_mkt, 'by_league': by_lg}
 
 
+_BT_CACHE = {'ts': 0.0, 'data': None}
+
+
+def load_backtest():
+    """全庫回測結果（w88_bt.json，由 w88_backtest.py 生成；2026-10-22
+    用戶指示：K3 方向 bug 修正後回跑全部歷史，八個市場命中率）。
+    60 秒快取；冇檔案／未跑過 → None（頁面照舊，唔會炸）。"""
+    if _BT_CACHE['data'] is not None and time.time() - _BT_CACHE['ts'] < 60:
+        return _BT_CACHE['data']
+    try:
+        with open(os.path.join(WS, 'w88_bt.json'), encoding='utf-8') as f:
+            d = json.load(f)
+        _BT_CACHE['data'] = d
+        _BT_CACHE['ts'] = time.time()
+        return d
+    except Exception:
+        return None
+
+
 def full(conn, limit=300):
     """88W 頁面數據：全市場方法庫＋最近預測＋統計。"""
     migrate(conn)
@@ -447,7 +481,8 @@ def full(conn, limit=300):
             'preds': f.get('preds'),
             'label': 'K3上盤' if f.get('dir') == 'up' else '下盤公式'}
     return {'stats': _stats(conn), 'rows': preds,
-            'library': sorted(library.values(), key=lambda x: x['league'])}
+            'library': sorted(library.values(), key=lambda x: x['league']),
+            'bt': load_backtest()}   # 2026-10-22 全庫回測（八市場命中率）
 
 
 _stop = threading.Event()
