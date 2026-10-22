@@ -28,7 +28,10 @@ import pandas as pd
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PARENT_DIR = os.path.dirname(BASE_DIR)
-DB_PATH = os.path.join(PARENT_DIR, 'football.db')
+# 2026-10-22：雲端容器 WORKDIR /app → PARENT_DIR=/ → 舊寫法指向 /football.db（容器根
+# 空庫，sqlite 靜靜起個空檔→「no such table: competitions」500）。DB_PATH 環境變數
+# （render.yaml 設 /data/football.db）優先，同 app.py crawler.py 口徑一致。
+DB_PATH = os.environ.get('DB_PATH') or os.path.join(PARENT_DIR, 'football.db')
 import sys
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
