@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Cache-Control" content="no-store">
+<meta http-equiv="Pragma" content="no-cache">
 <title>FootballAnalysis V3</title>
 <style>
 :root{
@@ -292,6 +294,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
 <header id="topbar">
   <span id="status">啟動中…</span>
   <span id="connChip" title="連線情況：綠＝正常・黃＝數據主機中斷（自動重試）・紅＝伺服器斷線">🟢 檢查緊…</span>
+  <span id="verChip" title="伺服器版本——手機同電腦版本唔同＝手機仲係舊快取，完全關閉 APP 再開" style="font-size:10px;color:var(--dim)"></span>
   <button class="btn" id="btnRepair" style="font-size:12px;padding:3px 10px" title="斷線或數據有問題時撳呢個自行修復">🔧 修復</button>
     <nav id="tabs">
     <button class="tab on" data-pg="home">🏠 主頁</button>
@@ -603,7 +606,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   </div>
 </div>
 <script src="/static/phone_crawl.js?v=5.3.0"></script>
-<script src="/static/app.js?v=5.6.7"></script>
+<script src="/static/app.js?v=5.6.8"></script>
 <script src="/static/crawlbtn.js?v=5.3.1"></script>
 </body>
 </html>

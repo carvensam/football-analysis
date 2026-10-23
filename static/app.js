@@ -124,6 +124,13 @@ function markConnBad(){
   _setConnChip('bad', '🔴 伺服器斷線');
 }
 async function refreshConnChip(){
+  /* 2026-10-24 版本號顯示（用戶：手機冇新掣——等佢一眼睇出係咪舊快取） */
+  try {
+    jget('/api/ready').then(r => {
+      const v = $('#verChip');
+      if (v && r && r.version) v.textContent = 'v' + r.version;
+    }).catch(() => {});
+  } catch (e) {}
   try {
     const h = await jget('/api/health');
     _connState = 'ok';
