@@ -5793,7 +5793,11 @@ def _hb_context():
 
 
 def api_hb_list(hours=72):
-    """好波主頁：即將開賽場次＋12BET 尾盤大小線／亞盤＋初盤大小線。"""
+    """好波主頁：即將開賽場次＋12BET 尾盤大小線／亞盤＋初盤大小線。
+    2026-10-22：頁面入嚟自動掃——發現未來場次冇 closing 大小線（爬蟲
+    fleet 停咗／新場次未預抓）就即刻喺 APP 進程內補抓（task_odds_page
+    'ou'，12BET→Crown 後備），下次載入就有線有預測（用戶：場場未開盤，
+    要自動掃同更新預測）。"""
     import v3_engine
     conn = db()
     cap = "AND m.kickoff <= datetime('now','+8 hours', ?) " if hours else ""
@@ -5818,8 +5822,11 @@ def api_hb_list(hours=72):
     conn.close()
     now = v3_engine.hk_now_str()
     out = []
+    missing = []
     for (mid, lg, ko, h, a, rd, ln, oo, uo, iln, ioo, iuo,
          ahc, agv, aho, aao) in rows:
+        if ln is None:
+            missing.append((mid, ko))
         out.append({'id': mid, 'league': lg, 'kickoff': ko,
                     'home': h, 'away': a, 'round': rd,
                     'ou_line': ln, 'ou_over': oo, 'ou_under': uo,
@@ -5827,7 +5834,52 @@ def api_hb_list(hours=72):
                     'ah_line': screen_engine.fmt_line(ahc, agv) if ahc is not None else None,
                     'ah_odds': f'主{aho}/客{aao}' if aho is not None else None,
                     'state': 'live' if ko <= now else 'scheduled'})
+    if missing:
+        _hb_ou_sweep(missing)
     return {'matches': out, 'now': now}
+
+
+_HB_OU_SWEEP = {'running': False, 'last': None, 'fixed': 0}
+
+
+def _hb_ou_sweep(candidates, limit=16):
+    """好波 OU 自動補抓（APP 進程內，背景）：對冇 closing 大小線嘅場次
+    逐場 task_odds_page('ou')。限 limit 場／輪＋行緊就唔重開。爬完前端
+    自動 reload 會帶到新線，唔使人手 refresh。"""
+    if _HB_OU_SWEEP['running']:
+        return
+    todo = candidates[:limit]
+
+    def _bg():
+        _HB_OU_SWEEP['running'] = True
+        fixed = 0
+        try:
+            import datetime as _dt
+            from crawl_extra import task_odds_page
+            crawler, fetcher = get_crawler()
+            conn = db()
+            try:
+                for mid, ko in todo:
+                    try:
+                        ko_dt = _dt.datetime.strptime(ko, '%Y-%m-%d %H:%M')
+                        if task_odds_page(conn, fetcher, mid, ko_dt,
+                                          'ou') is True:
+                            fixed += 1
+                    except Exception:
+                        pass
+                if fixed:
+                    conn.commit()
+            finally:
+                conn.close()
+            _HB_OU_SWEEP['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+            _HB_OU_SWEEP['fixed'] = fixed
+            if fixed:
+                print('[hb-sweep] 補到 %d 場 OU 大小線' % fixed, flush=True)
+        except Exception:
+            traceback.print_exc(limit=3)
+        finally:
+            _HB_OU_SWEEP['running'] = False
+    threading.Thread(target=_bg, daemon=True).start()
 
 
 def api_hb_predict(mid):
