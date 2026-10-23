@@ -1272,6 +1272,7 @@ def _unified_scan_job(mids=None, full=False, light=False):
     st.update(running=True, error=None, phase='準備中…', done=0,
               added=0, removed=0, kept=0, full=full)
     _UNIFIED_RUNNING[0] = True
+    _NOTIFY_N[0] = 0   # 本輪推送計數（>15 批量標讀防洗版）
     tools = (_feat_scan, _v1_scan, _v3_scan,
              _fw_grid_scan['7'], _fw_grid_scan['8'],
              _fw_grid_scan['12'], _fw_grid_scan['8s'])
@@ -1410,6 +1411,14 @@ def _unified_scan_job(mids=None, full=False, light=False):
                   '結算 %s' % (len(cands), 'light' if light else 'full',
                              st['added'], st['removed'],
                              st['kept'], settled or '無'), flush=True)
+            if _NOTIFY_N[0] > 15:
+                # 批量入選（重啟後首次全掃常見）：推送保留做歷史記錄，
+                # 但一次過標晒已讀——唔會 100+ 紅點洗版；之後增量輪
+                # 先逐條彈（嗰啲至係『新發生』事件）
+                conn.execute('UPDATE alerts SET read=1 WHERE read=0')
+                conn.commit()
+                print('[unified] 本輪 %d 條推送已批量標讀（防洗版）'
+                      % _NOTIFY_N[0], flush=True)
         finally:
             conn.close()
     except Exception:
@@ -2355,6 +2364,9 @@ _INGEST_WHITELIST = {
 # 邊度觸發：_eval_all 每次評估完（統一掃描/即時更新重檢/逐場重檢全部
 # 經呢度）有「新增」→ 🆕 推送；有「移出」→ ❌ 推送。好波喺 _hb_log_pick
 # 記錄時推送。12 小時內同場同工具同類型唔重複推（防閃爍洗版）。
+_NOTIFY_N = [0]   # 本輪統一掃描產生嘅推送數（消化洪水用）
+
+
 _ACT_TOOL = (('W', '精選W'), ('V2Z', '精選V2Z'), ('V2', '精選V2'),
              ('V1Z', '精選V1Z'), ('V1', '精選V1'),
              ('格7', '精選7'), ('格8s', '精選8s'), ('格8', '精選8'),
@@ -2417,6 +2429,7 @@ def _notify_tool(conn, mid, acts):
                 'kickoff,msg,ts) VALUES(?,?,?,?,?,?,?,?,?)',
                 (tool, kind, _mid, _lg, h, aw, _ko, msg, ts))
         conn.commit()
+        _NOTIFY_N[0] += len(rows)
     except Exception:
         pass
 
@@ -8299,7 +8312,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(data)))
         self.send_header('Cache-Control', 'no-store')
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.wfile.write(data)
+        except (ConnectionError, OSError):
+            pass   # 客戶端中途斷線（10053）——正常現象，唔再刷屏 stderr
 
     def do_GET(self):
         u = urlparse(self.path)
