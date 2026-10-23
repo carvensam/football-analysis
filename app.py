@@ -1041,6 +1041,13 @@ def _eval_all(conn, ctx, light=False):
                 acts.append('8s移出')
         except Exception:
             traceback.print_exc(limit=3)
+    # 2026-10-22 用戶規格：入選/剔走即時推送＋清顯示快取（剔走 100% 唔殘留）
+    if any(('新增' in a or '移出' in a) for a in acts):
+        try:
+            _notify_tool(conn, mid, acts)
+        except Exception:
+            pass
+        _bust_tool_caches()
     return acts
 
 
@@ -2338,7 +2345,133 @@ _INGEST_WHITELIST = {
     'fw8s_log', 'fw8x_log', 'fw8x_bt2026', 'fw8s_bt', 'feat_hourly',
     # 2026-10-21：參考表——精選8s 新引擎用 competitions 做 req_name→name_tc 映射
     'competitions', 'seasons', 'teams',
+    # 2026-10-22：工具入選/剔走推送——本機寫入，經 delta 同步到雲端，
+    # 手機版都收到（用戶：所有工具新入選＋勾走都要推送信息）
+    'alerts',
 }
+
+
+# ============ 2026-10-22 工具入選/剔走推送（用戶規格） ============
+# 邊度觸發：_eval_all 每次評估完（統一掃描/即時更新重檢/逐場重檢全部
+# 經呢度）有「新增」→ 🆕 推送；有「移出」→ ❌ 推送。好波喺 _hb_log_pick
+# 記錄時推送。12 小時內同場同工具同類型唔重複推（防閃爍洗版）。
+_ACT_TOOL = (('W', '精選W'), ('V2Z', '精選V2Z'), ('V2', '精選V2'),
+             ('V1Z', '精選V1Z'), ('V1', '精選V1'),
+             ('格7', '精選7'), ('格8s', '精選8s'), ('格8', '精選8'),
+             ('格12', '精選12'), ('88W', '88W'), ('新精選', '新精選'),
+             ('8X', '8X'), ('8s', '精選8s'))
+
+
+def _act_tool_name(a):
+    for p, n in _ACT_TOOL:
+        if a.startswith(p):
+            return n
+    return None
+
+
+def _notify_tool(conn, mid, acts):
+    """將 _eval_all 嘅動作列表翻成推送（🆕入選／❌剔走）。best-effort：
+    任何錯誤都唔影響掃描本體。同場同工具同類型 12 小時內去重。"""
+    news = [a for a in acts if '新增' in a]
+    rems = [a for a in acts if '移出' in a]
+    if not news and not rems:
+        return
+    try:
+        info = conn.execute(
+            'SELECT c.req_name, m.kickoff, ht.name_tc, at.name_tc '
+            'FROM matches m JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'JOIN teams ht ON ht.titan_id=m.home_id '
+            'JOIN teams at ON at.titan_id=m.away_id WHERE m.id=?',
+            (mid,)).fetchone()
+        lg = ko = home = away = ''
+        if info:
+            lg, ko, home, away = info
+        now = time.strftime('%Y-%m-%d %H:%M:%S')
+        conn.execute('''CREATE TABLE IF NOT EXISTS alerts(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool TEXT, kind TEXT, match_id INTEGER, league TEXT,
+            home TEXT, away TEXT, kickoff TEXT, msg TEXT, ts TEXT,
+            read INTEGER DEFAULT 0)''')
+        rows = []
+        for a in news:
+            t = _act_tool_name(a)
+            if t:
+                rows.append((t, 'new', mid, lg, home, away, ko, now))
+        for a in rems:
+            t = _act_tool_name(a)
+            if t:
+                rows.append((t, 'removed', mid, lg, home, away, ko, now))
+        for tool, kind, _mid, _lg, h, aw, _ko, ts in rows:
+            dup = conn.execute(
+                'SELECT 1 FROM alerts WHERE tool=? AND kind=? AND match_id=? '
+                "AND ts >= datetime('now','localtime','-12 hours') LIMIT 1",
+                (tool, kind, _mid)).fetchone()
+            if dup:
+                continue
+            verb = '🆕 新入選' if kind == 'new' else '❌ 已剔走（唔合資格）'
+            msg = '%s %s：%s vs %s（%s｜%s）' % (verb, tool, h, aw, _lg,
+                                              (_ko or '')[5:16])
+            conn.execute(
+                'INSERT INTO alerts(tool,kind,match_id,league,home,away,'
+                'kickoff,msg,ts) VALUES(?,?,?,?,?,?,?,?,?)',
+                (tool, kind, _mid, _lg, h, aw, _ko, msg, ts))
+        conn.commit()
+    except Exception:
+        pass
+
+
+def _bust_tool_caches():
+    """有入選/剔走動作就即刻清相關顯示快取——用戶規格『剔走咗 100%
+    唔會再喺篩選列表出現』：DB 已 DELETE，快取都唔准殘留（舊制 fw8s
+    600s／featured 300s TTL 會令被剔場次殘留數分鐘）。"""
+    try:
+        for c in (_FW8S_CACHE, _SRCS_CACHE):
+            c['ts'] = 0.0
+            c['data'] = None
+        for cache in (_featured_full_cache, _v1_featured_full_cache):
+            for k in (False, True):
+                cache[k]['ts'] = 0.0
+                cache[k]['data'] = None
+    except Exception:
+        pass
+
+
+def api_alerts(limit=50, unread_only=False):
+    conn = db()
+    try:
+        conn.execute('''CREATE TABLE IF NOT EXISTS alerts(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tool TEXT, kind TEXT, match_id INTEGER, league TEXT,
+            home TEXT, away TEXT, kickoff TEXT, msg TEXT, ts TEXT,
+            read INTEGER DEFAULT 0)''')
+        if unread_only:
+            rows = conn.execute(
+                'SELECT id, tool, kind, msg, ts FROM alerts WHERE read=0 '
+                'ORDER BY id DESC LIMIT ?', (limit,)).fetchall()
+            n = conn.execute('SELECT COUNT(*) FROM alerts WHERE read=0'
+                             ).fetchone()[0]
+        else:
+            rows = conn.execute(
+                'SELECT id, tool, kind, msg, ts FROM alerts '
+                'ORDER BY id DESC LIMIT ?', (limit,)).fetchall()
+            n = conn.execute('SELECT COUNT(*) FROM alerts WHERE read=0'
+                             ).fetchone()[0]
+        return {'unread': n,
+                'items': [{'id': r[0], 'tool': r[1], 'kind': r[2],
+                           'msg': r[3], 'ts': r[4]} for r in rows]}
+    finally:
+        conn.close()
+
+
+def api_alerts_read():
+    conn = db()
+    try:
+        conn.execute('UPDATE alerts SET read=1 WHERE read=0')
+        conn.commit()
+        return {'ok': True}
+    finally:
+        conn.close()
 
 
 def _apply_delta(path):
@@ -5994,6 +6127,40 @@ def _hb_log_pick(mid, lg, ou):
     side = str(pick.get('side'))
     rate = pick.get('best')
     method = 'rule'
+    # 2026-10-22：好波規則命中＝新入選推送（用戶規格：所有工具入選推送）
+    try:
+        conn0 = db()
+        try:
+            info = conn0.execute(
+                'SELECT c.req_name, m.kickoff, ht.name_tc, at.name_tc '
+                'FROM matches m JOIN seasons s ON s.id=m.season_id '
+                'JOIN competitions c ON c.titan_id=s.titan_id '
+                'JOIN teams ht ON ht.titan_id=m.home_id '
+                'JOIN teams at ON at.titan_id=m.away_id WHERE m.id=?',
+                (mid,)).fetchone()
+            dup = conn0.execute(
+                "SELECT 1 FROM alerts WHERE tool='好波' AND kind='new' "
+                'AND match_id=? AND ts >= datetime(\'now\',\'localtime\','
+                "'-12 hours') LIMIT 1", (mid,)).fetchone()
+            if info and not dup:
+                conn0.execute('''CREATE TABLE IF NOT EXISTS alerts(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tool TEXT, kind TEXT, match_id INTEGER, league TEXT,
+                    home TEXT, away TEXT, kickoff TEXT, msg TEXT, ts TEXT,
+                    read INTEGER DEFAULT 0)''')
+                conn0.execute(
+                    'INSERT INTO alerts(tool,kind,match_id,league,home,'
+                    'away,kickoff,msg,ts) VALUES(?,?,?,?,?,?,?,?,?)',
+                    ('好波', 'new', mid, info[0], info[2], info[3], info[1],
+                     '🆕 新入選 好波：%s vs %s（%s｜%s｜%.1f%%）'
+                     % (info[2], info[3], info[0], (info[1] or '')[5:16],
+                        rate or 0),
+                     time.strftime('%Y-%m-%d %H:%M:%S')))
+                conn0.commit()
+        finally:
+            conn0.close()
+    except Exception:
+        pass
     conn = db()
     try:
         conn.execute('''CREATE TABLE IF NOT EXISTS hb_pick_log(
@@ -8267,6 +8434,18 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path == '/api/alerts':
+            # 2026-10-22 工具入選/剔走推送：?unread=1 淨未讀；?limit=N
+            try:
+                q = parse_qs(u.query)
+                lim = int(q.get('limit', ['50'])[0] or 50)
+                unread = q.get('unread', ['0'])[0] in ('1', 'true')
+                self._send(200, json.dumps(
+                    api_alerts(max(1, min(lim, 200)), unread),
+                    ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
         if u.path == '/api/regrab-recompute':
             # 🔄 重抓重算（2026-10-21）：GET 輪詢進度
             try:
@@ -8922,6 +9101,14 @@ class Handler(BaseHTTPRequestHandler):
                     do_v1_featured_refresh(int(body.get('id'))), ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/alerts/read':
+            # 2026-10-22 推送全部標記已讀（撳過鐘仔面板就清）
+            try:
+                self._send(200, json.dumps(api_alerts_read(),
+                                           ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/pick/delete':
             n = int(self.headers.get('Content-Length', 0))
