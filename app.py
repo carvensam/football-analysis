@@ -1465,7 +1465,11 @@ def _unified_loop():
             _unified_scan_job(full=full, light=light)
         except Exception:
             traceback.print_exc(limit=3)
-        time.sleep(1200)
+        # 2026-10-24：20 分鐘→5 分鐘——爬蟲直接寫新盤唔會即刻通知
+        # APP（after_odds_update 只有 APP 通道先掛），工具表滯後最多
+        # 20 分鐘；增量 pass 有變動簽名跳過（成本秒級～分鐘級），
+        # 5 分鐘將工具表滯後縮到 ≤5 分鐘。full 照舊每 18 pass。
+        time.sleep(300)
 
 
 def _start_unified_scan(mids=None, full=False, light=None):
@@ -1964,6 +1968,9 @@ _fbatch_state = {'running': False, 'phase': '', 'done': 0, 'total': 0,
                  'ok': 0, 'fail': 0, 'last': None, 'error': None}
 
 
+_FBATCH_PEND = {'hours': None, 'ts': 0.0}
+
+
 def _fetch_batch_worker(hours):
     import crawler
     with open(os.path.join(crawler.BASE_DIR, 'config.json'), encoding='utf-8') as f:
@@ -1974,9 +1981,15 @@ def _fetch_batch_worker(hours):
     try:
         # 開工前快測數據主機；死緊即刻收工俾清楚訊息（同 _update_worker 邏輯）
         if not crawler.data_host_probe():
+            _FBATCH_PEND['hours'] = hours
+            _FBATCH_PEND['ts'] = time.time()
             _fbatch_state['error'] = (
-                '連唔到 titan007 數據主機——可能封咗而家嘅 IP，稍後會自動重試')
-            print('[fbatch] 數據主機中斷，本次即時更新跳過', flush=True)
+                '連唔到 titan007 數據主機（連代理都封緊）——已登記：'
+                '主機一復活自動補跑您呢次「更新賠率＋重算資格」，唔使再撳')
+            _scanlog('⚡ 您撳嘅「更新賠率＋重算資格」遇主機封鎖——'
+                     '已登記自動補跑')
+            print('[fbatch] 數據主機中斷，本次即時更新跳過（已登記補跑）',
+                  flush=True)
             return
         cap = "AND m.kickoff <= datetime('now','+8 hours', ?) " if hours else ""
         args = (f'+{hours} hours',) if hours else ()
@@ -8268,6 +8281,82 @@ def _feat_hourly_tick():
         _feat_hourly['running'] = False
 
 
+def _line_move_watch_loop():
+    """2026-10-24 盤口變動即時重算（用戶：『加快到即時更新！點解要 5 分鐘』）：
+    爬蟲一寫新盤（無論 APP 定 fleet 通道）就 append 場次去
+    engine/_line_moves.txt；呢度每 20 秒讀一次，對每場即刻跑
+    _pick_revalidate（同 after_odds_update 同一套重檢：12 表資格
+    剔走/新增＋推送＋快取清除＋600s/場節流）。工具表滯後由
+    『最遲 20 分鐘（後備 5 分鐘）』→『≤20 秒』。5 分鐘統一循環
+    降返做後備（漏網/排名變化兜底的）。"""
+    time.sleep(120)   # 等開機
+    import os as _os
+    fpath = _os.path.join(PARENT_DIR, 'engine', '_line_moves.txt')
+    while True:
+        time.sleep(20)
+        try:
+            if not _os.path.exists(fpath):
+                continue
+            with open(fpath, 'r', encoding='ascii') as f:
+                mids = [int(x) for x in f.read().split() if x.strip().isdigit()]
+            if not mids:
+                continue
+            with open(fpath, 'w', encoding='ascii'):
+                pass   # 清空（重算冇副作用，崩潰都只會重複評估）
+            seen = set()
+            for mid in mids[:40]:
+                if mid in seen:
+                    continue
+                seen.add(mid)
+                if time.time() - _last_reval.get(mid, 0) < 600:
+                    continue
+                _last_reval[mid] = time.time()
+
+                def _bg(mid=mid):
+                    for _att in range(3):
+                        try:
+                            conn = db()
+                            try:
+                                acts = _pick_revalidate(conn, mid)
+                                conn.commit()
+                            finally:
+                                conn.close()
+                            if acts:
+                                print('[line-move] 場次%s 轉盤→重算：%s'
+                                      % (mid, ','.join(acts)), flush=True)
+                            return
+                        except sqlite3.OperationalError:
+                            time.sleep(4)
+                        except Exception:
+                            traceback.print_exc(limit=2)
+                            return
+                threading.Thread(target=_bg, daemon=True).start()
+        except Exception:
+            pass
+
+
+def _sync_delta_loop():
+    """2026-10-24：熱數據增量同步（PC→雲端）改由 APP 自己每 30 分鐘推——
+    原本靠 Windows 計劃任務 FA_SyncDelta30m，但佢間歇性失敗（LastTaskResult
+    101）令手機數據停滯（呢單嘢：手機顯示舊盤 伊高斯 一球 vs 實際球半，
+    就係 sync 停咗 2.5 小時）。APP 有 keepalive 睇住，可靠得多。雲端唔開
+    （DISABLE_UPDATE）。"""
+    time.sleep(300)   # 等開機穩定先推第一輪
+    while True:
+        try:
+            import subprocess
+            r = subprocess.run(
+                [sys.executable,
+                 os.path.join(PARENT_DIR, 'sync_delta.py'), '--push'],
+                timeout=600, capture_output=True)
+            if r.returncode != 0:
+                print('[sync-delta] 推送失敗 rc=%s %s'
+                      % (r.returncode, (r.stderr or b'')[:200]), flush=True)
+        except Exception:
+            traceback.print_exc(limit=2)
+        time.sleep(1800)
+
+
 def _result_settle_loop():
     """賽果回填+精選結算（2026-10-10 用戶規格）：開賽逾120分鐘冇比分→爬賽果；
     已完場嘅精選/7/8/12 紀錄補結算。每 15 分鐘一次；雲端爬唔到安全跳過（NO_DATA），
@@ -10149,6 +10238,11 @@ if __name__ == '__main__':
                     last_auto = time.time()
                     print(f'[watchdog] titan007 數據主機已復活（曾中斷 '
                           f'{down_min} 分鐘），自動開始全量更新…', flush=True)
+                    if _FBATCH_PEND['hours'] is not None:
+                        _scanlog('⚡ 主機復活——自動補跑您之前撳嘅'
+                                 '「更新賠率＋重算資格」')
+                        do_fetch_batch(_FBATCH_PEND['hours'])
+                        _FBATCH_PEND['hours'] = None
                     # 行人手模式（auto=False）跳過 30 分鐘節流——復活觸發每次中斷
                     # 只會有一次，但之前失敗嘅更新更新咗 last_done，auto 模式會
                     # 誤判做「啱啱更新過」而跳過（復活後數據其實未刷新嘅漏洞）
@@ -10172,6 +10266,9 @@ if __name__ == '__main__':
     if not DISABLE_UPDATE:
         threading.Thread(target=_feat_hourly_loop, daemon=True).start()
         threading.Thread(target=_result_settle_loop, daemon=True).start()
+        threading.Thread(target=_sync_delta_loop, daemon=True).start()
+        threading.Thread(target=_line_move_watch_loop, daemon=True).start()
+        print('[boot] 熱數據同步循環已啟動（每 30 分鐘推送雲端）', flush=True)
     else:
         print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '
               'restart loop）；紀錄由本機每小時做、每日推送', flush=True)

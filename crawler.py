@@ -1181,6 +1181,21 @@ def _save_standing(conn, season_id, st, now):
          st['gf'], st['ga'], st['gd'], st['points'], now))
 
 
+# 2026-10-24：盤口變動即時通知（用戶：轉盤後工具要即刻更新，唔係等循環）。
+# 爬蟲（fleet 同 APP 都用 crawl_odds_for_match）一寫入新盤就 append
+# 場次去呢個檔；APP 每 20 秒讀一次即刻重算資格（600s/場節流）。
+LINE_MOVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              '_line_moves.txt')
+
+
+def notify_line_move(match_id):
+    try:
+        with open(LINE_MOVE_FILE, 'a', encoding='ascii') as f:
+            f.write('%d\n' % match_id)
+    except OSError:
+        pass
+
+
 def crawl_odds_for_match(conn, fetcher, match_id, kickoff_str, company_id,
                          fallback_company=None):
     """fallback_company（2026-10-14 用戶指示：日聯杯冇易勝博 → 皇冠頂替，
@@ -1232,6 +1247,7 @@ def crawl_odds_for_match(conn, fetcher, match_id, kickoff_str, company_id,
              t.strftime('%Y-%m-%d %H:%M'), fetched_at))
     conn.execute('UPDATE matches SET odds_done=1 WHERE id=?', (match_id,))
     conn.commit()
+    notify_line_move(match_id)   # 2026-10-24：通知 APP 即時重算資格
     return True
 
 

@@ -35,6 +35,7 @@ import sqlite3
 import sys
 import threading
 import time
+import random
 import traceback
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -623,35 +624,44 @@ def task_odds_page(conn, fetcher, match_id, kickoff, market):
     # 用 12 會成頁空殼誤標無數據（2026-10-07 用戶指正後實測驗證）
     company = COMPANY_CROWN if market in ('1x2_half', 'corner', 'ah_half',
                                           'ou_half') else COMPANY_12BET
-    url = ('https://vip.titan007.com/changeDetail/%s?id=%d&companyid=%d'
-           % (pages[market], match_id, company))
-    html = fetcher.get(url, encoding='gbk', referer='https://zq.titan007.com/',
-                       is_odds_page=True)
-    if html is None:
-        return False
-    if html == 'NO_DATA':
-        return 'NO_DATA'
-    if market == 'corner':
-        # 角球頁有兩個表：表0=角球讓球、表1=角球大小。只取表0（讓球）
-        mtab = re.search(r'<table[^>]*>.*?</table>', html, re.S | re.I)
-        if not mtab:
-            return 'NO_DATA'
-        html = mtab.group(0)
+    # 好波大小球後備供應商（2026-10-12 用戶指示）：易胜博(12) 無盤 → 用
+    # 皇冠(3) 頂替。company_id 欄位就係供應商註明（odds_ou 每行有
+    # company_id，12=易胜博 3=皇冠），唔使另開欄。
+    companies = [company]
+    if market in ('ou', '1x2') and company == COMPANY_12BET:
+        # 歐盤同大小一樣：易勝博無盤 → 皇冠後備（2026-10-14 用戶指示，company_id 欄註明）
+        companies = [COMPANY_12BET, COMPANY_CROWN]
+    for comp in companies:
+        url = ('https://vip.titan007.com/changeDetail/%s?id=%d&companyid=%d'
+               % (pages[market], match_id, comp))
+        html = fetcher.get(url, encoding='gbk', referer='https://zq.titan007.com/',
+                           is_odds_page=True)
+        if html is None:
+            return False        # 網絡層失敗：打返 0 重試，唔轉供應商
+        if html == 'NO_DATA':
+            continue            # 呢間無盤：試後備供應商
+        if market == 'corner':
+            # 角球頁有兩個表：表0=角球讓球、表1=角球大小。只取表0（讓球）
+            mtab = re.search(r'<table[^>]*>.*?</table>', html, re.S | re.I)
+            if not mtab:
+                continue
+            html = mtab.group(0)
 
-    if market in ('ou', 'ou_half'):
-        timeline = parse_ou_html(html, kickoff)
-    elif market in ('1x2', '1x2_half'):
-        timeline = parse_1x2_html(html, kickoff)
-    else:
-        timeline = parse_odds_html(html, kickoff)
-    if not timeline:
-        return 'NO_DATA'
-    snaps = derive_snapshots(timeline, kickoff)
-    if not snaps:
-        return 'NO_DATA'
-    save_snapshots(conn, market, match_id, company, snaps)
-    conn.commit()
-    return True
+        if market in ('ou', 'ou_half'):
+            timeline = parse_ou_html(html, kickoff)
+        elif market in ('1x2', '1x2_half'):
+            timeline = parse_1x2_html(html, kickoff)
+        else:
+            timeline = parse_odds_html(html, kickoff)
+        if not timeline:
+            continue            # 有頁面但冇賠率列：試後備供應商
+        snaps = derive_snapshots(timeline, kickoff)
+        if not snaps:
+            continue
+        save_snapshots(conn, market, match_id, comp, snaps)
+        conn.commit()
+        return True
+    return 'NO_DATA'
 
 
 # ---------------------------------------------------------------- 未開賽場次 OU 預抓（好波 APP）
@@ -710,9 +720,12 @@ def _ou_watchdog(cfg, state):
             break
         try:
             if _ou_watchdog_elect() and upcoming_ou_pending(conn):
-                n = refresh_upcoming_ou(conn, fetcher, cfg=cfg, threads=6)
+                # 10-16：好波全家四盤一齊預抓（全場大小/半場大小/馬會大小/馬會半場）
+                n = refresh_upcoming_ou(
+                    conn, fetcher, cfg=cfg, threads=6,
+                    markets=('ou', 'ou_half', 'hkjc_ou', 'hkjc_ou_half'))
                 if n:
-                    log(conn, 'INFO', '預抓 OU（看門狗）：%d 場有更新' % n)
+                    log(conn, 'INFO', '預抓 OU（看門狗）：%d 項有更新' % n)
         except Exception:
             log(conn, 'WARN', 'OU 看門狗異常\n%s' % traceback.format_exc())
         time.sleep(40)
@@ -735,24 +748,39 @@ def upcoming_ou_pending(conn):
         return 0
 
 
-def _ou_refresh_one(cfg, mid, kickoff):
+def _ou_refresh_one(cfg, mid, kickoff, market='ou'):
     """並行取盤 worker：獨立 DB 連線 + Fetcher（同 shenbo 並行取盤同款）。
-    task_odds_page 回傳 True=有更新 / 'NO_DATA' / False。"""
+    task_odds_page 回傳 True=有更新 / 'NO_DATA' / False；hkjc_* 行
+    task_hkjc（逐條盤線探取）。10-16：market 參數化——好波全家（全/半場
+    大小、馬會大小）都經呢度預抓。"""
     c2 = db_connect(cfg)
     f2 = ExtraFetcher(c2, cfg, state_prefix='extra:ouwatch:t%d:' % mid)
     try:
         ko = dt.datetime.strptime(kickoff, '%Y-%m-%d %H:%M')
-        return mid, task_odds_page(c2, f2, mid, ko, 'ou') is True
+        if market.startswith('hkjc_'):
+            ok = task_hkjc(c2, f2, mid, ko, market) is True
+        else:
+            ok = task_odds_page(c2, f2, mid, ko, market) is True
+        if ok:
+            # 2026-10-24：大小線更新都通知 APP（好波規則用 OU 線）
+            import crawler as _cr
+            _cr.notify_line_move(mid)
+        return mid, market, ok
     except Exception:
-        log(c2, 'WARN', '預抓 OU 失敗 %d\n%s' % (mid, traceback.format_exc()))
-        return mid, False
+        log(c2, 'WARN', '預抓 %s 失敗 %d\n%s'
+            % (market, mid, traceback.format_exc()))
+        return mid, market, False
     finally:
         c2.close()
 
 
-def refresh_upcoming_ou(conn, fetcher, cfg=None, threads=1):
-    """為即將開賽場次預抓/刷新大小球盤（逐場節流）。回傳今輪成功幾多場。
-    2026-10-12：threads>1 時並行取盤（每線獨立連線），好波 OU 更新提速 4 倍。"""
+def refresh_upcoming_ou(conn, fetcher, cfg=None, threads=1, markets=None):
+    """為即將開賽場次預抓/刷新大小球盤（逐場逐市場節流）。回傳今輪成功幾多項。
+    2026-10-12：threads>1 時並行取盤（每線獨立連線），好波 OU 更新提速 4 倍。
+    2026-10-16：markets 參數化（預設 ('ou',) 兼容舊呼叫）——好波全家四盤
+    （全場大小/半場大小/馬會大小/馬會半場）一齊預抓；節流表 key 變 (mid, market)。"""
+    if markets is None:
+        markets = ('ou',)
     now = dt.datetime.now()
     hi = (now + dt.timedelta(hours=UPCOMING_OU_WINDOW_H)).strftime('%Y-%m-%d %H:%M')
     lo = (now - dt.timedelta(minutes=5)).strftime('%Y-%m-%d %H:%M')
@@ -766,33 +794,38 @@ def refresh_upcoming_ou(conn, fetcher, cfg=None, threads=1):
     due = []
     t = time.time()
     for mid, kickoff in rows:
-        if t - _UPCOMING_OU_LAST.get(mid, 0) < UPCOMING_OU_INTERVAL:
-            continue
-        _UPCOMING_OU_LAST[mid] = t
-        if len(_UPCOMING_OU_LAST) > 3000:      # 節流表防無限膨脹
-            _UPCOMING_OU_LAST.clear()
-            _UPCOMING_OU_LAST[mid] = t
-        due.append((mid, kickoff))
+        for market in markets:
+            if t - _UPCOMING_OU_LAST.get((mid, market), 0) < UPCOMING_OU_INTERVAL:
+                continue
+            _UPCOMING_OU_LAST[(mid, market)] = t
+            due.append((mid, kickoff, market))
+    if len(_UPCOMING_OU_LAST) > 6000:      # 節流表防無限膨脹（key 變 tuple 後放大一倍上限）
+        _UPCOMING_OU_LAST.clear()
     if not due:
         return 0
     if threads <= 1 or cfg is None:
         did = 0
-        for mid, kickoff in due:
+        for mid, kickoff, market in due:
             try:
                 ko = dt.datetime.strptime(kickoff, '%Y-%m-%d %H:%M')
-                if task_odds_page(conn, fetcher, mid, ko, 'ou') is True:
+                if market.startswith('hkjc_'):
+                    ok = task_hkjc(conn, fetcher, mid, ko, market) is True
+                else:
+                    ok = task_odds_page(conn, fetcher, mid, ko, market) is True
+                if ok:
                     did += 1
             except Exception:
-                log(conn, 'WARN', '預抓 OU 失敗 %d\n%s'
-                    % (mid, traceback.format_exc()))
+                log(conn, 'WARN', '預抓 %s 失敗 %d\n%s'
+                    % (market, mid, traceback.format_exc()))
         return did
     import concurrent.futures as cf
     did = 0
     with cf.ThreadPoolExecutor(max_workers=threads) as pool:
-        futs = [pool.submit(_ou_refresh_one, cfg, mid, ko_) for mid, ko_ in due]
+        futs = [pool.submit(_ou_refresh_one, cfg, mid, ko_, market)
+                for mid, ko_, market in due]
         for fut in cf.as_completed(futs):
             try:
-                _, ok = fut.result()
+                _, _, ok = fut.result()
             except Exception:                     # noqa: BLE001
                 ok = False
             if ok:
@@ -852,7 +885,8 @@ def task_asian(conn, fetcher, match_id, kickoff):
     from crawler import crawl_odds_for_match
     return crawl_odds_for_match(conn, fetcher, match_id,
                                 kickoff.strftime('%Y-%m-%d %H:%M'),
-                                COMPANY_12BET)
+                                COMPANY_12BET,
+                                fallback_company=COMPANY_CROWN)
 
 
 TASK_FUNCS = {m: task_odds_page for m in
@@ -1411,7 +1445,10 @@ def _worker(cfg, only, only_key, wid, main_lane, t_start, n_start,
             excl_args = tuple(down_markets)
         row = _claim_task(conn, only_sql, only_args, excl_sql, excl_args)
         if row == 'LOCKED':
-            time.sleep(2)               # DB 被鎖：一陣再領，絕對唔收工
+            # 05:20 鎖風暴修正：2s 熱重試 × 144 線程＝每秒幾十個寫鎖爭奪，
+            # WAL 單寫者模式直接餓死其他寫手（claim 131s 超時實證）。
+            # 退避加長兼加抖動，等風暴過去。
+            time.sleep(8 + random.uniform(0, 4))
             continue
         if not row:
             # 淨計「可派」任務（排除斷線主機市場）：斷線主機嘅 pending
