@@ -818,6 +818,112 @@ class _EvalCtx:
             self.conn, self.target(), grid8_rep=self._grids.get('8'))
 
 
+def _qdict(conn, sql, args):
+    """SELECT 明確欄位 → dict 列（用 cursor.description，唔郁 conn 嘅
+    row_factory——共享連接其他代碼靠索引取值）。"""
+    cur = conn.execute(sql, args)
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def _closing_ctx(conn, mid):
+    """該場 company12 尾盤（讓球＋大小）——剔走記錄結算用。"""
+    r = conn.execute(
+        "SELECT handicap, giver FROM odds_asian WHERE match_id=? "
+        "AND label='closing' AND company_id=12", (mid,)).fetchone()
+    hc = gv = None
+    if r:
+        hc, gv = r
+    ou = conn.execute(
+        "SELECT total_line FROM odds_ou WHERE match_id=? AND label='closing' "
+        'AND company_id=12', (mid,)).fetchone()
+    return hc, gv, (ou[0] if ou else None)
+
+
+_RM_SNAP_SQL = {
+    'v3_featured': 'SELECT direction, detail FROM v3_featured '
+                   'WHERE match_id=? AND result IS NULL',
+    'featured': 'SELECT direction, letters FROM featured '
+                'WHERE match_id=? AND result IS NULL',
+    'featured_z': 'SELECT direction, letters FROM featured_z '
+                  'WHERE match_id=? AND result IS NULL',
+    'v1_featured': 'SELECT direction FROM v1_featured '
+                   'WHERE match_id=? AND result IS NULL',
+    'v1_featured_z': 'SELECT direction FROM v1_featured_z '
+                     'WHERE match_id=? AND result IS NULL',
+    'fw_grid_featured': "SELECT grid, direction, detail FROM fw_grid_featured "
+                        "WHERE match_id=? AND result IS NULL",
+    'fw8s_log': 'SELECT direction, line FROM fw8s_log '
+                'WHERE match_id=? AND result IS NULL',
+    'fw8x_log': 'SELECT direction, preds FROM fw8x_log '
+                'WHERE match_id=? AND result IS NULL',
+    'w88_log': 'SELECT market, conds, label, ou_line, hc, giver FROM w88_log '
+               'WHERE match_id=? AND result IS NULL',
+    'newjx_log': 'SELECT dir, conds FROM newjx_log '
+                 'WHERE match_id=? AND result IS NULL',
+}
+
+
+def _rec_removed_acts(conn, mid, acts, pre):
+    """_eval_all 嘅『移出』動作 → removed_picks（邊個工具＋當刻方向）。
+    pre 係評估前快照（方向係『被剔嗰注』嘅方向，唔係而家嘅）。"""
+    if not pre:
+        return
+    hc, gv, ou = _closing_ctx(conn, mid)
+    for a in acts:
+        if '移出' not in a:
+            continue
+        try:
+            if a.startswith('格'):
+                g = a[1:a.index('移出')]
+                for r in pre.get('fw_grid_featured') or []:
+                    if r['grid'] == g:
+                        _record_removed(conn, '精選' + g, mid,
+                                        side=r.get('direction'), hc=hc,
+                                        giver=gv, detail=r.get('detail'))
+            elif a.startswith('W'):
+                for r in pre.get('v3_featured') or []:
+                    _record_removed(conn, '精選W', mid, side=r.get('direction'),
+                                    hc=hc, giver=gv, detail=r.get('detail'))
+            elif a.startswith('V1Z'):
+                for r in pre.get('v1_featured_z') or []:
+                    _record_removed(conn, '精選V1Z', mid,
+                                    side=r.get('direction'), hc=hc, giver=gv)
+            elif a.startswith('V1'):
+                for r in pre.get('v1_featured') or []:
+                    _record_removed(conn, '精選V1', mid,
+                                    side=r.get('direction'), hc=hc, giver=gv)
+            elif a.startswith('V2Z'):
+                for r in pre.get('featured_z') or []:
+                    _record_removed(conn, '精選V2Z', mid,
+                                    side=r.get('direction'), hc=hc, giver=gv)
+            elif a.startswith('V2'):
+                for r in pre.get('featured') or []:
+                    _record_removed(conn, '精選V2', mid,
+                                    side=r.get('direction'), hc=hc, giver=gv,
+                                    detail=r.get('letters'))
+            elif a.startswith('88W'):
+                for r in pre.get('w88_log') or []:
+                    _record_removed(conn, '88W', mid, side=r.get('market'),
+                                    line=r.get('ou_line'), hc=r.get('hc'),
+                                    giver=r.get('giver'),
+                                    detail=r.get('conds') or r.get('label'))
+            elif a.startswith('新精選'):
+                for r in pre.get('newjx_log') or []:
+                    _record_removed(conn, '新精選', mid, side=r.get('dir'),
+                                    hc=hc, giver=gv, detail=r.get('conds'))
+            elif a.startswith('8X'):
+                for r in pre.get('fw8x_log') or []:
+                    _record_removed(conn, '8X', mid, side=r.get('direction'),
+                                    hc=hc, giver=gv, detail=r.get('preds'))
+            elif a.startswith('8s'):
+                for r in pre.get('fw8s_log') or []:
+                    _record_removed(conn, '精選8s', mid, side=r.get('direction'),
+                                    hc=hc, giver=gv, detail=r.get('line'))
+        except Exception:
+            pass
+
+
 def _eval_all(conn, ctx, light=False):
     """單場全系統評估＋寫表（12 張）：精選W、V1、V1Z、V2(letters 共用）、
     V2Z、格7/8/12/8s、8s紀錄、8X、88W、新精選。寫法＝upsert 合格／DELETE
@@ -834,6 +940,17 @@ def _eval_all(conn, ctx, light=False):
     if not t:
         return acts
     now = time.strftime('%Y-%m-%d %H:%M:%S')
+    # 2026-10-24 剔走記錄：評估前快照各表未結算列（方向＝被剔嗰注嘅方向）。
+    # 只係 PK 查詢，微秒級；light（雲端）跳過。
+    _pre_rm = {}
+    if not light:
+        try:
+            for _t, _sql in _RM_SNAP_SQL.items():
+                _rows = _qdict(conn, _sql, (mid,))
+                if _rows:
+                    _pre_rm[_t] = _rows
+        except Exception:
+            _pre_rm = {}
     if not light:
         # 精選W（V3 六條件）
         try:
@@ -1048,6 +1165,12 @@ def _eval_all(conn, ctx, light=False):
         except Exception:
             pass
         _bust_tool_caches()
+    # 2026-10-24 剔走專頁：『移出』動作連方向記錄落 removed_picks
+    if _pre_rm and any('移出' in a for a in acts):
+        try:
+            _rec_removed_acts(conn, mid, acts, _pre_rm)
+        except Exception:
+            pass
     return acts
 
 
@@ -2515,6 +2638,196 @@ def _notify_tool(conn, mid, acts):
         _NOTIFY_N[0] += len(rows)
     except Exception:
         pass
+
+
+# ============ 2026-10-24 「剔走」專頁（用戶規格） ============
+# 工具剔走唔合資格場次時，同時記錄落 removed_picks：邊個工具預測、
+# 預測方向、完場後實際結果（驗證剔走邏輯嘅真實命中率）。頁面：
+# /api/removed/full → 頂部各工具統計＋逐場清單。
+def _migrate_removed(conn):
+    conn.execute('''CREATE TABLE IF NOT EXISTS removed_picks(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tool TEXT NOT NULL, match_id INTEGER NOT NULL,
+        league TEXT, home TEXT, away TEXT, kickoff TEXT,
+        side TEXT, line REAL, hc REAL, giver TEXT,
+        detail TEXT, rate REAL,
+        removed_at TEXT, result TEXT, settled_at TEXT,
+        backfilled INTEGER DEFAULT 0,
+        UNIQUE(tool, match_id, detail))''')
+    conn.commit()
+
+
+def _record_removed(conn, tool, mid, side=None, line=None, hc=None,
+                    giver=None, detail=None, rate=None, backfilled=0):
+    """剔走記錄（best-effort；主流程唔受影響）。detail 做 UNIQUE 一部分
+    —— 同一場同一工具嘅同一條預測唔會重複記（88W 一場可多條）。"""
+    try:
+        _migrate_removed(conn)
+        info = conn.execute(
+            'SELECT c.req_name, m.kickoff, ht.name_tc, at.name_tc '
+            'FROM matches m JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'JOIN teams ht ON ht.titan_id=m.home_id '
+            'JOIN teams at ON at.titan_id=m.away_id WHERE m.id=?',
+            (mid,)).fetchone()
+        lg = ko = hm = aw = ''
+        if info:
+            lg, ko, hm, aw = info
+        conn.execute(
+            'INSERT OR IGNORE INTO removed_picks(tool,match_id,league,'
+            'home,away,kickoff,side,line,hc,giver,detail,rate,removed_at,'
+            'backfilled) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+            (tool, mid, lg, hm, aw, ko, side, line, hc, giver,
+             detail or '', rate,
+             time.strftime('%Y-%m-%d %H:%M:%S'), backfilled))
+        conn.commit()
+    except Exception:
+        pass
+
+
+def _settle_removed_picks(conn):
+    """剔走頁嘅結算：方向 up/down 對讓球盤；大/細 對大小線（用記錄時
+    嘅 line——剔走當刻嘅盤，唔係而家嘅，咁先係『剔走咗嗰注嘅真實結果』）。
+    w88 嘅 side 直接係市場（ah_up/over/...）：行 w88 結算語義。"""
+    try:
+        _migrate_removed(conn)
+    except Exception:
+        return 0
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    n = 0
+    rows = conn.execute(
+        'SELECT id, match_id, side, line, hc, giver FROM removed_picks '
+        'WHERE result IS NULL AND match_id IN '
+        '(SELECT id FROM matches WHERE home_score IS NOT NULL)').fetchall()
+    for rid, mid, side, line, hc, giver in rows:
+        try:
+            hs, aws = conn.execute(
+                'SELECT home_score, away_score FROM matches WHERE id=?',
+                (mid,)).fetchone()
+            res = None
+            if side in ('up', 'down') and hc is not None:
+                r = pick_result(hc, giver, hs, aws)
+                if r is not None:
+                    res = 'P' if r == 'P' else ('W' if (r == 'A')
+                                                == (side == 'up') else 'L')
+            elif side in ('大', '細') and line is not None:
+                tot = hs + aws
+                if tot != line:
+                    res = 'W' if (tot > line) == (side == '大') else 'L'
+                else:
+                    res = 'P'
+            elif side in ('ah_up', 'ah_down', 'draw', 'even', 'over',
+                          'under', 'home_win', 'away_win'):
+                try:
+                    import w88_engine
+                    mkt = 'ah_up' if side in ('up',) else side
+                    if side in ('up', 'down'):
+                        mkt = 'ah_up' if side == 'up' else 'ah_down'
+                    ol = line if mkt in ('over', 'under') else None
+                    _hc = hc if mkt in ('ah_up', 'ah_down') else None
+                    res = w88_engine._settle_one(mkt, hs, aws, _hc, giver,
+                                                 ol)
+                except Exception:
+                    res = None
+            if res:
+                conn.execute(
+                    'UPDATE removed_picks SET result=?, settled_at=? '
+                    'WHERE id=?', (res, now, rid))
+                n += 1
+        except Exception:
+            pass
+    if n:
+        conn.commit()
+    return n
+
+
+_TOOL_TABLE_FOR_ACT = (('W', 'v3_featured'), ('V2Z', 'featured_z'),
+                       ('V2', 'featured'), ('V1Z', 'v1_featured_z'),
+                       ('V1', 'v1_featured'),
+                       ('格8s', None), ('格8', None), ('格7', None),
+                       ('格12', None),
+                       ('8X', 'fw8x_log'), ('88W', None), ('新精選', None),
+                       ('8s', 'fw8s_log'))
+
+
+def api_removed_full(limit=300):
+    """剔走頁數據：頂部各工具統計＋逐場清單（最新排先）。"""
+    conn = db()
+    try:
+        _migrate_removed(conn)
+        _settle_removed_picks(conn)
+        stats = {}
+        for tool, n, w, l, p in conn.execute(
+                "SELECT tool, COUNT(*), SUM(result='W'), SUM(result='L'),"
+                " SUM(result='P') FROM removed_picks GROUP BY tool"):
+            n = n or 0
+            w = w or 0
+            l = l or 0
+            p = p or 0
+            dec = w + l
+            stats[tool] = {
+                'n': n, 'w': w, 'l': l, 'p': p,
+                'hit': round(w / dec * 100, 1) if dec else None,
+                'miss': round(l / dec * 100, 1) if dec else None}
+        rows = conn.execute(
+            'SELECT tool, match_id, league, home, away, kickoff, side,'
+            ' detail, rate, removed_at, result, settled_at, backfilled,'
+            ' line, hc, giver FROM removed_picks '
+            'ORDER BY id DESC LIMIT ?', (max(1, min(int(limit), 500)),)
+        ).fetchall()
+        return {'stats': stats,
+                'rows': [{'tool': r[0], 'match_id': r[1], 'league': r[2],
+                          'home': r[3], 'away': r[4], 'kickoff': r[5],
+                          'side': r[6], 'detail': r[7], 'rate': r[8],
+                          'removed_at': r[9], 'result': r[10],
+                          'settled_at': r[11], 'backfilled': r[12],
+                          'line': r[13], 'hc': r[14], 'giver': r[15]}
+                         for r in rows]}
+    finally:
+        conn.close()
+
+
+def backfill_removed_from_alerts():
+    """2026-10-24 從 alerts log 回填已剔走場次（alerts 有 tool/match/
+    league/home/away/kickoff）。方向用而家重評近似（backfilled=1 標記）——
+    舊剔走冇留存當刻方向，如實標注。"""
+    conn = db()
+    n = 0
+    try:
+        _migrate_removed(conn)
+        rows = conn.execute(
+            "SELECT tool, match_id, league, home, away, kickoff, ts "
+            "FROM alerts WHERE kind='removed'").fetchall()
+        for tool, mid, lg, hm, aw, ko, ts in rows:
+            if conn.execute(
+                    'SELECT 1 FROM removed_picks WHERE tool=? AND match_id=?',
+                    (tool, mid)).fetchone():
+                continue
+            side = detail = None
+            try:
+                if tool == '好波':
+                    r = conn.execute(
+                        'SELECT side, rule FROM hb_pick_log WHERE match_id=?',
+                        (mid,)).fetchone()
+                    if r:
+                        side, detail = r
+                else:
+                    t2 = _pick_revalidate(conn, mid)
+                    for a in (t2 or []):
+                        if '移出' in a:
+                            continue
+            except Exception:
+                pass
+            _record_removed(conn, tool, mid, side=side, detail=detail,
+                            backfilled=1)
+            conn.execute(
+                'UPDATE removed_picks SET removed_at=? WHERE tool=? '
+                'AND match_id=? AND backfilled=1', (ts, tool, mid))
+            n += 1
+        conn.commit()
+    finally:
+        conn.close()
+    return n
 
 
 def _bust_tool_caches():
@@ -6136,7 +6449,21 @@ def _hb_requalify():
                     best_side = rp[0] if rp else None
                 if still and best_side == side:
                     continue
-                # 唔合資格／降級／轉向 → 剔走
+                # 唔合資格／降級／轉向 → 剔走（2026-10-24 記錄落剔走頁）
+                try:
+                    _k = conn.execute(
+                        'SELECT side, rate, rule FROM hb_pick_log '
+                        'WHERE match_id=? AND result IS NULL', (mid,)).fetchone()
+                    if _k:
+                        _ou = conn.execute(
+                            "SELECT total_line FROM odds_ou WHERE match_id=? "
+                            "AND label='closing' AND company_id=12",
+                            (mid,)).fetchone()
+                        _record_removed(conn, '好波', mid, side=_k[0],
+                                        line=_ou[0] if _ou else None,
+                                        detail=_k[2], rate=_k[1])
+                except Exception:
+                    pass
                 conn.execute(
                     'DELETE FROM hb_pick_log WHERE match_id=? AND result '
                     'IS NULL', (mid,))
@@ -8808,6 +9135,17 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'error': str(e)},
                                            ensure_ascii=False))
             return
+        if u.path == '/api/removed/full':
+            # 2026-10-24 剔走專頁：各工具統計＋逐場清單
+            try:
+                q = parse_qs(u.query)
+                lim = int(q.get('limit', ['300'])[0] or 300)
+                self._send(200, json.dumps(
+                    api_removed_full(lim), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)},
+                                           ensure_ascii=False))
+            return
         if u.path == '/api/alerts':
             # 2026-10-22 工具入選/剔走推送：?unread=1 淨未讀；?limit=N
             try:
@@ -10272,6 +10610,18 @@ if __name__ == '__main__':
         threading.Thread(target=_result_settle_loop, daemon=True).start()
         threading.Thread(target=_sync_delta_loop, daemon=True).start()
         threading.Thread(target=_line_move_watch_loop, daemon=True).start()
+
+        def _removed_backfill_boot():
+            time.sleep(150)
+            try:
+                nb = backfill_removed_from_alerts()
+                if nb:
+                    print('[boot] 剔走頁回填：%d 場（由 alerts log）' % nb,
+                          flush=True)
+            except Exception:
+                traceback.print_exc(limit=2)
+        threading.Thread(target=_removed_backfill_boot,
+                         daemon=True).start()
         print('[boot] 熱數據同步循環已啟動（每 30 分鐘推送雲端）', flush=True)
     else:
         print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '

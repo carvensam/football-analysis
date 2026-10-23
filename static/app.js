@@ -273,6 +273,7 @@ function goto(pg){
     x8: () => loadX8(),
     fw12lib: () => loadFw12Lib(),
     v1: () => loadV1(),
+    removed: () => loadRemoved(),
     settings: () => loadSettings(),
     home: () => loadHome()}[pg] || (() => {}))();
   window.scrollTo(0, 0);
@@ -1320,7 +1321,8 @@ function refreshCurrentTool(){
       oupred: () => loadOupred(), feathourly: () => loadFeatHourly(),
       ou: () => loadOuRules(), htftm: () => loadHtftRules(),
       pstat: () => loadPredStats(), x8: () => loadX8(),
-      fw12lib: () => loadFw12Lib(), v1: () => loadV1()};
+      fw12lib: () => loadFw12Lib(), v1: () => loadV1(),
+      removed: () => loadRemoved()};
     if (loaders[curPage]) return loaders[curPage]();
     const frames = {haobao: '#hbFrame', fw8s: '#fw8sFrame',
                     w88: '#w88Frame', newjx: '#jxFrame'};
@@ -3039,6 +3041,60 @@ async function pollScanJob(key, url, btnSel, infoSel, onDone, fmtDone){
   if (b) b.disabled = false;
   info.textContent = (fmtDone || (x => `完成｜新增 ${x.added || 0}${x.error ? '｜錯誤：' + x.error : ''}`))(s);
   onDone();
+}
+
+/* ---------- 🗑 剔走專頁（2026-10-24：邊個工具剔走咗邊場＋實際命中率） ---------- */
+function loadRemoved(){
+  $('#removedStats').innerHTML = '<div class="note">載入中…</div>';
+  $('#removedBody').innerHTML = '';
+  jget('/api/removed/full?limit=300').then(d => {
+    const st = d.stats || {};
+    const tools = Object.keys(st).sort((a, b) => st[b].n - st[a].n);
+    let tw = 0, tl = 0, tn = 0, tp = 0;
+    let rows = tools.map(t => {
+      const v = st[t];
+      tw += v.w; tl += v.l; tn += v.n; tp += v.p;
+      return `<tr><td style="white-space:nowrap"><b>${esc(t)}</b></td>` +
+        `<td style="color:var(--up)"><b>${v.w}</b></td>` +
+        `<td>${v.hit == null ? '—' : v.hit + '%'}</td>` +
+        `<td style="color:var(--down)"><b>${v.l}</b></td>` +
+        `<td>${v.miss == null ? '—' : v.miss + '%'}</td>` +
+        `<td>${v.n}${v.p ? `<small style="color:var(--dim)">（走${v.p}）</small>` : ''}</td></tr>`;
+    }).join('');
+    const ddec = tw + tl;
+    rows += `<tr style="border-top:2px solid var(--gold2)"><td><b>合計</b></td>` +
+      `<td style="color:var(--up)"><b>${tw}</b></td>` +
+      `<td><b>${ddec ? (tw / ddec * 100).toFixed(1) + '%' : '—'}</b></td>` +
+      `<td style="color:var(--down)"><b>${tl}</b></td>` +
+      `<td><b>${ddec ? (tl / ddec * 100).toFixed(1) + '%' : '—'}</b></td>` +
+      `<td><b>${tn}</b>${tp ? `<small style="color:var(--dim)">（走${tp}）</small>` : ''}</td></tr>`;
+    $('#removedStats').innerHTML =
+      `<table class="ck-table" style="max-width:760px"><tr><th>工具</th>` +
+      `<th>命中場次</th><th>命中率</th><th>唔中場次</th><th>唔中率</th><th>總場次</th></tr>${rows}</table>`;
+    const items = d.rows || [];
+    if (!items.length){
+      $('#removedBody').innerHTML = '<div class="note">暫無剔走記錄——工具重算後踢走唔合資格場次會即時出現喺度。</div>';
+      return;
+    }
+    $('#removedBody').innerHTML = items.map(r => {
+      const badge = r.result === 'W' ? '<span class="tag w">✔ 中</span>'
+        : r.result === 'L' ? '<span class="tag l">✘ 唔中</span>'
+        : r.result === 'P' ? '<span class="tag p">走</span>'
+        : '<span class="tag" style="color:var(--gold2);border-color:#6b5510">⏳ 待定</span>';
+      const side = r.side ? `<span class="tag dim">${esc(String(r.side))}</span>` : '';
+      const det = r.detail ? `<span class="rmeta" style="margin-left:4px">${esc(String(r.detail).slice(0, 60))}</span>` : '';
+      const bf = r.backfilled ? '<small style="color:var(--dim)" title="由推送 log 回填——方向為近似值">〔回填〕</small>' : '';
+      return `<div class="fcard"><div class="f-top">
+        <span class="ko">${esc((r.kickoff || '').slice(5, 16))}</span>
+        <span class="lg">${esc(r.league || '')}</span>
+        <b class="tm">${esc(r.home)} <span style="color:var(--dim)">vs</span> ${esc(r.away)}</b>
+        <span class="tag" style="border-color:#7a2d2d;color:#ff9d9d" title="邊個工具剔走">${esc(r.tool)}</span>
+        ${side}${badge}${bf}</div>
+        <div class="sub">剔走於 ${esc(r.removed_at || '')}${det}${r.rate != null ? `｜機會率 ${r.rate}%` : ''}${r.settled_at ? `｜結算 ${esc(r.settled_at)}` : ''}</div></div>`;
+    }).join('');
+  }).catch(e => {
+    $('#removedStats').innerHTML = '<div class="err">載入失敗：' + esc(e.message || e) + '</div>';
+  });
 }
 
 /* ---------- 設定 ---------- */
