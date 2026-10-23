@@ -2107,17 +2107,12 @@ def _fetch_batch_worker(hours):
     conn = sqlite3.connect(DB_PATH, timeout=180)
     try:
         # 開工前快測數據主機；死緊即刻收工俾清楚訊息（同 _update_worker 邏輯）
+        # 2026-10-24 突破封鎖：探測改『軟啟動』——12 個代理抽樣假陰性太高
+        # （池 395 個部分燒咗，輪轉爬其實行得通，實測每小時經代理落
+        # 273 筆）。探測只作警告照樣開爬；頭 5 場連滅先判真封鎖＋登記補跑。
         if not crawler.data_host_probe():
-            _FBATCH_PEND['hours'] = hours
-            _FBATCH_PEND['ts'] = time.time()
-            _fbatch_state['error'] = (
-                '連唔到 titan007 數據主機（連代理都封緊）——已登記：'
-                '主機一復活自動補跑您呢次「更新賠率＋重算資格」，唔使再撳')
-            _scanlog('⚡ 您撳嘅「更新賠率＋重算資格」遇主機封鎖——'
-                     '已登記自動補跑')
-            print('[fbatch] 數據主機中斷，本次即時更新跳過（已登記補跑）',
+            print('[fbatch] 前置探測未過——照樣開爬（代理輪轉可能有活得）',
                   flush=True)
-            return
         cap = "AND m.kickoff <= datetime('now','+8 hours', ?) " if hours else ""
         args = (f'+{hours} hours',) if hours else ()
         todo = conn.execute(
@@ -2128,26 +2123,39 @@ def _fetch_batch_worker(hours):
         _fbatch_state.update(total=len(todo), done=0, ok=0, fail=0)
         fetcher = crawler.Fetcher(conn, cfg)
         ok_mids = []
+        fail_streak = 0
         for i, (mid, ko) in enumerate(todo):
             _fbatch_state['phase'] = f'即時更新盤口及賠率 {i + 1}/{len(todo)}'
+            got = False
             try:
                 before = _closing_now(conn, mid)
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
-                    _fbatch_state['ok'] += 1
-                    ok_mids.append(mid)
-                    after_odds_update(mid, before)   # 2026-10-20 尾盤變動→重檢
+                    got = True
                 elif not conn.execute(
                         'SELECT 1 FROM odds_asian WHERE match_id=? AND company_id=12',
-                        (mid,)).fetchone() \
-                        and crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 3):
+                        (mid,)).fetchone()                         and crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 3):
                     # 易胜博未開盤 → Crown(3) 後備
-                    _fbatch_state['ok'] += 1
-                    ok_mids.append(mid)
-                    after_odds_update(mid, before)
-                else:
-                    _fbatch_state['fail'] += 1
+                    got = True
             except Exception:
+                got = False
+            if got:
+                _fbatch_state['ok'] += 1
+                ok_mids.append(mid)
+                fail_streak = 0
+                after_odds_update(mid, before)   # 2026-10-20 尾盤變動→重檢
+            else:
                 _fbatch_state['fail'] += 1
+                fail_streak += 1
+                if fail_streak >= 5:
+                    # 頭 5 場連滅＝真封鎖（唔係輪轉陣痛）——收工＋登記補跑
+                    _FBATCH_PEND['hours'] = hours
+                    _FBATCH_PEND['ts'] = time.time()
+                    _fbatch_state['error'] = (
+                        '連頭 5 場都爬唔到——titan007 而家真係封緊。'
+                        '已登記：復活後自動補跑，唔使再撳')
+                    _scanlog('⚡ 更新賠率遇真封鎖（5 連敗）——已登記自動補跑')
+                    print('[fbatch] 5 連敗收工（已登記補跑）', flush=True)
+                    break
             _fbatch_state['done'] += 1
         _fbatch_state['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
         _fbatch_state['error'] = None
