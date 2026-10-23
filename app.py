@@ -5972,6 +5972,31 @@ def api_hb_list(hours=72):
     return {'matches': out, 'now': now}
 
 
+def api_hb_picks():
+    """2026-10-22 好波優化：『高機會精選』專區——淨係顯示規則命中（≥82.5%
+    兩期驗證＋88% 獨立或共識門檻）嘅未開賽場次（hb_pick_log 待定列）。
+    用戶規格：淨係篩選高命中率高機會，唔場場預測。"""
+    conn = db()
+    try:
+        rows = conn.execute(
+            'SELECT k.match_id, k.league, k.side, k.rate, k.line, k.rule, '
+            'k.added_at, m.kickoff, ht.name_tc, at.name_tc '
+            'FROM hb_pick_log k JOIN matches m ON m.id=k.match_id '
+            'JOIN teams ht ON ht.titan_id=m.home_id '
+            'JOIN teams at ON at.titan_id=m.away_id '
+            'WHERE k.result IS NULL AND m.home_score IS NULL '
+            'AND k.rule IS NOT NULL '
+            'AND m.kickoff >= datetime(\'now\',\'-3 hours\',\'+8 hours\') '
+            'ORDER BY m.kickoff').fetchall()
+        return {'picks': [
+            {'id': r[0], 'league': r[1], 'side': r[2], 'rate': r[3],
+             'line': r[4], 'rule': r[5], 'added_at': r[6], 'kickoff': r[7],
+             'home': r[8], 'away': r[9]}
+            for r in rows]}
+    finally:
+        conn.close()
+
+
 _HB_OU_SWEEP = {'running': False, 'last': None, 'fixed': 0}
 
 
@@ -6115,6 +6140,35 @@ def _hb_predict_compute(mid):
     return res
 
 
+def _hb_rule_gate_update(conn):
+    """2026-10-22 好波優化：live 規則健康度——按 rule 聚合 hb_pick_log
+    已結算結果；n≥6 且命中率 <70% 嘅規則寫入停用名單（hb_rule_gate.json），
+    eval_rules 會自動過濾佢——保證出嘅預測長期維持高命中率（用戶規格：
+    淨係高命中率高機會）。檔案寫 app 目錄，雲端經 git 部署共享。"""
+    rows = conn.execute(
+        "SELECT rule, COUNT(*), SUM(result='W') FROM hb_pick_log "
+        "WHERE rule IS NOT NULL AND result IN ('W','L') GROUP BY rule"
+    ).fetchall()
+    paused = {}
+    stats = {}
+    for rule, n, w in rows:
+        n = int(n)
+        w = int(w or 0)
+        hit = w / n if n else 0
+        stats[rule] = {'n': n, 'w': w, 'hit': round(hit, 3)}
+        if n >= 6 and hit < 0.70:
+            paused[rule] = {'n': n, 'hit': round(hit, 3)}
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        'hb_rule_gate.json')
+    tmp = {'updated': time.strftime('%Y-%m-%d %H:%M:%S'),
+           'paused': paused, 'stats': stats}
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(tmp, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 def _hb_log_pick(mid, lg, ou):
     """好波大小選擇落庫（hb_pick_log）——2026-10-22 重建規格：ONLY
     挖掘規則命中先記錄（兩期≥82.5%）；冇命中＝觀望，唔記錄。舊 fallback
@@ -6167,18 +6221,29 @@ def _hb_log_pick(mid, lg, ou):
             match_id INTEGER PRIMARY KEY, league TEXT, side TEXT, rate REAL,
             line REAL, added_at TEXT, result TEXT, settled_at TEXT)''')
         try:
+            conn.execute('ALTER TABLE hb_pick_log ADD COLUMN rule TEXT')
+        except sqlite3.OperationalError:
+            pass
+        try:
             conn.execute('ALTER TABLE hb_pick_log ADD COLUMN method TEXT '
                          "DEFAULT 'engine'")
         except sqlite3.OperationalError:
             pass
         conn.execute(
             'INSERT INTO hb_pick_log(match_id,league,side,rate,line,added_at,'
-            'method) VALUES(?,?,?,?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-            'league=excluded.league, side=excluded.side, rate=excluded.rate, '
-            'line=excluded.line, method=excluded.method',
+            'method,rule) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(match_id) '
+            'DO UPDATE SET league=excluded.league, side=excluded.side, '
+            'rate=excluded.rate, line=excluded.line, method=excluded.method, '
+            'rule=excluded.rule',
             (mid, lg, side, rate, ou.get('line'),
-             time.strftime('%Y-%m-%d %H:%M:%S'), method))
+             time.strftime('%Y-%m-%d %H:%M:%S'), method,
+             pick.get('rule_label')))
         conn.commit()
+        # 2026-10-22 優化：每次記錄後順手更新 live 規則健康度（停腐化規則）
+        try:
+            _hb_rule_gate_update(conn)
+        except Exception:
+            pass
     finally:
         conn.close()
 
@@ -8231,6 +8296,13 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback
                 traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/hb/picks':
+            # 2026-10-22 好波高機會精選專區（規則命中嘅未開賽場次）
+            try:
+                self._send(200, json.dumps(api_hb_picks(), ensure_ascii=False))
+            except Exception as e:
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/oupred/panel':

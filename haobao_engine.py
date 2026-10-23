@@ -514,16 +514,27 @@ class HB:
                 traceback.print_exc()
             rp = hb_ou_rules.best_pick(rule_hits) if rule_hits else None
             if rp:
-                side, rule = rp
+                side, rule, is_pick = rp
                 lean = side
-                pick = {'side': side,
-                        'best': round(
-                            min(rule.get('train_hit') or 0,
-                                rule.get('test_hit') or 0) * 100, 1),
-                        'votes': len(rule_hits),
-                        'title': '精選：%s｜規則 %s（兩期≥82.5%%）'
-                                 % (side, rule.get('label') or
-                                    '＋'.join(rule.get('conds') or []))}
+                if is_pick:
+                    pick = {'side': side,
+                            'best': round(
+                                min(rule.get('train_hit') or 0,
+                                    rule.get('test_hit') or 0) * 100, 1),
+                            'votes': len(rule_hits),
+                            'rule_label': rule.get('label'),
+                            'title': '精選：%s｜%s（兩期≥82.5%%）'
+                                     % (side, rule.get('label') or
+                                        '＋'.join(rule.get('conds') or []))}
+                else:
+                    # 2026-10-22 優化：單條 82.5-88% 淨係『參考訊號』——
+                    # 顯示 lean 但唔出精選、唔記錄（用戶：淨要高機會）
+                    pick = None
+                    out_ou['signal'] = {
+                        'side': side,
+                        'rate': round(min(rule.get('train_hit') or 0,
+                                          rule.get('test_hit') or 0) * 100, 1),
+                        'label': rule.get('label')}
             else:
                 lean = None      # 觀望＝常態（用戶規格：唔場場預測）
                 pick = None

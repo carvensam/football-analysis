@@ -138,25 +138,54 @@ def feats(line=None, init_line=None, over=None, under=None,
     return F
 
 
-def eval_rules(league, F):
-    """評一場：回傳命中規則列表 [{side, conds, all_hit, all_n, label}]。
-    冇規則庫／冇命中 → []。"""
-    out = []
-    for r in load_rules().get(league) or []:
-        conds = set(r['conds'])
-        if conds and conds <= F:
-            out.append(r)
-    return out
-
-
 def best_pick(hits):
-    """多規則命中：揀兩期最低命中率最高嗰條（穩健），回傳
-    (side, rule) 或 None。"""
+    """2026-10-22 優化版（用戶：淨係高命中率高機會）：
+    出「精選」要過雙重門檻——
+    ①單條獨立：min(訓,驗) ≥ 88%；或
+    ②共識：≥2 條同向規則同時命中（每條本身已 ≥82.5% 收錄閘）。
+    淨係 82.5-88% 嘅單條命中 → 出 (side, rule, False)＝『參考訊號』
+    （lean 顯示、唔出精選、唔記錄 hb_pick_log）。
+    回傳 (side, best_rule, is_pick)；冇命中 → None。"""
     if not hits:
         return None
     def key(r):
-        tr = r.get('train_hit') or 0
-        te = r.get('test_hit') or 0
-        return (min(tr, te), r.get('all_n') or 0)
-    r = max(hits, key=key)
-    return r['side'], r
+        return (min(r.get('train_hit') or 0, r.get('test_hit') or 0),
+                r.get('all_n') or 0)
+    by_side = {}
+    for r in hits:
+        by_side.setdefault(r['side'], []).append(r)
+    best_side, best_rules = max(by_side.items(),
+                                key=lambda kv: max(key(r) for r in kv[1]))
+    top = max(best_rules, key=key)
+    top_min = min(top.get('train_hit') or 0, top.get('test_hit') or 0)
+    if top_min >= 0.88:
+        return best_side, top, True
+    if len(best_rules) >= 2:
+        # 共識：最強嗰條做代表（顯示用），但標明共識場數
+        top = dict(top)
+        top['label'] = '%s（%d 條規則共識）' % (top.get('label') or '',
+                                               len(best_rules))
+        return best_side, top, True
+    return best_side, top, False
+
+
+def live_gate_paused(rule_label):
+    """2026-10-22：live 健康度門——規則實戰 n≥6 且命中率 <70% 自動停用
+    （hb_rule_gate.json，由 settle 後聚合更新）。停用規則唔出預測——
+    保證『高命中率』唔會隨時間腐化。回傳 True＝已停用。"""
+    try:
+        with open(os.path.join(WS, 'hb_rule_gate.json'), encoding='utf-8') as f:
+            return rule_label in (json.load(f).get('paused') or [])
+    except Exception:
+        return False
+
+
+def eval_rules(league, F):
+    """評一場：回傳命中規則列表 [{side, conds, all_hit, all_n, label}]。
+    冇規則庫／冇命中 → []。live 停用嘅規則自動過濾。"""
+    out = []
+    for r in load_rules().get(league) or []:
+        conds = set(r['conds'])
+        if conds and conds <= F and not live_gate_paused(r.get('label')):
+            out.append(r)
+    return out
