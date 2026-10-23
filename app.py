@@ -1053,8 +1053,12 @@ def _eval_all(conn, ctx, light=False):
 
 def _pick_revalidate(conn, mid):
     """單場精選資格重檢（評估-only：唔重抓、唔清歷史池——歷史場次尾盤
-    永不變，變嘅只有目標場自己）。回傳動作列表（供日誌）。"""
-    return _eval_all(conn, _EvalCtx(conn, mid))
+    永不變，變嘅只有目標場自己）。回傳動作列表。
+    2026-10-24：雲端（DISABLE_UPDATE）自動行 light 模式——掣嘅 sweep
+    同 after_odds_update 都經呢度，重模式會載 300MB 數據池搞到 512MB
+    容器 OOM（用戶問『手機係咪一樣得』先發現嘅漏洞）。雲端 light 淨做
+    純 SQL 系統；W/V1/V2/格 呢啲由本機 30 分鐘 delta 同步補返。"""
+    return _eval_all(conn, _EvalCtx(conn, mid), light=bool(DISABLE_UPDATE))
 
 
 def after_odds_update(mid, before):
