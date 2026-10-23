@@ -1115,6 +1115,7 @@ def _requalify_sweep(mids, cap=300):
                 try:
                     acts = _pick_revalidate(conn, mid)
                     conn.commit()
+                    _scanlog_match(conn, mid, acts)
                 finally:
                     conn.close()
                 summary['checked'] += 1
