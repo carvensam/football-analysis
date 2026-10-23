@@ -2336,8 +2336,6 @@ _INGEST_WHITELIST = {
     'featured_z', 'featured_z_log', 'v1_featured', 'v1_featured_z',
     'fw_grid_featured', 'hb_pick_log', 'k3_log', 'newjx_log', 'w88_log',
     'fw8s_log', 'fw8x_log', 'fw8x_bt2026', 'fw8s_bt', 'feat_hourly',
-    # 2026-10-22：十工具全庫回測統一結果表（tool_bt.db merge 入 master 後推送）
-    'tool_bt',
     # 2026-10-21：參考表——精選8s 新引擎用 competitions 做 req_name→name_tc 映射
     'competitions', 'seasons', 'teams',
 }
@@ -5872,7 +5870,7 @@ def _hb_predict_compute(mid):
             "oc.total_line, oc.over_odds, oc.under_odds, "
             "oi.total_line, oi.over_odds, oi.under_odds, "
             "o4.total_line, o4.over_odds, o4.under_odds, "
-            "oa.handicap, oa.giver "
+            "oa.handicap, oa.giver, ph.home_total_rank, ph.away_total_rank "
             "FROM matches m JOIN seasons s ON s.id=m.season_id "
             "JOIN competitions c ON c.titan_id=s.titan_id "
             "LEFT JOIN odds_ou oc ON oc.match_id=m.id AND oc.company_id=12 "
@@ -5882,13 +5880,13 @@ def _hb_predict_compute(mid):
             "LEFT JOIN odds_ou o4 ON o4.match_id=m.id AND o4.company_id=12 "
             "AND o4.label='pre_4h' "
             "LEFT JOIN odds_asian oa ON oa.match_id=m.id AND oa.company_id=12 "
-            "AND oa.label='closing' WHERE m.id=?", (mid,)).fetchone()
+            "AND oa.label='closing' LEFT JOIN match_prestandings ph ON ph.match_id=m.id WHERE m.id=?", (mid,)).fetchone()
     finally:
         conn.close()
     if not r:
         return {'error': '找不到賽事'}
     (hid, aid, hs, aws, hhs, haws, lg, rd, ln, oo, uo, iln, ioo, iuo,
-     l4, o4o, o4u, ahc, agv) = r
+     l4, o4o, o4u, ahc, agv, phr, par) = r
     ctx = _hb_context()
     # 2026-10-20 用戶：8X（第50項）＋新精選（第51項）上下盤預測作為好波大小因素
     x8dir = None
@@ -5908,8 +5906,9 @@ def _hb_predict_compute(mid):
         pass
     res = ctx.predict(hid, aid, lg, rd, ou_line=ln, ou_over=oo,
                       ou_under=uo, oi_line=iln, oi_over=ioo, oi_under=iuo,
-                      ah_hc=ahc, o4_line=l4, o4_over=o4o, o4_under=o4u,
-                      x8dir=x8dir, jxdir=jxdir)
+                      ah_hc=ahc, ah_gv=agv, o4_line=l4, o4_over=o4o,
+                      o4_under=o4u, x8dir=x8dir, jxdir=jxdir,
+                      rank_h=phr, rank_a=par)
     res['x8dir'] = x8dir
     res['jxdir'] = jxdir
     res['match'] = {'id': mid, 'league': lg, 'home_id': hid, 'away_id': aid,
@@ -5918,24 +5917,12 @@ def _hb_predict_compute(mid):
                     'round': rd,
                     'ah_line': screen_engine.fmt_line(ahc, agv)
                     if ahc is not None else None}
-    # 10-17 用戶：同聯賽規律（礦工 v3 雙重驗證規則，不同聯賽不同方法）——
-    # 中咗規律就將好波 verdict 交俾佢（前端顯示 🎯規；hb_pick_log 記 method=rule）
-    try:
-        import hb_ou_rules
-        c2 = db()
-        try:
-            _hit = hb_ou_rules.check_match(c2, mid)
-        finally:
-            c2.close()
-        if _hit:
-            _side, _rate, _rule = _hit
-            res.setdefault('ou', {})['lg_rule'] = {
-                'side': _side, 'rate': round(_rate * 100, 1),
-                'conds': _rule['conds'], 'n_lg': _rule.get('n_lg'),
-                'n_all': _rule.get('n_all')}
-    except Exception:
-        pass
-    # 10-17 用戶：記低好波方向選擇（供「同聯賽命中率」統計）——有方向先記
+    # 10-22 重建：舊「同聯賽規律」路徑（hb_ou_rules.check_match／lg_rule）
+    # 已移除——舊制實戰 50.9%＝擲毫，且同新挖掘規則（hb_ou_rules.eval_rules）
+    # 撞模組名。舊模組同規則檔已備份做 _old_hb_ou_rules.py /
+    # _old_haobao_ou_rules.json（16 聯賽 48 條雙池驗證規則，留待對照）。
+    # 現時 ONLY 新挖掘規則（兩期≥82.5%，運行時全庫回測 88.4%）出預測。
+    # 記低好波方向選擇（供「同聯賽命中率」統計）——規則命中先記
     try:
         _hb_log_pick(mid, lg, res.get('ou') or {})
     except Exception:
@@ -5944,24 +5931,17 @@ def _hb_predict_compute(mid):
 
 
 def _hb_log_pick(mid, lg, ou):
-    """好波大小選擇落庫（hb_pick_log）——同聯賽規律（method=rule）＞
-    精選＞共識＞最強單項≥52%；完場後由 api_lg_hit_rates 懶結算。
+    """好波大小選擇落庫（hb_pick_log）——2026-10-22 重建規格：ONLY
+    挖掘規則命中先記錄（兩期≥82.5%）；冇命中＝觀望，唔記錄。舊 fallback
+    （同聯賽規律／共識 lean／最強單項≥52%）全部已廢——舊制實戰 50.9%
+    ＝擲毫，繼續記只會污染統計。完場後由 api_lg_hit_rates 懶結算；
     同場重算只更新方向，保留首次加入時間。"""
     pick = ou.get('pick')
-    lean = ou.get('lean')
-    st = ou.get('strongest') or {}
-    lr = ou.get('lg_rule')
-    method = 'engine'
-    if lr:
-        side, rate, method = lr['side'], lr['rate'], 'rule'
-    elif pick:
-        side, rate = str(pick.get('side')), pick.get('best')
-    elif lean in ('大', '細'):
-        side, rate = lean, (ou.get('best_rates') or {}).get(lean)
-    elif st.get('rate', 0) >= 0.52 and ou.get('line') is not None:
-        side, rate = str(st.get('side')), round(st.get('rate', 0) * 100, 1)
-    else:
+    if not pick:
         return
+    side = str(pick.get('side'))
+    rate = pick.get('best')
+    method = 'rule'
     conn = db()
     try:
         conn.execute('''CREATE TABLE IF NOT EXISTS hb_pick_log(
@@ -7553,60 +7533,6 @@ def api_fw8s_bt():
     return data
 
 
-_TOOLBT_CACHE = {'ts': 0.0, 'data': None}
-
-
-def api_toolbt_summary(scope='all', month=None):
-    """十工具全庫回測統一統計（tool_bt 表，本機 fwgrid_bt/tool_sweep_bt 產生）。
-    scope=all 全庫｜scope=month 指定 YYYY-MM（10 月資料等）。
-    每工具 n/w/l/p/hit＋按方向（上/下盤、大/細、半全場目標）細分。"""
-    now = time.time()
-    ck = '%s|%s' % (scope, month)
-    if _TOOLBT_CACHE['data'] is not None \
-            and _TOOLBT_CACHE.get('key') == ck and now - _TOOLBT_CACHE['ts'] < 600:
-        return _TOOLBT_CACHE['data']
-    conn = db()
-    where, args = '', ()
-    if scope == 'month' and month:
-        where = ' AND substr(kickoff,1,7)=?'
-        args = (month,)
-    tools = {}
-    try:
-        for tool, n, w, l, p in conn.execute(
-                'SELECT tool, COUNT(*), SUM(result=\'W\'), SUM(result=\'L\'), '
-                'SUM(result=\'P\') FROM tool_bt WHERE 1=1' + where +
-                ' GROUP BY tool', args):
-            eff = (w or 0) + (l or 0)
-            tools[tool] = {'n': n, 'w': w or 0, 'l': l or 0, 'p': p or 0,
-                           'hit_r': round((w or 0) / eff, 4) if eff else None}
-        by_dir = {}
-        for tool, market, direction, label, n, w, l, p in conn.execute(
-                'SELECT tool, market, direction, label, COUNT(*), '
-                'SUM(result=\'W\'), SUM(result=\'L\'), SUM(result=\'P\') '
-                'FROM tool_bt WHERE 1=1' + where +
-                ' GROUP BY tool, market, direction, label', args):
-            eff = (w or 0) + (l or 0)
-            by_dir.setdefault(tool, []).append({
-                'market': market, 'direction': direction, 'label': label,
-                'n': n, 'w': w or 0, 'l': l or 0, 'p': p or 0,
-                'hit_r': round((w or 0) / eff, 4) if eff else None})
-        months = [r[0] for r in conn.execute(
-            'SELECT DISTINCT substr(kickoff,1,7) FROM tool_bt '
-            'WHERE kickoff IS NOT NULL ORDER BY 1 DESC')]
-    except sqlite3.OperationalError as e:
-        return {'ok': False, 'error': 'tool_bt 未就緒：%s' % e}
-    names = {'featw': '精選W', 'fw7': '精選7', 'fw8': '精選8', 'fw12': '精選12',
-             'fw8s': '精選8s', 'fw8x': '8X', 'w88': '88W', 'newjx': '新精選',
-             'htft': '半全場', 'haobao': '好波'}
-    data = {'ok': True, 'scope': scope, 'month': month, 'tools': tools,
-            'names': names, 'by_dir': by_dir, 'months': months,
-            'updated': time.strftime('%Y-%m-%d %H:%M:%S')}
-    _TOOLBT_CACHE['data'] = data
-    _TOOLBT_CACHE['key'] = ck
-    _TOOLBT_CACHE['ts'] = now
-    return data
-
-
 def api_oupred_panel():
     """規則說明＋回查命中%＋每聯賽獨立因子（n 最大嘅 15 個聯賽嘅盤口因子示例）。"""
     bt = _oupred_backtest()
@@ -8189,17 +8115,6 @@ class Handler(BaseHTTPRequestHandler):
             # 精選8s：全庫 8 格共識實跑回測（fw8s_bt.db，每聯賽場次+%）
             try:
                 self._send(200, json.dumps(api_fw8s_bt(), ensure_ascii=False))
-            except Exception as e:
-                import traceback; traceback.print_exc()
-                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
-            return
-        if u.path == '/api/toolbt/summary':
-            # 十工具全庫回測統計（tool_bt；scope=all｜scope=month&month=YYYY-MM）
-            try:
-                q = parse_qs(u.query)
-                self._send(200, json.dumps(api_toolbt_summary(
-                    q.get('scope', ['all'])[0], q.get('month', [None])[0]),
-                    ensure_ascii=False))
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))

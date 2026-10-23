@@ -383,11 +383,16 @@ class HB:
     def predict(self, home_id, away_id, league, round_label,
                 ou_line=None, ou_over=None, ou_under=None,
                 oi_line=None, oi_over=None, oi_under=None,
-                ah_hc=None, o4_line=None, o4_over=None, o4_under=None,
-                x8dir=None, jxdir=None):
+                ah_hc=None, ah_gv=None, o4_line=None, o4_over=None,
+                o4_under=None, x8dir=None, jxdir=None,
+                rank_h=None, rank_a=None):
         """回傳 {'ou':..., 'htft':..., 'relation':..., 'factors':...}
         x8dir：8X 上下盤預測（'up'/'down'/None）——第50項大小因素（2026-10-20）
-        jxdir：新精選上下盤預測（'up'/'down'/None）——第51項大小因素（2026-10-20）"""
+        jxdir：新精選上下盤預測（'up'/'down'/None）——第51項大小因素（2026-10-20）
+        ah_gv／rank_h／rank_a（2026-10-22）：俾挖掘規則用嘅讓球方＋排名
+        2026-10-22 大細重建：逐聯賽挖掘規則（兩期≥82.5%）做主篩選——
+        命中先出預測，冇命中＝觀望（唔場場預測）；51 項分析降為詳情參考。
+        舊票數共識唔再產生 lean/pick（實戰 50.9%＝擲毫，用戶 10-22 指示重建）。"""
         L = self.lg.get(league)
         lg_n = L['n'] if L else 0
         # 聯賽基準（樣本細向全庫混合）
@@ -480,18 +485,58 @@ class HB:
         if ou_line is not None:
             po, pu, pp = poisson_ou_probs(lam, ou_line)   # 僅顯示用分佈
             cons = (items_out or {})
-            lean = cons.get('lean')
             votes = cons.get('votes') or {'大': 0, '細': 0}
-            pick = cons.get('pick')
+            # 2026-10-22 重建：逐聯賣挖掘規則做主篩選（兩期≥82.5%）
+            rule_hits = []
+            try:
+                import hb_ou_rules
+                sline = None
+                if ah_hc is not None:
+                    sline = (ah_hc if ah_gv == 'home'
+                             else (-ah_hc if ah_gv == 'away' else 0.0))
+                Lg = self.lg.get(league) or {}
+                F = hb_ou_rules.feats(
+                    line=ou_line, init_line=oi_line,
+                    over=ou_over, under=ou_under, init_over=oi_over,
+                    pre4h_line=o4_line,
+                    lg_avg_total=Lg.get('avg_total'),
+                    # 2026-10-22：要用 n_h/n_a 判斷球隊有冇樣本——
+                    # 新隊 gf=None→(0+0)=0 會誤觸 havg=lo（礦工用 nan→唔出條件）
+                    h_avg_total=(((H.get('gf_h') or 0) + (H.get('ga_h') or 0))
+                                 if H.get('n_h') else None),
+                    a_avg_total=(((A2.get('gf_a') or 0) + (A2.get('ga_a') or 0))
+                                 if A2.get('n_a') else None),
+                    h_ga=H.get('ga_h'), a_ga=A2.get('ga_a'),
+                    sline=sline, rank_h=rank_h, rank_a=rank_a)
+                rule_hits = hb_ou_rules.eval_rules(league, F)
+            except Exception:
+                import traceback
+                traceback.print_exc()
+            rp = hb_ou_rules.best_pick(rule_hits) if rule_hits else None
+            if rp:
+                side, rule = rp
+                lean = side
+                pick = {'side': side,
+                        'best': round(
+                            min(rule.get('train_hit') or 0,
+                                rule.get('test_hit') or 0) * 100, 1),
+                        'votes': len(rule_hits),
+                        'title': '精選：%s｜規則 %s（兩期≥82.5%%）'
+                                 % (side, rule.get('label') or
+                                    '＋'.join(rule.get('conds') or []))}
+            else:
+                lean = None      # 觀望＝常態（用戶規格：唔場場預測）
+                pick = None
             out_ou['over_r'] = None
             out_ou['under_r'] = None
             out_ou['push_r'] = round(pp * 100, 1)
-            out_ou['lean'] = lean           # None = 觀望（共識唔夠強）
+            out_ou['lean'] = lean           # None = 觀望（冇規則命中）
             out_ou['votes'] = votes
             out_ou['n_voted'] = cons.get('n_voted', 0)
             out_ou['wsum'] = cons.get('wsum')
             out_ou['best_rates'] = cons.get('best_rates')
             out_ou['strongest'] = cons.get('strongest')
+            out_ou['rule_hits'] = rule_hits   # 2026-10-22：命中嘅挖掘規則
             if pick:
                 out_ou['pick'] = pick
             if items_out:

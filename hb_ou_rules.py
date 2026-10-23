@@ -1,187 +1,162 @@
 # -*- coding: utf-8 -*-
-"""好波大小「同聯賽規律」判定（2026-10-17 用戶：不同聯賽/杯賽不同方法，
-目標 82.5% 命中率）。
+"""好波大細規則引擎（2026-10-22 用戶規格重建）：
+逐聯賽獨立篩選——用歷史庫所有相關欄位（大小線各數值／初終盤變動／
+臨場變動／大小球水位／聯賽場均／主客隊場均總入球／主客防守／讓球
+方向／排名差）挖掘組合條件；訓練期 ≤2024 ＋ 驗證期 2025+ 兩邊
+命中率都 ≥82.5% 先收錄（n：訓練≥10 驗證≥5）。唔場場預測——規則
+命中先出聲，觀望係常態。
 
-規則來源：礦工 v3（_mine_v3_all.json，10-10 全庫雙重驗證，71 聯賽）。
-本模組兩個職責：
- 1. 特征工程（z6/mv5/pzone/rateline/dzone/depth/atoms）——同礦工 v3 完全一致
-    （條件字串例如「尾線=2.25」「尾細水=0.85-0.95」）。
- 2. check_match(conn, mid)：對一場（未開賽都得）計 atoms 一次，逐條測該聯賽
-    規則（conds 全部命中先算中），回傳最強一條 (side, rate, rule)。
-
-規則檔 haobao_ou_rules.json 由 _verify_ou_rules.py 用當前 DB 獨立重驗後生成
-（雙池 82.5% 閘：同聯賽全年份池＋全庫池，方向一致，n_lg≥3）。
+本模組係『單一真相來源』：hb_mine.py（礦工）同 haobao_engine.predict
+（運行時）都用呢度嘅特徵構建同規則評估，邏輯上不可能漂移。
 """
 import json
 import os
-import sqlite3
+import time
 
-BASE = os.path.dirname(os.path.abspath(__file__))
-RULES_JSON = os.path.join(BASE, 'haobao_ou_rules.json')
+WS = os.path.dirname(os.path.abspath(__file__))
+RULES_PATH = os.path.join(WS, 'haobao_ou_rules.json')
 
-ROW_SQL = (
-    "SELECT m.id, m.kickoff, c.req_name,"
-    " m.home_score + m.away_score,"
-    " oc.total_line, oc.over_odds, oc.under_odds,"
-    " oi.total_line, oi.over_odds, oi.under_odds,"
-    " o4.total_line, o4.over_odds, o4.under_odds,"
-    " ah.handicap, ah.home_odds, ah.away_odds, ah.giver,"
-    " ahi.handicap, ahi.home_odds"
-    " FROM matches m"
-    " JOIN seasons s ON s.id=m.season_id"
-    " JOIN competitions c ON c.titan_id=s.titan_id"
-    " JOIN odds_ou oc ON oc.match_id=m.id AND oc.label='closing' AND oc.company_id=12"
-    " LEFT JOIN odds_ou oi ON oi.match_id=m.id AND oi.label='initial' AND oi.company_id=12"
-    " LEFT JOIN odds_ou o4 ON o4.match_id=m.id AND o4.label='pre_4h' AND o4.company_id=12"
-    " LEFT JOIN odds_asian ah ON ah.match_id=m.id AND ah.label='closing' AND ah.company_id=12"
-    " LEFT JOIN odds_asian ahi ON ahi.match_id=m.id AND ahi.label='initial' AND ah.company_id=12"
-    " WHERE m.id = ?"
-)
-# 注意：上面 ahi 行尾條件寫 ah.company_id 係礦工原裝（歷史遺留），
-# 為 100% 一致 runtime 照抄——佢只影響 initial asian 的 join 條件寬鬆度。
+THRESH = 0.825          # 用戶規格：兩期都 ≥82.5%
+TRAIN_MAX = '2024-12-31'
+MIN_TRAIN_N = 10
+MIN_TEST_N = 5
+
+_rules = None
+_rules_ts = 0
 
 
-def z6(x):
-    if x is None:
-        return None
-    if x < 0.75:
-        return '<0.75'
-    if x < 0.85:
-        return '0.75-0.85'
-    if x < 0.95:
-        return '0.85-0.95'
-    if x < 1.05:
-        return '0.95-1.05'
-    if x < 1.15:
-        return '1.05-1.15'
-    return '>=1.15'
-
-
-def mv5(a, b):
-    if a is None or b is None:
-        return None
-    d = b - a
-    if d > 0.375:
-        return '大升'
-    if d > 0.125:
-        return '升'
-    if d >= -0.125:
-        return '平'
-    if d >= -0.375:
-        return '降'
-    return '大降'
-
-
-def pzone(p):
-    if p < 0.42:
-        return '<42%'
-    if p < 0.46:
-        return '42-46%'
-    if p < 0.50:
-        return '46-50%'
-    if p < 0.54:
-        return '50-54%'
-    if p < 0.58:
-        return '54-58%'
-    return '>=58%'
-
-
-def rateline(r):
-    if r < 0.90:
-        return '<90%'
-    if r < 0.93:
-        return '90-93%'
-    if r < 0.95:
-        return '93-95%'
-    if r < 0.97:
-        return '95-97%'
-    return '>=97%'
-
-
-def dzone(d):
-    if d <= -0.30:
-        return '<=-0.30'
-    if d <= -0.15:
-        return '-0.30~-0.15'
-    if d <= 0.0:
-        return '-0.15~0'
-    if d <= 0.15:
-        return '0~0.15'
-    if d <= 0.30:
-        return '0.15~0.30'
-    return '>=0.30'
-
-
-def depth(x):
-    if x < 0.25:
-        return '平手'
-    if x < 0.75:
-        return '淺0.25-0.75'
-    if x < 1.25:
-        return '中0.75-1.25'
-    if x < 1.75:
-        return '深1.25-1.75'
-    return '超深>=1.75'
-
-
-def atoms(r):
-    (_id, ko, lg, total, cl, co, cu, il, io_, iu, f4l, f4o, f4u,
-     ahl, aho, aaw, agv, ahil, ahio) = r
-    A = set()
-    if cl is not None:
-        A.add('尾線=%.2f' % (round(cl * 4) / 4))
-    if il is not None:
-        A.add('初線=%.2f' % (round(il * 4) / 4))
-    m = mv5(il, cl)
-    if m:
-        A.add('線變=' + m)
-    for k, v in (('尾水', z6(co)), ('初水', z6(io_)), ('尾細水', z6(cu)),
-                 ('細初水', z6(iu)), ('水變', mv5(io_, co)),
-                 ('細水變', mv5(iu, cu)), ('臨線變', mv5(f4l, cl)),
-                 ('臨水變', mv5(f4o, co)), ('臨細水變', mv5(f4u, cu))):
-        if v:
-            A.add('%s=%s' % (k, v))
-    if co is not None and cu is not None and co > 0 and cu > 0:
-        qo, qu = 1.0 / co, 1.0 / cu
-        A.add('隱大率=' + pzone(qo / (qo + qu)))
-        A.add('返還=' + rateline(1.0 / (qo + qu)))
-        A.add('水差=' + dzone(co - cu))
-    if ahl is not None and agv in ('home', 'away'):
-        sgn = ahl if agv == 'home' else -ahl
-        A.add('亞向=' + ('主讓' if sgn > 0.05 else ('客讓' if sgn < -0.05 else '平手')))
-        A.add('亞深=' + depth(abs(sgn)))
-        if aho is not None:
-            A.add('亞主水=' + z6(aho))
-        if ahil is not None:
-            isgn = ahil if agv == 'home' else -ahil
-            m2 = mv5(isgn, sgn)
-            if m2:
-                A.add('亞線變=' + m2)
-    return A
-
-
-def load_rules():
+def load_rules(force=False):
+    global _rules, _rules_ts
+    if not force and _rules and time.time() - _rules_ts < 300:
+        return _rules
     try:
-        with open(RULES_JSON, encoding='utf-8') as f:
-            return json.load(f)
-    except (OSError, ValueError):
+        with open(RULES_PATH, encoding='utf-8') as f:
+            d = json.load(f)
+        # 2026-10-22 修正：檔案結構係 {'meta':…, 'leagues': {lg: [rules]}}——
+        # 本函數回傳 leagues 字典（eval_rules 直接用 .get(league)）
+        _rules = d.get('leagues') if isinstance(d, dict) else {}
+        if not isinstance(_rules, dict):
+            _rules = {}
+    except Exception:
+        _rules = {}
+    _rules_ts = time.time()
+    return _rules
+
+
+def load_meta():
+    try:
+        with open(RULES_PATH, encoding='utf-8') as f:
+            return json.load(f).get('meta') or {}
+    except Exception:
         return {}
 
 
-def check_match(conn, mid):
-    """該場有冇中聯賽規律。回傳 (side, rate, rule) 或 None。"""
-    r = conn.execute(ROW_SQL, (mid,)).fetchone()
-    if not r:
+# ---------- 特徵構建（礦工／運行時共用） ----------
+def feats(line=None, init_line=None, over=None, under=None,
+          init_over=None, pre4h_line=None,
+          lg_avg_total=None,
+          h_avg_total=None, a_avg_total=None,
+          h_ga=None, a_ga=None,
+          sline=None, rank_h=None, rank_a=None):
+    """由原始欄位值構建原子條件集合（set of 'key=value'）。
+    line/init_line/pre4h_line＝大小線；over/under＝尾盤大小水；
+    init_over＝初盤大球水；sline＝帶符號讓球（主隊角度）；
+    rank_h/rank_a＝總排名（細數字＝名次高）。任何欄位缺 → 對應條件不出現。"""
+    F = set()
+    if line is not None:
+        F.add('line=%.2f' % (round(line * 2) / 2))
+        if init_line is not None:
+            mv = round(line * 2) / 2 - round(init_line * 2) / 2
+            if mv <= -0.5:
+                F.add('move=dn1')
+            elif mv == -0.25:
+                F.add('move=dn05')
+            elif mv == 0:
+                F.add('move=flat')
+            elif mv == 0.25:
+                F.add('move=up05')
+            elif mv >= 0.5:
+                F.add('move=up1')
+        if pre4h_line is not None:
+            lm = round(pre4h_line * 2) / 2 - round(line * 2) / 2
+            if lm >= 0.25:
+                F.add('late=dn')
+            elif lm <= -0.25:
+                F.add('late=up')
+    if over is not None:
+        if over < 0.85:
+            F.add('cow=lo')
+        elif over <= 0.98:
+            F.add('cow=mid')
+        else:
+            F.add('cow=hi')
+    if under is not None:
+        if under < 0.85:
+            F.add('cuw=lo')
+        elif under <= 0.98:
+            F.add('cuw=mid')
+        else:
+            F.add('cuw=hi')
+    if init_over is not None:
+        if init_over < 0.85:
+            F.add('ioc=lo')
+        elif init_over <= 0.98:
+            F.add('ioc=mid')
+        else:
+            F.add('ioc=hi')
+    if lg_avg_total is not None:
+        if lg_avg_total < 2.6:
+            F.add('lg=lo')
+        elif lg_avg_total >= 2.9:
+            F.add('lg=hi')
+    if h_avg_total is not None:
+        if h_avg_total >= 3.0:
+            F.add('havg=hi')
+        elif h_avg_total <= 2.3:
+            F.add('havg=lo')
+    if a_avg_total is not None:
+        if a_avg_total >= 3.0:
+            F.add('aavg=hi')
+        elif a_avg_total <= 2.3:
+            F.add('aavg=lo')
+    if h_ga is not None and h_ga <= 1.0:
+        F.add('hga=lo')
+    if a_ga is not None and a_ga <= 1.0:
+        F.add('aga=lo')
+    if sline is not None:
+        if sline >= 1.0:
+            F.add('sline=hd')
+        elif sline <= -1.0:
+            F.add('sline=ad')
+        elif abs(sline) < 0.25:
+            F.add('sline=eq')
+    if rank_h is not None and rank_a is not None:
+        if rank_h + 5 <= rank_a:
+            F.add('rankd=h5')
+        elif rank_a + 5 <= rank_h:
+            F.add('rankd=a5')
+    return F
+
+
+def eval_rules(league, F):
+    """評一場：回傳命中規則列表 [{side, conds, all_hit, all_n, label}]。
+    冇規則庫／冇命中 → []。"""
+    out = []
+    for r in load_rules().get(league) or []:
+        conds = set(r['conds'])
+        if conds and conds <= F:
+            out.append(r)
+    return out
+
+
+def best_pick(hits):
+    """多規則命中：揀兩期最低命中率最高嗰條（穩健），回傳
+    (side, rule) 或 None。"""
+    if not hits:
         return None
-    rules = load_rules().get(r[2])
-    if not rules:
-        return None
-    A = atoms(r)
-    best = None
-    for rule in rules:
-        conds = rule.get('conds') or []
-        if conds and all(c in A for c in conds):
-            rate = min(rule.get('rate_lg') or 0, rule.get('rate_all') or 0)
-            if best is None or rate > best[1]:
-                best = (rule['side'], rate, rule)
-    return best
+    def key(r):
+        tr = r.get('train_hit') or 0
+        te = r.get('test_hit') or 0
+        return (min(tr, te), r.get('all_n') or 0)
+    r = max(hits, key=key)
+    return r['side'], r
