@@ -3650,8 +3650,11 @@ def _hist_hit(tbl):
     已結算結果計（5 分鐘快取）。tbl ∈ featured/featured_z/v1_featured/
     v1_featured_z。"""
     now = time.time()
-    if now - _HIST_HIT_CACHE['ts'] < 300:
-        return _HIST_HIT_CACHE['data'].get(tbl) or {'n': 0, 'hit': None}
+    # 2026-10-24 修正：舊制快取命中但呢張表未計過 → 照舊返回空（每頁第一張
+    # 卡先計一張表，其他表 5 分鐘內全部食零——V1/V2 交替開就中招）。
+    # 而家：快取只在『呢張表已計過』先生效，否則即場補計。
+    if now - _HIST_HIT_CACHE['ts'] < 300             and tbl in _HIST_HIT_CACHE['data']:
+        return _HIST_HIT_CACHE['data'][tbl]
     conn = db()
     try:
         n, w, l = conn.execute(
