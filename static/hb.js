@@ -85,15 +85,15 @@
           '🎯 呢個時段暫時冇高機會場次（規則命中先出現——唔場場預測，觀望係常態）。</div>';
         return;
       }
-      var h = '<div style="font-size:15px;font-weight:800;color:var(--gold2);margin:4px 0">🎯 高機會精選（' +
+      var h = '<div class="hbmega-title" style="color:var(--gold2);margin:6px 0">🎯 高機會精選（' +
         picks.length + ' 場｜規則兩期≥82.5%，獨立≥88% 或 ≥2 條共識）</div>';
       picks.forEach(function (p) {
         var sideCls = p.side === '大' ? 'big' : 'small';
-        h += '<div class="mrow" data-mid="' + p.id + '" style="border-color:#6b5510">' +
+        h += '<div class="mrow hbmega-row" data-mid="' + p.id + '">' +
           '<span class="ko">' + esc((p.kickoff || '').slice(5, 16)) + '</span>' +
           '<span class="lg">' + esc(p.league) + '</span>' +
           '<b class="tm">' + esc(p.home) + ' <span style="color:var(--dim)">vs</span> ' + esc(p.away) + '</b>' +
-          '<span class="lean ' + sideCls + '" style="font-weight:900">精選' + esc(p.side) +
+          '<span class="lean mega ' + sideCls + '">精選' + esc(p.side) +
           ' ' + (p.rate != null ? p.rate + '%' : '') + '</span>' +
           '<span class="rmeta">線 ' + (p.line != null ? p.line : '—') +
           (p.rule ? '｜' + esc(p.rule) : '') + '</span></div>';
@@ -229,7 +229,7 @@
     }
     if (ou.pick) {
       lean.textContent = '⭐精選' + ou.pick.side + ' ' + ou.pick.best + '%';
-      lean.className = 'lean ' + (ou.pick.side === '大' ? 'big' : 'small');
+      lean.className = 'lean mega ' + (ou.pick.side === '大' ? 'big' : 'small');
       lean.style.borderColor = 'var(--gold)';
       return;
     }
