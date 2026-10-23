@@ -5972,10 +5972,122 @@ def api_hb_list(hours=72):
     return {'matches': out, 'now': now}
 
 
+def _hb_requalify():
+    """2026-10-23 好波重檢（用戶規格：已入選變唔合資格要 100% 勾走＋
+    推送）：對 hb_pick_log 未結算嘅規則記錄逐場重評——規則唔再命中／
+    降做參考訊號（單條<88% 冇共識）／方向改變 → DELETE 該列＋推 ❌。
+    同其他 12 表工具嘅 _eval_all 語義一致：只動未結算列，歷史結算保留。
+    喺 api_hb_picks 每次載入前行一次（行數少，毫秒級）。"""
+    conn = db()
+    removed = 0
+    try:
+        rows = conn.execute(
+            'SELECT k.match_id, k.league, k.side, k.rule FROM hb_pick_log k '
+            'JOIN matches m ON m.id=k.match_id '
+            'WHERE k.result IS NULL AND k.rule IS NOT NULL '
+            'AND m.home_score IS NULL').fetchall()
+        if not rows:
+            return 0
+        try:
+            import hb_ou_rules
+        except Exception:
+            return 0
+        ctx = _hb_context()
+        for mid, lg, side, rule_label in rows:
+            try:
+                r = conn.execute(
+                    'SELECT oc.total_line, oc.over_odds, oc.under_odds, '
+                    'oi.total_line, oi.over_odds, oi.under_odds, '
+                    'o4.total_line, oa.handicap, oa.giver, '
+                    'ph.home_total_rank, ph.away_total_rank, '
+                    'm.home_id, m.away_id FROM matches m '
+                    'LEFT JOIN odds_ou oc ON oc.match_id=m.id '
+                    "AND oc.company_id=12 AND oc.label='closing' "
+                    'LEFT JOIN odds_ou oi ON oi.match_id=m.id '
+                    "AND oi.company_id=12 AND oi.label='initial' "
+                    'LEFT JOIN odds_ou o4 ON o4.match_id=m.id '
+                    "AND o4.company_id=12 AND o4.label='pre_4h' "
+                    'LEFT JOIN odds_asian oa ON oa.match_id=m.id '
+                    "AND oa.company_id=12 AND oa.label='closing' "
+                    'LEFT JOIN match_prestandings ph ON ph.match_id=m.id '
+                    'WHERE m.id=?', (mid,)).fetchone()
+                if not r or r[0] is None:
+                    still = False
+                    best_side = None
+                else:
+                    (ln, oo, uo, iln, ioo, iuo, l4, ahc, agv, phr, par,
+                     hid, aid) = r
+                    H = ctx.teams.get(hid) or {}
+                    A = ctx.teams.get(aid) or {}
+                    sline = (ahc if agv == 'home' else
+                             (-ahc if agv == 'away' else 0.0)) \
+                        if ahc is not None else None
+                    F = hb_ou_rules.feats(
+                        line=ln, init_line=iln, over=oo, under=uo,
+                        init_over=ioo, pre4h_line=l4,
+                        lg_avg_total=(ctx.lg.get(lg) or {}).get('avg_total'),
+                        h_avg_total=(((H.get('gf_h') or 0)
+                                      + (H.get('ga_h') or 0))
+                                     if H.get('n_h') else None),
+                        a_avg_total=(((A.get('gf_a') or 0)
+                                      + (A.get('ga_a') or 0))
+                                     if A.get('n_a') else None),
+                        h_ga=H.get('ga_h'), a_ga=A.get('ga_a'),
+                        sline=sline, rank_h=phr, rank_a=par)
+                    rp = hb_ou_rules.best_pick(
+                        hb_ou_rules.eval_rules(lg, F))
+                    still = bool(rp and rp[2])   # is_pick 先算合資格
+                    best_side = rp[0] if rp else None
+                if still and best_side == side:
+                    continue
+                # 唔合資格／降級／轉向 → 剔走
+                conn.execute(
+                    'DELETE FROM hb_pick_log WHERE match_id=? AND result '
+                    'IS NULL', (mid,))
+                removed += 1
+                # ❌ 推送（12 小時去重）
+                info = conn.execute(
+                    'SELECT ht.name_tc, at.name_tc, m.kickoff FROM matches m '
+                    'JOIN teams ht ON ht.titan_id=m.home_id '
+                    'JOIN teams at ON at.titan_id=m.away_id WHERE m.id=?',
+                    (mid,)).fetchone()
+                dup = conn.execute(
+                    "SELECT 1 FROM alerts WHERE tool='好波' AND kind="
+                    "'removed' AND match_id=? AND ts >= datetime('now',"
+                    "'localtime','-12 hours') LIMIT 1", (mid,)).fetchone()
+                if info and not dup:
+                    conn.execute('''CREATE TABLE IF NOT EXISTS alerts(
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        tool TEXT, kind TEXT, match_id INTEGER, league TEXT,
+                        home TEXT, away TEXT, kickoff TEXT, msg TEXT,
+                        ts TEXT, read INTEGER DEFAULT 0)''')
+                    reason = '轉向' if (still and best_side != side) else \
+                        '規則唔再命中'
+                    conn.execute(
+                        'INSERT INTO alerts(tool,kind,match_id,league,'
+                        'home,away,kickoff,msg,ts) VALUES(?,?,?,?,?,?,?,?,?)',
+                        ('好波', 'removed', mid, lg, info[0], info[1],
+                         info[2],
+                         '❌ 已剔走（唔合資格）好波：%s vs %s（%s｜%s｜%s）'
+                         % (info[0], info[1], lg, (info[2] or '')[5:16],
+                            reason),
+                         time.strftime('%Y-%m-%d %H:%M:%S')))
+            except Exception:
+                traceback.print_exc(limit=2)
+        if removed:
+            conn.commit()
+            print('[hb-requalify] 剔走 %d 場唔合資格嘅好波入選' % removed,
+                  flush=True)
+    finally:
+        conn.close()
+    return removed
+
+
 def api_hb_picks():
     """2026-10-22 好波優化：『高機會精選』專區——淨係顯示規則命中（≥82.5%
     兩期驗證＋88% 獨立或共識門檻）嘅未開賽場次（hb_pick_log 待定列）。
     用戶規格：淨係篩選高命中率高機會，唔場場預測。"""
+    _hb_requalify()   # 2026-10-23：重算剔走唔合資格＋❌推送
     conn = db()
     try:
         rows = conn.execute(
