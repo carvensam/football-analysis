@@ -21,6 +21,7 @@
 H2H 嘅「同主客場」＝對上一次對賽嘅主客方向同今場一致（pv_same）。
 N≤5 照顯示實數（用戶 2026-09-26 指示）。
 """
+import os
 import threading
 import time
 
@@ -854,6 +855,70 @@ def _cell_dir(c):
     return None
 
 
+# 2026-10-24 用戶『D 方案』规则化：對賽主客場對換＋盤差守門員。
+# 發掘實證（2025→而家 3 萬場＋全庫 6.6 萬場）：今主隊比上次『主客對換』
+# 對賽讓淺咗（delta ≤ -0.25）嘅場次，V2 合格入面只有 63.6%（n=22）vs
+# 升盤 70.8%（n=506）——降盤場次降格做『唔出訊號』（正選＋Z 一齊），
+# 被剔場次由統一重檢機制剔走＋入剔走頁。冇對換對賽（delta=None）唔影響。
+SWAP_DELTA_MIN = -0.25   # 低過呢個盤差 → 守門員踢出（可調教）
+
+_SWAP_CACHE = {'pairs': None, 'odds': {}}
+
+
+def _swap_delta(conn, t):
+    """今賽盤口 − 最近一次『主客對換』對賽盤口（都換算今主隊視角，
+    正＝今主隊讓得深）。冇對換對賽／冇盤 → None。懒快取 pair 字典。"""
+    from bisect import bisect_right
+    if _SWAP_CACHE['pairs'] is None:
+        pairs = {}
+        for mid, ko, h, a in conn.execute(
+                'SELECT id, kickoff, home_id, away_id FROM matches '
+                'WHERE home_score IS NOT NULL'):
+            pairs.setdefault((h, a), []).append((ko, mid))
+        for k in pairs:
+            pairs[k].sort()
+        _SWAP_CACHE['pairs'] = pairs
+    mid = t.get('id')
+    if mid is None:
+        return None
+    cur = conn.execute(
+        "SELECT handicap, giver FROM odds_asian WHERE match_id=? "
+        "AND label='closing' AND company_id=12", (mid,)).fetchone()
+    if not cur or cur[0] is None:
+        return None
+    hc, gv = cur
+    ko = t.get('kickoff')
+    h = t.get('home_id')
+    a = t.get('away_id')
+    if not (ko and h and a):
+        return None
+    lst = _SWAP_CACHE['pairs'].get((a, h))
+    if not lst:
+        return None
+    i = bisect_right(lst, (ko, 1 << 62)) - 1
+    if i < 0:
+        return None
+    _, pmid = lst[i]
+    pk = _SWAP_CACHE['odds'].get(pmid)
+    if pk is None:
+        pk = conn.execute(
+            "SELECT handicap, giver FROM odds_asian WHERE match_id=? "
+            "AND label='closing' AND company_id=12", (pmid,)).fetchone()
+        _SWAP_CACHE['odds'][pmid] = pk
+    if not pk or pk[0] is None:
+        return None
+
+    def _sgn(xhc, xgv, fh):
+        if xgv == ('home' if fh else 'away'):
+            return xhc
+        if xgv == ('away' if fh else 'home'):
+            return -xhc
+        return 0.0
+    now = _sgn(hc, gv, True)
+    prev = _sgn(pk[0], pk[1], False)
+    return round((now - prev) * 4) / 4
+
+
 def featured_letters(conn, t):
     """16 字頭 A–P。每字頭 X：
     ① 2X（時點組@開賽前4小時 格X）有方向；② 13X（H2H純盤口@尾盤 格X）同方向；
@@ -919,6 +984,29 @@ def featured_letters(conn, t):
         letters.append(entry)
     passed = [e for e in letters if e['pass']]
     states = None
+    _sd = None
+    # 2026-10-24 回測終極發現（2822 場，746 合格）：
+    #   I–P 主導 98.9%（n=180）｜A–H 主導 51.9%（n=566）≈ 擲毫（負期望）
+    # → V2_REQUIRE_IP：A–H 單獨合格（冇同主隊字頭）降格唔出訊號。
+    # 用戶命中率優先哲學（對齊好波 ≥82.5% 規格）——預設開；
+    # 想翻返大量場次：環境變數 V2_REQUIRE_IP=0。
+    _require_ip = os.environ.get('V2_REQUIRE_IP', '1') != '0'
+    if passed and _require_ip and not any(
+            e.get('mix') == '同主隊' for e in passed):
+        return {'direction': None, 'letters': letters, 'states': states,
+                'passed_letters': [e['letter'] for e in passed],
+                'ah_only': True}
+    # 盤差守門員：降盤（對上次主客對換對賽讓淺）→ 降格唔出訊號
+    if passed:
+        try:
+            _sd = _swap_delta(conn, t)
+            if _sd is not None and _sd <= SWAP_DELTA_MIN:
+                return {'direction': None, 'letters': letters,
+                        'states': states,
+                        'passed_letters': [e['letter'] for e in passed],
+                        'swap_delta': _sd, 'swap_blocked': True}
+        except Exception:
+            _sd = None
     if ctx['m16'] is not None or t.get('prev_h2h'):
         i31 = item31(ctx)
         states = {'conv': (i31.get('conv') or {}).get('state'),
@@ -933,7 +1021,8 @@ def featured_letters(conn, t):
     driver = passed_ip[0] if passed_ip else passed[0]
     return {'direction': driver['dir'], 'letters': letters, 'states': states,
             'passed_letters': [e['letter'] for e in passed],
-            'driver': driver['letter'], 'driver_mix': driver['mix']}
+            'driver': driver['letter'], 'driver_mix': driver['mix'],
+            'swap_delta': _sd}
 
 
 def _mode_d50_lines(df, m, T_close):

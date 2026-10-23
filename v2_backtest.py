@@ -60,8 +60,57 @@ def main():
     print('[v2-bt] 窗口 %s → %s：%d 場' % (frm, to, total), flush=True)
     screen_engine.load_pool(conn)
     v2_engine.load_v2_pool(conn)
+    # 2026-10-24 用戶 D 方案：對賽主客對換＋盤差（升盤≥+0.25 / 降盤≤-0.25）
+    from bisect import bisect_right
+    def _sgn(hc, gv, fh=True):
+        if hc is None:
+            return None
+        if gv == ('home' if fh else 'away'):
+            return hc
+        if gv == ('away' if fh else 'home'):
+            return -hc
+        return 0.0
+    _allm = conn.execute(
+        'SELECT id, kickoff, home_id, away_id FROM matches '
+        'WHERE home_score IS NOT NULL').fetchall()
+    _pair = {}
+    for _mid, _ko, _h, _a in _allm:
+        _pair.setdefault((_h, _a), []).append((_ko, _mid))
+    for _k in _pair:
+        _pair[_k].sort()
+    _odds = {}
+    for _mid, _hc, _gv in conn.execute(
+            "SELECT match_id, handicap, giver FROM odds_asian "
+            "WHERE label='closing' AND company_id=12 AND handicap IS NOT NULL"):
+        _odds[_mid] = (_hc, _gv)
+    _ko_of = {}
+    for _mid, _ko, _h, _a in _allm:
+        _ko_of[_mid] = (_ko, _h, _a)
+
+    def _delta(mid):
+        if mid not in _odds or mid not in _ko_of:
+            return None
+        ko, h, a = _ko_of[mid]
+        hc, gv = _odds[mid]
+        lst = _pair.get((a, h))
+        if not lst:
+            return None
+        i = bisect_right(lst, (ko, 1 << 62)) - 1
+        if i < 0:
+            return None
+        _, pmid = lst[i]
+        if pmid not in _odds:
+            return None
+        phc, pgv = _odds[pmid]
+        d = _sgn(hc, gv, True)
+        p = _sgn(phc, pgv, False)
+        if d is None or p is None:
+            return None
+        return d - p
     agg = {k: {'n': 0, 'w': 0, 'l': 0, 'p': 0}
-           for k in ('old', 'new', 'new_ip', 'new_ah')}
+           for k in ('old', 'new', 'new_ip', 'new_ah',
+                     'new_rise', 'new_fall', 'old_rise', 'old_fall',
+                     'new_ip_rise', 'new_ip_fall')}
     t0 = time.time()
     done = 0
     for mid, hs, aws in rows:
@@ -86,6 +135,15 @@ def main():
             buckets = [('old', old_dir)]
             buckets.append(('new', new_dir))
             buckets.append(('new_ip' if ip else 'new_ah', new_dir))
+            _d = _delta(mid)
+            if _d is not None:
+                _dg = 'rise' if _d >= 0.25 else ('fall' if _d <= -0.25
+                                                 else None)
+                if _dg:
+                    buckets.append(('new_' + _dg, new_dir))
+                    buckets.append(('old_' + _dg, old_dir))
+                    if ip:
+                        buckets.append(('new_ip_' + _dg, new_dir))
             for k, d in buckets:
                 r = settle(d, hc, gv, hs, aws)
                 if r is None:
