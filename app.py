@@ -3642,11 +3642,38 @@ def _recompute_featured_after_update():
         traceback.print_exc()
 
 
+_HIST_HIT_CACHE = {'ts': 0.0, 'data': {}}
+
+
+def _hist_hit(tbl):
+    """2026-10-24：合資格場次顯示『呢類訊號嘅歷史命中率』——用對應表嘅
+    已結算結果計（5 分鐘快取）。tbl ∈ featured/featured_z/v1_featured/
+    v1_featured_z。"""
+    now = time.time()
+    if now - _HIST_HIT_CACHE['ts'] < 300:
+        return _HIST_HIT_CACHE['data'].get(tbl) or {'n': 0, 'hit': None}
+    conn = db()
+    try:
+        n, w, l = conn.execute(
+            "SELECT COUNT(*), SUM(result='W'), SUM(result='L') FROM %s "
+            "WHERE result IN ('W','L')" % tbl).fetchone()
+        d = {'n': n or 0,
+             'hit': round(w / (w + l) * 100, 1) if (w or 0) + (l or 0) else None}
+    finally:
+        conn.close()
+    _HIST_HIT_CACHE['data'][tbl] = d
+    _HIST_HIT_CACHE['ts'] = now
+    return d
+
+
+
 def _build_featured_rec(row, tbl, now):
     """精選單場卡片：基本資料＋自動結算（未結算嘅以入選方向計 贏/輸/走）＋brief＋check＋letters"""
     (mid, d, res, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv, ho, ao,
      letters, hr_, ar_) = row
+    _hh = _hist_hit(tbl)
     rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
+           'hist_hit': _hh['hit'], 'hist_n': _hh['n'],
            'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
            'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
            'odds': f'主{ho}/客{ao}' if ho is not None else None,

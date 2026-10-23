@@ -925,9 +925,15 @@ def featured_letters(conn, t):
                   'raw': (i31.get('raw') or {}).get('state')}
     if not passed:
         return {'direction': None, 'letters': letters, 'states': states}
-    # 方向＝第一個合格字頭嘅方向（A→P 順序）
-    return {'direction': passed[0]['dir'], 'letters': letters, 'states': states,
-            'passed_letters': [e['letter'] for e in passed]}
+    # 2026-10-24 優化（用戶批准）：I–P（同主隊版）優先——數據實證同主隊
+    # 字頭 94-100% 遠高於混合版 A–H 60-68%（9-10 月 221+54 場實戰）。
+    # 方向驅動次序：合格嘅同主隊字頭（I→P）→ 先至混合版（A→H）。
+    # driver/driver_mix 記低邊個字頭主導，頁面用佢顯示歷史命中率類別。
+    passed_ip = [e for e in passed if e.get('mix') == '同主隊']
+    driver = passed_ip[0] if passed_ip else passed[0]
+    return {'direction': driver['dir'], 'letters': letters, 'states': states,
+            'passed_letters': [e['letter'] for e in passed],
+            'driver': driver['letter'], 'driver_mix': driver['mix']}
 
 
 def _mode_d50_lines(df, m, T_close):

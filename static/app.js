@@ -2895,6 +2895,7 @@ function _v1Card(p, z, tag){
       <span class="f-teams">${esc(rn(p.home, p.rank_home))} vs ${esc(rn(p.away, p.rank_away))}</span>
       ${p.score ? `<span class="f-score">${esc(p.score)}${p.ht ? `<span style="color:var(--dim);font-weight:400">（半${esc(p.ht)}）</span>` : ''}${p.first_goal ? ` <span style="color:var(--gold2)">首球${p.first_goal === 'home' ? '主' : '客'}</span>` : ''}</span>` : (p.ht ? `<span class="f-score" style="color:var(--dim)">半${esc(p.ht)}</span>` : '')}
       <span class="tag ${p.direction}">${dName}</span>
+      ${p.hist_hit != null ? `<span class="tag" style="border-color:${p.hist_hit >= 80 ? '#2c5c3c' : '#6b5510'};color:${p.hist_hit >= 80 ? '#7ee2a0' : 'var(--gold2)'}" title="呢類訊號（${z ? '同主隊Z' : '正選'}字頭合格）嘅歷史實戰命中率">歷史 ${p.hist_hit}%<small style="opacity:.75">（n=${p.hist_n}）</small></span>` : ''}
       ${lts.length ? `<span class="tag lt">字頭 ${lts.join(' ')}</span>` : ''}
       <span>${res}</span>
       <span class="f-btns">
