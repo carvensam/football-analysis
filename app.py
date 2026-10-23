@@ -1107,6 +1107,7 @@ def _requalify_sweep(mids, cap=300):
     summary = {'checked': 0, 'kept': 0, 'removed': 0, 'added': 0}
     if not mids:
         return summary
+    _scanlog('⚡ 即時更新後資格重檢：%d 場' % len(list(mids)))
     for mid in list(mids)[:cap]:
         for _attempt in range(3):
             try:
@@ -1134,6 +1135,9 @@ def _requalify_sweep(mids, cap=300):
                 break
     if len(mids) > cap:
         summary['capped'] = len(mids) - cap
+    if summary['removed'] or summary['added']:
+        _scanlog('⚡ 重檢搞掂：剔走 %d・新增 %d' % (summary['removed'],
+                                               summary['added']))
     return summary
 
 
@@ -1273,6 +1277,7 @@ def _unified_scan_job(mids=None, full=False, light=False):
               added=0, removed=0, kept=0, full=full)
     _UNIFIED_RUNNING[0] = True
     _NOTIFY_N[0] = 0   # 本輪推送計數（>15 批量標讀防洗版）
+    _scanlog('🔎 統一篩描開始（%s）' % ('全量' if full else '增量'))
     tools = (_feat_scan, _v1_scan, _v3_scan,
              _fw_grid_scan['7'], _fw_grid_scan['8'],
              _fw_grid_scan['12'], _fw_grid_scan['8s'])
@@ -1292,6 +1297,7 @@ def _unified_scan_job(mids=None, full=False, light=False):
         while (_update_state['running'] or _fbatch_state['running']) \
                 and time.time() - t_wait < 900:
             st['phase'] = '等緊更新工序完成…'
+            _scanlog('⏸ 等緊更新工序完成，篩描排緊隊…')
             _bg_scan_info['newjx']['error'] = (
                 '等緊更新工序完成，掃描排緊隊（等佢搞掂自動開跑）')
             _bg_scan_info['w88']['error'] = (
@@ -1338,6 +1344,7 @@ def _unified_scan_job(mids=None, full=False, light=False):
                         time.sleep(4)
                 if acts is None:
                     continue
+                _scanlog_match(conn, mid, acts)
                 _s = sigs.get(mid)
                 if _s:
                     conn.execute(
@@ -1365,6 +1372,8 @@ def _unified_scan_job(mids=None, full=False, light=False):
                 time.sleep(0.2)   # 讓 GIL 俾 HTTP 線程——全量掃描期間
                 # 其他頁面唔會捱饿（189 場先加 38 秒）
             conn.commit()
+            _scanlog('🧮 篩描完成 %d 場：新增 %d・剔走 %d——而家結算已完場結果…'
+                     % (len(cands), st['added'], st['removed']))
             st['phase'] = '結算已完場結果…'
             try:
                 settled = _settle_finished_tools(conn)
@@ -1411,6 +1420,9 @@ def _unified_scan_job(mids=None, full=False, light=False):
                   '結算 %s' % (len(cands), 'light' if light else 'full',
                              st['added'], st['removed'],
                              st['kept'], settled or '無'), flush=True)
+            _scanlog('✅ 收工：新增 %d・剔走 %d・保留 %d｜結算 %s'
+                     % (st['added'], st['removed'], st['kept'],
+                        settled or '無'))
             if _NOTIFY_N[0] > 15:
                 # 批量入選（重啟後首次全掃常見）：推送保留做歷史記錄，
                 # 但一次過標晒已讀——唔會 100+ 紅點洗版；之後增量輪
@@ -2365,6 +2377,59 @@ _INGEST_WHITELIST = {
 # 經呢度）有「新增」→ 🆕 推送；有「移出」→ ❌ 推送。好波喺 _hb_log_pick
 # 記錄時推送。12 小時內同場同工具同類型唔重複推（防閃爍洗版）。
 _NOTIFY_N = [0]   # 本輪統一掃描產生嘅推送數（消化洪水用）
+
+
+# ============ 2026-10-23 篩選進行中 Log（用戶：加/減場次時要知道做緊乜） ============
+from collections import deque
+_SCAN_LOG = {'seq': 0, 'items': deque(maxlen=300)}
+
+
+def _scanlog(msg):
+    """寫一條篩選進度日誌（記憶體滾動 300 條，面板實時拉取）。
+    只記事件（新增/剔走/階段轉換），『保留』唔逐條記（結尾計數）。"""
+    try:
+        _SCAN_LOG['seq'] += 1
+        _SCAN_LOG['items'].append({
+            'id': _SCAN_LOG['seq'],
+            'ts': time.strftime('%H:%M:%S'),
+            'msg': msg})
+    except Exception:
+        pass
+
+
+def _scanlog_match(conn, mid, acts):
+    """一場嘅動作列表 → 一條人話日誌（🆕綠新增／❌紅剔走）。"""
+    try:
+        news = [a for a in acts if '新增' in a]
+        rems = [a for a in acts if '移出' in a]
+        if not news and not rems:
+            return
+        info = conn.execute(
+            'SELECT ht.name_tc, at.name_tc FROM matches m '
+            'JOIN teams ht ON ht.titan_id=m.home_id '
+            'JOIN teams at ON at.titan_id=m.away_id WHERE m.id=?',
+            (mid,)).fetchone()
+        vs = '%s vs %s' % (info[0], info[1]) if info else '場次%d' % mid
+        parts = []
+        if news:
+            parts.append('🆕新增 ' + '、'.join(news))
+        if rems:
+            parts.append('❌剔走 ' + '、'.join(rems))
+        _scanlog('%s｜%s' % (vs, '｜'.join(parts)))
+    except Exception:
+        pass
+
+
+def api_scanlog(after=0, limit=60):
+    items = [x for x in _SCAN_LOG['items'] if x['id'] > after]
+    if limit and len(items) > limit:
+        items = items[-limit:]
+    st = _unified_scan
+    return {'running': bool(st['running']),
+            'progress': {'done': st['done'], 'total': st['total'],
+                         'added': st['added'], 'removed': st['removed'],
+                         'phase': st['phase']},
+            'items': items}
 
 
 _ACT_TOOL = (('W', '精選W'), ('V2Z', '精選V2Z'), ('V2', '精選V2'),
@@ -6089,6 +6154,7 @@ def _hb_requalify():
                 traceback.print_exc(limit=2)
         if removed:
             conn.commit()
+            _scanlog('⚽ 好波重檢：剔走 %d 場唔合資格' % removed)
             print('[hb-requalify] 剔走 %d 場唔合資格嘅好波入選' % removed,
                   flush=True)
     finally:
@@ -8633,6 +8699,20 @@ class Handler(BaseHTTPRequestHandler):
                                            ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/scanlog':
+            # 2026-10-23 篩選進行中 Log（用戶：加/減場次要見到做緊乜）
+            # ?after=N 增量拉取（面板每 3 秒 poll 一次）
+            try:
+                q = parse_qs(u.query)
+                after = int(q.get('after', ['0'])[0] or 0)
+                lim = int(q.get('limit', ['60'])[0] or 60)
+                self._send(200, json.dumps(
+                    api_scanlog(max(0, after), max(1, min(lim, 120))),
+                    ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'error': str(e)},
+                                           ensure_ascii=False))
             return
         if u.path == '/api/alerts':
             # 2026-10-22 工具入選/剔走推送：?unread=1 淨未讀；?limit=N

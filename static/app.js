@@ -476,6 +476,49 @@ $('#alertBell').onclick = async () => {
 };
 $('#alertClose').onclick = () => { $('#alertPanel').style.display = 'none'; };
 /* ---------- 2026-10-22 工具入選/剔走推送（📣） ---------- */
+/* ---------- 2026-10-23 篩選進行中 Log（用戶：加/減場次要知道做緊乜） ----------
+   每 3.5 秒增量拉 /api/scanlog；掃描行緊或有新行就彈出面板（自動滾到底）。
+   🆕=新增（綠） ❌=剔走（紅） ⏸=等待 🧮=結算 ✅=完成。*/
+const ScanLog = {
+  after: 0, lines: [], hideUntilIdle: false, timer: null,
+  start(){
+    if (this.timer) return;
+    this.timer = setInterval(() => this.tick(), 3500);
+  },
+  async tick(){
+    let d;
+    try { d = await jget('/api/scanlog?after=' + this.after + '&limit=80'); }
+    catch (e) { return; }
+    if (!d) return;
+    for (const x of (d.items || [])){
+      this.after = Math.max(this.after, x.id);
+      this.lines.push(x);
+    }
+    if (this.lines.length > 120) this.lines = this.lines.slice(-120);
+    const box = $('#scanlogBox');
+    if (!box) return;
+    const show = (d.running || (d.items && d.items.length)) && !this.hideUntilIdle;
+    if (show){
+      box.style.display = 'block';
+      const p = d.progress || {};
+      $('#scanlogTitle').textContent = d.running
+        ? `🛠 篩選進行中 ${p.done || 0}/${p.total || 0}（🆕${p.added || 0} ❌${p.removed || 0}）${p.phase ? '｜' + p.phase : ''}`
+        : '🛠 篩選記錄（最近）';
+      const el = $('#scanlogLines');
+      el.innerHTML = this.lines.map(x => {
+        const cls = x.msg.indexOf('❌') >= 0 || x.msg.indexOf('剔走') >= 0
+          ? 'color:#ff9d9d' : (x.msg.indexOf('🆕') >= 0 || x.msg.indexOf('新增') >= 0)
+            ? 'color:#8fe3a8' : 'color:#9db4cc';
+        return `<div style="${cls}"><span style="color:#5a6b80">${esc(x.ts)}</span> ${esc(x.msg)}</div>`;
+      }).join('');
+      el.scrollTop = el.scrollHeight;
+    } else if (!d.running && this.hideUntilIdle){
+      box.style.display = 'none';
+      this.hideUntilIdle = false;
+    }
+  }
+};
+
 let _toolBellSeen = 0;   // 已知最新 id——輪詢見到新 id 就 badge＋瀏覽器通知
 let _toolBellNotifOn = false;
 async function checkToolBell(first){
@@ -524,6 +567,7 @@ $('#toolBell').onclick = async () => {
   }
 };
 $('#toolBellClose').onclick = () => { $('#toolBellPanel').style.display = 'none'; };
+$('#scanlogClose').onclick = () => { ScanLog.hideUntilIdle = true; $('#scanlogBox').style.display = 'none'; };
 $('#toolBellNotif').onchange = async function(){
   _toolBellNotifOn = this.checked;
   if (this.checked && window.Notification && Notification.permission === 'default'){
@@ -3044,6 +3088,7 @@ async function shareText(txt){
     setInterval(refreshPicksMap, 120000);
     setInterval(() => { refreshUpdInfo(); refreshConnChip(); refreshWorkLog(); checkToolBell(); }, 30000);
     checkToolBell(true);
+    ScanLog.start();
     // 主頁／事後回查／過往紀錄自動刷新（完場狀態、新場次、新結算會自己更新，2026-09-29）
     setInterval(() => {
       if (document.hidden) return;
