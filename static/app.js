@@ -236,11 +236,8 @@ function goto(pg){
   ({featw: () => loadFeaturedW(),
     check: () => loadCheckPage(),
     fw7: () => loadFwGrid('7'),
-    fwck7: () => loadFwCheck('7'),
     fw8: () => loadFwGrid('8'),
-    fwck8: () => loadFwCheck('8'),
     fw12: () => loadFwGrid('12'),
-    fwck12: () => loadFwCheck('12'),
     review: () => loadReview(),
     htft: () => loadHtft(),
     picks: () => loadPicksPage(),
@@ -889,11 +886,27 @@ function _mrow(m, playedSec){
   const sc = m.score ? `<span class="sc">${esc(m.score)}</span>${_htftTag(m)}` : (m.ht ? _htftTag(m) : '');
   const pr = (!playedSec && lgPred[m.id]) ? _lgPredBadge(m, lgPred[m.id]) : '';
   const oup = (!playedSec && m.oupred) ? _oupredBadge(m, m.oupred) : '';
+  /* 2026-10-23 主頁介面重設（用戶：唔知咩打咩）——兩行結構＋每區有標籤：
+     第一行＝賽事本身（時間/聯賽/對賽/狀態比分/盤/按鈕）；
+     第二行＝訊號帶，每組數據前面有『入選/預測/提示/同聯賽』小標籤。 */
+  const srcs = _srcChips(m);
+  const preds = pr + oup;
+  const hints = _fwConflictBadge(m) + _pred3Badge(m);
+  const lgr = _lgRateSlot(m.league, ['main','feat_v2','f7','f8','hb']);
+  const sig = (label, inner) => inner
+    ? `<span class="sig-label">${label}</span>${inner}` : '';
+  const signals = [
+    sig('入選', srcs), sig('預測', preds), sig('提示', hints),
+    sig('同聯賽', lgr)].filter(Boolean).join('');
   return `<div class="mrow" data-mid="${m.id}">
-    <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
-    <span class="lg">${esc(m.league)}</span>
-    <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}${pr}${oup}${_fwConflictBadge(m)}${_pred3Badge(m)}${_lgRateSlot(m.league, ['main','feat_v2','f7','f8','hb'])}${_srcChips(m)}</span>
-    ${_stateTag(m.state)}${sc}${line}${oud}${od}${at}${rfb}${BetSlip.btn(m)}${Twin.btn(m)}</div>`;
+    <div class="m-main">
+      <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
+      <span class="lg">${esc(m.league)}</span>
+      <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}</span>
+      ${_stateTag(m.state)}${sc}${line}${oud}${od}${at}${rfb}${BetSlip.btn(m)}${Twin.btn(m)}
+    </div>
+    ${signals ? `<div class="m-signals">${signals}</div>` : ''}
+  </div>`;
 }
 /* ---------- 精選8 vs 精選8s 方向衝突（2026-10-15 用戶：主頁展示兩套規則打架嘅場次） ----------
  * 精選8 = fw_grid '8'（12 格入面 7/19/21/25 必填＋共識方向）；精選8s = fw8s 引擎
@@ -1249,10 +1262,8 @@ async function pollFbatch(){
    同頁 tab 重跑 loader；iframe 工具（好波/8s/88W/新精選）reload 內頁。 */
 function refreshCurrentTool(){
   try {
-    const loaders = {featw: () => loadFeaturedW(), check: () => loadCheckPage(),
-      fw7: () => loadFwGrid('7'), fwck7: () => loadFwCheck('7'),
-      fw8: () => loadFwGrid('8'), fwck8: () => loadFwCheck('8'),
-      fw12: () => loadFwGrid('12'), fwck12: () => loadFwCheck('12'),
+    const loaders = {featw: () => loadFeaturedW(),
+      check: () => loadCheckPage(),
       review: () => loadReview(), htft: () => loadHtft(),
       picks: () => loadPicksPage(), featlog: () => loadFeatlog(),
       oupred: () => loadOupred(), feathourly: () => loadFeatHourly(),
