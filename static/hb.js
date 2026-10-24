@@ -369,7 +369,7 @@
           '<td>' + (r ? (r.push_r * 100).toFixed(1) + '%' : '—') + '</td>' +
           '<td class="' + cls + '">' + (it.side || '') + '</td></tr>';
       }).join('');
-      h += '<details style="margin:8px 0"><summary class="sec-h" style="cursor:pointer">🔬 51 項分析（' + votedN + ' 項表態｜' + cons + '）</summary>' +
+      h += '<details style="margin:8px 0"><summary class="sec-h" style="cursor:pointer">🔬 ' + ou.items.length + ' 項分析（' + votedN + ' 項表態｜' + cons + '）</summary>' +
         '<table class="t"><thead><tr><th>#</th><th>項目</th><th>n</th><th>大</th><th>細</th><th>走</th><th>表態</th></tr></thead><tbody>' +
         rows + '</tbody></table></details>';
     }

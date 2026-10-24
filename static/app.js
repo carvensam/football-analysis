@@ -951,7 +951,9 @@ function _mrow(m, playedSec){
   const srcs = _srcChips(m);
   const preds = pr + oup;
   const hints = _fwConflictBadge(m) + _pred3Badge(m);
-  const lgr = _lgRateSlot(m.league, ['main','feat_v2','f7','f8','hb']);
+  // 2026-10-25 用戶規格：主頁刪走好波非篩選結果殘留——「波」chip 係好波
+  // 聯賽命中率，唔係入選/預測結果，唔再喺主頁展示
+  const lgr = _lgRateSlot(m.league, ['main','feat_v2','f7','f8']);
   const sig = (label, inner) => inner
     ? `<span class="sig-label">${label}</span>${inner}` : '';
   const signals = [

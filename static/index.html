@@ -13,6 +13,12 @@
   --gold:#d4af37; --gold2:#f5d76e; --accent:#5b8def;
 }
 *{box-sizing:border-box;margin:0;padding:0}
+/* 2026-10-25 用戶規格：所有字加大 100%。zoom 一次性全局縮放（文字/按鈕/間距
+ * 等比例），想再調淨係改呢個數。手機熒幕窄，2.0 會令每行極少字——帽到 1.8
+ * 平衡可讀性同資訊密度；要足 2.0 的話將下面 1.8 改成 2 就得。 */
+html{zoom:2}
+@media (max-width:600px){html{zoom:1.8}}
+img,table{max-width:100%}
 html,body{height:100%}
 body{
   background:var(--bg); color:var(--tx);

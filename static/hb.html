@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>好波</title>
 <style>
+/* 2026-10-25 全局字體加大（同主 App 一致；手機帽 1.8） */
+html{zoom:2}
+@media (max-width:600px){html{zoom:1.8}}
+img,table{max-width:100%}
 :root{
   --bg:#0d1117; --bg2:#161d27; --card:#1a2230; --line:#2b3648;
   --tx:#e8e2d5; --dim:#8b94a3; --up:#3fb96c; --down:#e05c5c;
@@ -137,7 +141,7 @@ table.rel th{background:var(--bg2);color:var(--gold2)}
   <button class="btn gold" id="btnReload">⟳ 重新整理</button>
 </header>
 <main id="main">
-  <div class="note">大小球＋半全場預測｜數據：易胜博(12BET) 尾盤為準｜撳場次展開預測<br><b style="color:var(--gold2)">2026-10-22 大細重建＋23 優化</b>：逐聯賽獨立挖掘篩選（歷史庫全部欄位——大小線各數值／初終盤變動／臨場變動／大小水位／聯賽場均／主客隊場均總入球／攻防／讓球方向／排名差），訓練期≤2024＋驗證期2025+ 兩邊 ≥82.5% 先收錄。<b>出「精選」要再過門檻：單條獨立 ≥88%，或 ≥2 條同向規則共識</b>；82.5-88% 單條只作『參考訊號』唔出精選。<b>唔場場預測——觀望係常態</b>；規則 live 表現腐化（n≥6 且 &lt;70%）自動停用。頂部「🎯 高機會精選」專區淨顯示有精選嘅場次。運行時全庫回測 88.4%（398 中 352）。51 項分析保留做參考詳情，唔再主導預測。</div>
+  <div class="note">大小球＋半全場預測｜數據：易胜博(12BET) 尾盤為準｜撳場次展開預測<br><b style="color:var(--gold2)">2026-10-22 大細重建</b>：逐聯賽獨立挖掘篩選（歷史庫全部欄位——大小線各數值／初終盤變動／臨場變動／大小水位／聯賽場均／主客隊場均總入球／攻防／讓球方向／排名差），訓練期≤2024＋驗證期2025+ 兩邊 ≥82.5% 先收錄。<b>出「精選」要再過門檻：單條獨立 ≥88%，或 ≥2 條同向規則共識</b>；82.5-88% 單條只作『參考訊號』唔出精選。<b>唔場場預測——觀望係常態</b>；規則 live 表現腐化（n≥6 且 &lt;70%）自動停用。頂部「🎯 高機會精選」專區淨顯示有精選嘅場次。運行時全庫回測 88.4%（398 中 352）。51 項分析保留做參考詳情，唔再主導預測。</div>
   <div id="hbPicks" style="margin:8px 0"></div>
   <div id="list"><div class="note">載入中…</div></div>
 </main>
