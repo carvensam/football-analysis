@@ -764,6 +764,48 @@ _LINE_MOVE_W = 0.15   # 水位變動門檻
 _last_reval = {}
 
 
+# 2026-10-25 有限並發重檢池：line-move watcher 舊制每場開一條線程（一批
+# 40 場＝40 條 full eval 同時搶 RAM/數據池，部機即刻窒息，掃描亦被拖慢）；
+# after_odds_update 都係每場一 thread。而家共用細池排隊：本機 2 線、雲端 1。
+_REVAL_POOL = None
+
+
+def _reval_pool():
+    global _REVAL_POOL
+    if _REVAL_POOL is None:
+        import concurrent.futures as _cf
+        _REVAL_POOL = _cf.ThreadPoolExecutor(
+            max_workers=1 if DISABLE_UPDATE else 2,
+            thread_name_prefix='reval')
+    return _REVAL_POOL
+
+
+def _reval_submit(mid, tag='line-move'):
+    """排隊做單場資格重檢（600s/場節流由調用处負責）。"""
+    def _job():
+        for _att in range(3):
+            try:
+                conn = db()
+                try:
+                    acts = _pick_revalidate(conn, mid)
+                    conn.commit()
+                finally:
+                    conn.close()
+                if acts:
+                    print('[%s] 場次%s 轉盤→重算：%s'
+                          % (tag, mid, ','.join(acts)), flush=True)
+                return
+            except sqlite3.OperationalError:
+                time.sleep(4)
+            except Exception:
+                traceback.print_exc(limit=2)
+                return
+    try:
+        _reval_pool().submit(_job)
+    except RuntimeError:
+        pass
+
+
 def _closing_now(conn, mid):
     return conn.execute(
         "SELECT handicap, giver, home_odds, away_odds FROM odds_asian "
@@ -1324,26 +1366,7 @@ def after_odds_update(mid, before):
         if time.time() - _last_reval.get(mid, 0) < 600:
             return
         _last_reval[mid] = time.time()
-
-        def _bg():
-            for _attempt in range(4):
-                try:
-                    c2 = db()
-                    try:
-                        acts = _pick_revalidate(c2, mid)
-                        c2.commit()
-                    finally:
-                        c2.close()
-                    if acts:
-                        print('[reval] 場次%s 尾盤變動→重檢精選資格：%s'
-                              % (mid, ','.join(acts)), flush=True)
-                    return
-                except sqlite3.OperationalError:
-                    time.sleep(5)
-                except Exception:
-                    traceback.print_exc(limit=3)
-                    return
-        threading.Thread(target=_bg, daemon=True).start()
+        _reval_submit(mid, tag='reval')   # 2026-10-25：共用細池，唔再每場一線程
     except Exception:
         pass
 
@@ -1583,6 +1606,10 @@ def _unified_scan_job(mids=None, full=False, light=False):
             for d in tools:
                 d['total'] = len(cands)
             cnt = {}
+            # 2026-10-25 提速＋解鎖：逐場獨立 commit（舊制 20 場先 commit
+            # 一次＝寫鎖一拎 2 分鐘，掃描期間成個 APP 冇反應——單場 commit
+            # 將寫鎖縮到秒級，爬蟲/頁面請求穿插到行）。注意 _eval_all 每場
+            # 自己寫 UPSERT，COMMIT 頻率係吞吐同鎖競爭嘅平衡點。
             for i, mid in enumerate(cands):
                 st['phase'] = '統一掃描 %d/%d' % (i + 1, len(cands))
                 acts = None
@@ -1596,6 +1623,7 @@ def _unified_scan_job(mids=None, full=False, light=False):
                 if acts is None:
                     continue
                 _scanlog_match(conn, mid, acts)
+                conn.commit()   # 逐場 commit：寫鎖秒級釋放（舊制 20 場一鎖）
                 _s = sigs.get(mid)
                 if _s:
                     conn.execute(
@@ -1604,6 +1632,7 @@ def _unified_scan_job(mids=None, full=False, light=False):
                         'sig=excluded.sig, ts=excluded.ts',
                         (mid, _s,
                          time.strftime('%Y-%m-%d %H:%M:%S')))
+                    conn.commit()
                 for a in acts:
                     if '移出' in a:
                         st['removed'] += 1
@@ -1617,11 +1646,9 @@ def _unified_scan_job(mids=None, full=False, light=False):
                 st['done'] = i + 1
                 for d in tools:
                     d['done'] = i + 1
-                if (i + 1) % 20 == 0:
-                    conn.commit()
-                _pin_pools()   # 爬蟲可能喺上一場之間 invalidate 咗池
-                time.sleep(0.2)   # 讓 GIL 俾 HTTP 線程——全量掃描期間
-                # 其他頁面唔會捱饿（189 場先加 38 秒）
+                if (i + 1) % 10 == 0:
+                    _pin_pools()   # 爬蟲可能喺上一批之間 invalidate 咗池
+                time.sleep(0.1)   # 讓 GIL 俾 HTTP 線程
             conn.commit()
             _scanlog('🧮 篩描完成 %d 場：新增 %d・剔走 %d——而家結算已完場結果…'
                      % (len(cands), st['added'], st['removed']))
@@ -9338,26 +9365,7 @@ def _line_move_watch_loop():
                 if time.time() - _last_reval.get(mid, 0) < 600:
                     continue
                 _last_reval[mid] = time.time()
-
-                def _bg(mid=mid):
-                    for _att in range(3):
-                        try:
-                            conn = db()
-                            try:
-                                acts = _pick_revalidate(conn, mid)
-                                conn.commit()
-                            finally:
-                                conn.close()
-                            if acts:
-                                print('[line-move] 場次%s 轉盤→重算：%s'
-                                      % (mid, ','.join(acts)), flush=True)
-                            return
-                        except sqlite3.OperationalError:
-                            time.sleep(4)
-                        except Exception:
-                            traceback.print_exc(limit=2)
-                            return
-                threading.Thread(target=_bg, daemon=True).start()
+                _reval_submit(mid)   # 2026-10-25：共用 2 線池排隊（舊制每場一 thread）
         except Exception:
             pass
 
