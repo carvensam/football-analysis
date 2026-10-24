@@ -782,14 +782,15 @@ def combo_v3(conn, t, sel):
 
 # ---------- 精選 W ----------
 
-def featured_w(conn, t):
+def featured_w(conn, t, ctx=None):
     """精選W：1A、1I、19同主客、19+互換、31、35 全部同方向≥50%。
     每項展示 盤口%＋同水位區%。合格後展示方向＋淺深分析（30項：最多/最平均盤）。
     回傳 {'pass', 'direction', 'conds', 'gap30', 'lookback', 'any5', 'any4',
     'any_lb'}；不適用／唔合格照樣回傳 details。
     lookback＝同初盤&尾盤樣本四個口徑（每口徑 綜合oc＋12段水位區域）；
-    any_lb＝Any5／Any4 首個組合（相同情況＝該組合條件AND）嘅四口子回查。"""
-    ctx = build_context(conn, t)
+    any_lb＝Any5／Any4 首個組合（相同情況＝該組合條件AND）嘅四口子回查。
+    ctx（2026-10-25）：可傳共用 v3.build_context（統一評估共享，慳重複建構）。"""
+    ctx = ctx if ctx is not None else build_context(conn, t)
     df = ctx['df']
     T1, _p1, _n1, base1, base1_sw = ctx['tp']['1']
     if base1 is None or base1_sw is None or ctx['T_close'] is None:

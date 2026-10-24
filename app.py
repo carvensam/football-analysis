@@ -781,8 +781,18 @@ def _reval_pool():
 
 
 def _reval_submit(mid, tag='line-move'):
-    """排隊做單場資格重檢（600s/場節流由調用处負責）。"""
+    """排隊做單場資格重檢（600s/場節流由調用处負責）。
+    2026-10-25 加埋好波：OU 線轉都屬「盤口轉/賠率轉」——12 工具重檢完順手
+    重算好波（api_hb_predict 自帶賠率 signature 快取＋淨係規則命中先記低，
+    唔會污染 hb_pick_log；本機先做，雲端保持開頁先算嘅需求制，防 512MB 壓力）。"""
     def _job():
+        # 統一掃描行緊就讓路（同 after_odds_update 一貫邏輯）：掃描本身會重評
+        # 變動場次，watcher 同佢鬥雙份 full eval 只會互相拖慢（實測掃描由
+        # 11s/場跌返 15s/場）。等掃描完（上限 30 分鐘）先補做。
+        _waited = 0.0
+        while _UNIFIED_RUNNING[0] and _waited < 1800:
+            time.sleep(10)
+            _waited += 10
         for _att in range(3):
             try:
                 conn = db()
@@ -794,6 +804,19 @@ def _reval_submit(mid, tag='line-move'):
                 if acts:
                     print('[%s] 場次%s 轉盤→重算：%s'
                           % (tag, mid, ','.join(acts)), flush=True)
+                if not DISABLE_UPDATE:
+                    try:
+                        conn = db()
+                        try:
+                            has_ou = conn.execute(
+                                "SELECT 1 FROM odds_ou WHERE match_id=? "
+                                "AND label='closing' LIMIT 1", (mid,)).fetchone()
+                        finally:
+                            conn.close()
+                        if has_ou:
+                            api_hb_predict(mid)   # 快取命中＝微秒；miss 先計
+                    except Exception:
+                        pass
                 return
             except sqlite3.OperationalError:
                 time.sleep(4)
@@ -836,8 +859,12 @@ class _EvalCtx:
     fw8s_report / features——全部系統共用。舊邏輯每個系統各自掃描：
     V1、V2 各算一次 featured_letters（426ms/場）；精選8、格8s、8s引擎
     各算一次 grid_report('8')（743ms/場）；而家每樣至多計一次。
-    統一掃描 / 即時更新重檢 / 各引擎 scan 行緊同一套評估，結果必然一致。"""
-    __slots__ = ('conn', 'mid', '_t', '_letters', '_fw', '_grids')
+    統一掃描 / 即時更新重檢 / 各引擎 scan 行緊同一套評估，結果必然一致。
+    2026-10-25 加速：v3/v2 build_context 每場記憶化共享——grid('7'/'8'/'12')
+    ＋featured_w＋fw8s_report 各自舊制自建 context（v3 每個約 0.8s），一場
+    慳 3-4 秒。"""
+    __slots__ = ('conn', 'mid', '_t', '_letters', '_fw', '_grids',
+                 '_v3ctx', '_v2ctx')
 
     def __init__(self, conn, mid):
         self.conn = conn
@@ -846,6 +873,20 @@ class _EvalCtx:
         self._letters = None
         self._fw = None
         self._grids = {}
+        self._v3ctx = None
+        self._v2ctx = None
+
+    def v3ctx(self):
+        if self._v3ctx is None:
+            import v3_engine
+            self._v3ctx = v3_engine.build_context(self.conn, self.target())
+        return self._v3ctx
+
+    def v2ctx(self):
+        if self._v2ctx is None:
+            import v2_engine
+            self._v2ctx = v2_engine.build_context(self.conn, self.target())
+        return self._v2ctx
 
     def target(self):
         if self._t is None:
@@ -856,27 +897,31 @@ class _EvalCtx:
         if self._letters is None:
             import v2_engine
             self._letters = (v2_engine.featured_letters(
-                self.conn, self.target()) or {})
+                self.conn, self.target(), ctx=self.v2ctx()) or {})
         return self._letters
 
     def fw(self):
         if self._fw is None:
             import v3_engine
-            self._fw = v3_engine.featured_w(self.conn, self.target())
+            self._fw = v3_engine.featured_w(self.conn, self.target(),
+                                            ctx=self.v3ctx())
         return self._fw
 
     def grid(self, g):
         if g not in self._grids:
             import fw_grid_engine
             self._grids[g] = fw_grid_engine.grid_report(
-                self.conn, self.target(), g)
+                self.conn, self.target(), g, ctx=self.v3ctx())
         return self._grids[g]
 
     def rep8s(self):
-        """8s 報告——grid 型重用已計嘅 grid('8')（冇計過先即場計）。"""
+        """8s 報告——grid 型重用已計嘅 grid('8')（冇計過先即場計）。
+        ctx 一定經 v3ctx() 攞（可能由此觸發首建），之後 grid('7'/'8'/'12')
+        先有用埋同一份。"""
         import fw8s_engine
         return fw8s_engine.fw8s_report(
-            self.conn, self.target(), grid8_rep=self._grids.get('8'))
+            self.conn, self.target(), grid8_rep=self._grids.get('8'),
+            ctx=self.v3ctx())
 
 
 def _qdict(conn, sql, args):
@@ -11331,8 +11376,12 @@ if __name__ == '__main__':
         threading.Thread(target=_feat_hourly_loop, daemon=True).start()
         threading.Thread(target=_result_settle_loop, daemon=True).start()
         threading.Thread(target=_sync_delta_loop, daemon=True).start()
-        threading.Thread(target=_line_move_watch_loop, daemon=True).start()
-
+    # 2026-10-25：line-move watcher 改為兩邊都開——舊制淨本機開，雲端爬蟲
+    # 寫咗新盤冇人重檢（20 秒即時重算喺手機一直冇行過），要靠 20 分鐘
+    # 循環或者本機 sync。雲端 RAM 安全：_pick_revalidate 喺 DISABLE_UPDATE
+    # 自動行 light 模式（05ad3a8 實證 RAM 接近零），共用池 max_workers=1。
+    threading.Thread(target=_line_move_watch_loop, daemon=True).start()
+    if not DISABLE_UPDATE:
         def _removed_backfill_boot():
             time.sleep(150)
             try:

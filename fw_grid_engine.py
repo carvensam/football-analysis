@@ -58,10 +58,12 @@ def _pack(df, m):
     return out
 
 
-def grid_report(conn, t, cells=None):
-    """計算指定格組合嘅方向報告。cells=None→12格；'7'→精選7格。"""
+def grid_report(conn, t, cells=None, ctx=None):
+    """計算指定格組合嘅方向報告。cells=None→12格；'7'→精選7格。
+    ctx（2026-10-25）：可傳入共用嘅 v3.build_context——'7'/'8'/'12' 三個格組合
+    共用先至慳，否則每格組合自建一次（約 0.8s/個）。"""
     want = {'7': GRID7, '8': GRID8}.get(cells, GRID12)
-    ctx = v3.build_context(conn, t)
+    ctx = ctx if ctx is not None else v3.build_context(conn, t)
     df = ctx['df']
     if ctx['T_close'] is None:
         return {'error': '今場缺少尾盤數據'}

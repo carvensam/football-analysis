@@ -919,14 +919,15 @@ def _swap_delta(conn, t):
     return round((now - prev) * 4) / 4
 
 
-def featured_letters(conn, t):
+def featured_letters(conn, t, ctx=None):
     """16 字頭 A–P。每字頭 X：
     ① 2X（時點組@開賽前4小時 格X）有方向；② 13X（H2H純盤口@尾盤 格X）同方向；
     ③ 上次比賽樣本中【同30最多盤口】嘅場次，同方向率>49.99%；
     ④ 同上【同33最接近50%盤】>49.99%。
     ①②兩項各自獨立展示贏盤率，唔夾埋。四項全過＝字頭合格；任一字頭合格＝入選。
-    回傳 {'direction', 'letters', 'states'}"""
-    ctx = build_context(conn, t)
+    回傳 {'direction', 'letters', 'states'}
+    ctx（2026-10-25）：可傳共用 v2.build_context（統一評估共享）。"""
+    ctx = ctx if ctx is not None else build_context(conn, t)
     df = ctx['df']
     if ctx['tp']['2'][3] is None:
         return None
