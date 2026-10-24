@@ -1092,7 +1092,7 @@ function renderHome(){
   _fillLgSlots();
   // 2026-10-13：撳「🎯投注」/「👯搵孖生」（document 委託）時唔好連帶開詳情頁
   $$('#homeList .mrow').forEach(r => r.onclick = ev => {
-    if (ev.target.closest('[data-bet],[data-twin]')) return;
+    if (ev.target.closest('[data-bet],[data-twin],[data-fb],.rfb')) return;
     openDetail(+r.dataset.mid);
   });
   // 每場「⟳」掣：手機直爬模式由手機經原生接口直接抓；否則經伺服器
