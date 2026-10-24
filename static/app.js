@@ -153,8 +153,12 @@ async function refreshConnChip(){
   }
 }
 async function repairConn(){
-  toast('🔧 修復緊：重試連線…');
+  toast('🔧 修復緊：伺服器快取＋工序狀態檢查…');
   _setConnChip('', '⏳ 修復緊…');
+  let rep = null;
+  try { rep = await jpost('/api/repair', {}); } catch (e) {}
+  if (rep && rep.acts && rep.acts.length) toast('🔧 ' + rep.acts.join('｜'));
+  else if (rep && rep.error) toast('🔧 伺服器修復失敗：' + rep.error);
   try {
     const ok = await pollReady();
     await refreshUpdInfo();

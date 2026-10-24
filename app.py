@@ -1858,10 +1858,12 @@ def _drain_scan_queue():
         _scanlog('🚀 執行排隊請求：%s（重剩 %d 個排緊）'
                  % (req['tool'], len(_SCAN_QUEUE)))
         _unified_scan['triggered_by'] = req['tool']
-        threading.Thread(target=_unified_scan_job,
-                         kwargs={'mids': req['mids'], 'full': req['full'],
-                                 'tool': req['tool']},
-                         daemon=True).start()
+        _t = threading.Thread(target=_unified_scan_job,
+                              kwargs={'mids': req['mids'], 'full': req['full'],
+                                      'tool': req['tool']},
+                              daemon=True)
+        _JOB_THREADS['統一掃描'] = _t
+        _t.start()
         return
 
 
@@ -1894,10 +1896,12 @@ def _start_unified_scan(mids=None, full=False, light=None, tool='未知'):
         return {'running': True, 'started': False, 'queued': True}
     _unified_scan['triggered_by'] = tool
     _save_scan_state()
-    threading.Thread(target=_unified_scan_job,
-                     kwargs={'mids': mids, 'full': full, 'light': light,
-                             'tool': tool},
-                     daemon=True).start()
+    _t = threading.Thread(target=_unified_scan_job,
+                          kwargs={'mids': mids, 'full': full, 'light': light,
+                                  'tool': tool},
+                          daemon=True)
+    _JOB_THREADS['統一掃描'] = _t
+    _t.start()
     return {'running': True, 'started': True}
 
 
@@ -2304,7 +2308,9 @@ def do_update(auto=False):
         return {'ok': True, 'skipped': True}
     _update_state.update(running=True, phase='準備中…', error=None,
                          last_result=None)
-    threading.Thread(target=_update_worker, daemon=True).start()
+    _t = threading.Thread(target=_update_worker, daemon=True)
+    _JOB_THREADS['全量更新'] = _t
+    _t.start()
     return {'ok': True, 'started': True}
 
 
@@ -2400,8 +2406,10 @@ def do_update_window(win):
                 'error': '另一個更新進行中，等佢完成先'}
     _win_state.update(running=True, window=win, error=None,
                       phase='準備中…', done=0, total=0)
-    threading.Thread(target=_window_update_worker, daemon=True,
-                     args=(win,)).start()
+    _t = threading.Thread(target=_window_update_worker, daemon=True,
+                          args=(win,))
+    _JOB_THREADS['窗口更新'] = _t
+    _t.start()
     return {'ok': True, 'started': True}
 
 
@@ -2585,8 +2593,10 @@ def do_fetch_batch(hours=0, ids=None):
     _fbatch_state.update(running=True, error=None, phase='準備中…',
                          done=0, total=0, reval=None, ou_ok=0, x2_ok=0,
                          stop=False)
-    threading.Thread(target=_fetch_batch_worker, daemon=True,
-                     args=(hours, ids)).start()
+    _t = threading.Thread(target=_fetch_batch_worker, daemon=True,
+                          args=(hours, ids))
+    _JOB_THREADS['即時更新批量'] = _t
+    _t.start()
     return {'ok': True, 'started': True}
 
 
@@ -3235,6 +3245,54 @@ def backfill_removed_from_alerts():
     finally:
         conn.close()
     return n
+
+
+# 2026-10-25 「🔧 修復」掣根治：工序線程登記表——修復時對 running 狀態做
+# 存活檢查，死咗嘅（線程消失但狀態僵屍=True，例如進程內異常）自動歸零。
+_JOB_THREADS = {}
+
+
+def api_repair():
+    """「🔧 修復」掣嘅伺服器端：清晒顯示/計算快取＋僵屍工序歸零＋數據主機
+    快測。舊制 repairConn 淨係重試連線——數據有問題時撳咗等於冇撳（用戶：
+    「修復掣又係廢」）。回傳做咗嘅動作清單俾前端顯示。"""
+    acts = []
+    try:
+        _bust_tool_caches()
+        acts.append('顯示快取（入選徽章/精選/8s）已清')
+    except Exception:
+        pass
+    try:
+        _v3_item_cache.clear()
+        acts.append('45項分析快取已清')
+    except Exception:
+        pass
+    try:
+        _LG_HIT_CACHE['ts'] = 0.0
+        _LG_HIT_CACHE['data'] = None
+        acts.append('聯賽命中率快取已清')
+    except Exception:
+        pass
+    for name, st in (('即時更新批量', _fbatch_state), ('全量更新', _update_state),
+                     ('窗口更新', _win_state), ('統一掃描', _unified_scan)):
+        try:
+            if st.get('running'):
+                t = _JOB_THREADS.get(name)
+                if t is None or not t.is_alive():
+                    st.update(running=False, phase='', error=None)
+                    acts.append('僵屍工序「%s」已歸零' % name)
+                else:
+                    acts.append('「%s」正常進行中' % name)
+        except Exception:
+            pass
+    try:
+        import crawler as _cr
+        alive = _cr.data_host_probe(timeout=4)   # 修復掣要快——代理抽樣抽中殘代
+        # 理時成個掣等到傻；4 秒封頂，中斷都有 30 秒睇門狗兜
+        acts.append('數據主機：' + ('正常' if alive else '中斷——30 秒自動重試緊'))
+    except Exception:
+        pass
+    return {'ok': True, 'acts': acts}
 
 
 def _bust_tool_caches():
@@ -10501,6 +10559,14 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/repair':
+            # 2026-10-25 「🔧 修復」掣：清快取＋僵屍歸零＋主機快測
+            try:
+                self._send(200, json.dumps(api_repair(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
             return
         if u.path == '/api/crawl/stop':
             try:
