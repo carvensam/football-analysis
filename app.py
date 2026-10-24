@@ -1391,7 +1391,10 @@ def _pick_revalidate(conn, mid):
     同 after_odds_update 都經呢度，重模式會載 300MB 數據池搞到 512MB
     容器 OOM（用戶問『手機係咪一樣得』先發現嘅漏洞）。雲端 light 淨做
     純 SQL 系統；W/V1/V2/格 呢啲由本機 30 分鐘 delta 同步補返。"""
-    return _eval_all(conn, _EvalCtx(conn, mid), light=bool(DISABLE_UPDATE))
+    # 2026-10-25：用戶確認 Render 係 2GB/1C 付費實例——512MB OOM 迴避（05ad3a8）
+    # 已過時：池本來就喺雲端預熱（v3 API 要用），light 慳唔到 RAM。
+    # 兩邊行 full：雲端 W/V1/V2/格資格唔使再等本機 sync。
+    return _eval_all(conn, _EvalCtx(conn, mid), light=False)
 
 
 def after_odds_update(mid, before):
@@ -1819,7 +1822,8 @@ def _unified_loop():
     time.sleep(180)
     while True:
         try:
-            light = bool(DISABLE_UPDATE)
+            # 2026-10-25：2GB/1C 付費版——雲端統一掃描行 full（512MB 限制已過時）
+            light = False
             full = (not light and _unified_scan['passes'] > 0
                     and _unified_scan['passes'] % 18 == 0)
             _unified_scan_job(full=full, light=light, tool='5分鐘定時循環')
@@ -1862,7 +1866,8 @@ def _start_unified_scan(mids=None, full=False, light=None, tool='未知'):
     規格——舊制繁忙時靜默丟棄，用戶以為掃描冇反應），跑完依家嗰輪自動接力，
     每個請求都記低邊個工具觸發，log 全程可見。"""
     if light is None:
-        light = bool(DISABLE_UPDATE)
+        # 2026-10-25：預設 full（付費 2GB 實例）；仍可按需要傳 light=True
+        light = False
     if _unified_scan['running']:
         key = (tool, bool(full), bool(mids))
         if not any((q['tool'], q['full'], q['mids'] is not None) == key
