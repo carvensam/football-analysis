@@ -1166,11 +1166,15 @@ async function winUpdate(win){
    手機直爬模式（雲端伺服器＋Android APP）：由手機經原生接口逐場直爬 titan007；
    伺服器模式（本機）：伺服器端批量（代理池） */
 let fbPoll = null;
-function serverFetchBatch(btn){
+function serverFetchBatch(btn, ids){
   /* 伺服器通道（代理池／chrome 指紋）：雲端 0.5C 都實測 52/52 成功
-   * （2026-10-12）——手機直爬俾 titan007 封 IP 時嘅正式後備 */
+   * （2026-10-12）——手機直爬俾 titan007 封 IP 時嘅正式後備。
+   * ids（2026-10-24）：手機直爬核對完，淨係重抓『同本機唔一致/本機缺失』
+   * 嘅場——咁手機撳掣都真係更新到落庫＋重算，唔再係齋核對空殼。 */
   btn.disabled = true;
-  jpost('/api/fetch-batch', {hours: +($('#hoursSel').value || 0)})
+  const body = {hours: +($('#hoursSel').value || 0)};
+  if (ids && ids.length) body.ids = ids;
+  jpost('/api/fetch-batch', body)
     .then(function(r){
       if (r.error && !r.running) { toast(r.error); btn.disabled = false; return; }
       pollFbatch();
@@ -1262,6 +1266,35 @@ async function phoneBatchAll(btn){
         `📱 手機直爬緊 ${st.done}/${list.length} 場（✓${st.ok} ✗${st.fail} 未開盤${st.noOdds}）…` +
         (window.PhoneCrawl && PhoneCrawl._stop ? '（停止緊，下一場退出）' : '');
     }, m => m.line || null);
+    /* 2026-10-24 用戶規格「更新賠率＋重算資格 一鍵＝更新所有盤口及賠率
+     * 及所有工具重算」：舊制手機直爬淨係核對顯示（本機數據為準，唔寫庫），
+     * 撳完掣雲端賠率同工具資格零變動＝空殼。而家：直爬完→唔一致/本機缺失/
+     * 手機網絡錯嘅場，交俾伺服器代理池重抓落庫（手機數據依然唔直接寫
+     * 庫，遵守 10-02 定調）→ 自動行 12 工具資格重檢＋結算。全部一致先至
+     * 真係「唔使更新」。未開盤嘅場跳過（titan007 都係空頁，白燒配額）。 */
+    if (!r.stopped && r.ok > 0) {
+      const stale = list.filter(m => {
+        const rr = PhoneCrawl.res[m.id];
+        return rr && !rr.noOdds && rr.agree !== true;
+      });
+      if (stale.length) {
+        const agreeN = list.filter(m => {
+          const rr = PhoneCrawl.res[m.id];
+          return rr && rr.agree === true;
+        }).length;
+        $('#updInfo').textContent =
+          `📱 直爬完成：${agreeN} 場一致｜${stale.length} 場唔一致/本機缺失/` +
+          `手機爬唔到——伺服器緊重抓+重算…`;
+        serverFetchBatch(btn, stale.map(m => m.id));
+        return;
+      }
+      $('#updInfo').textContent =
+        `📱 直爬完成：全部 ${r.ok} 場同伺服器一致——賠率已係最新，` +
+        `12 工具資格不變（裝置 ${PhoneCrawl.device}）`;
+      loadHome();
+      refreshCurrentTool();
+      return;
+    }
     let msg = r.stopped
       ? `📱 手機直爬已按要求停止（做到 ${r.done} 場：✓${r.ok} ✗${r.fail}）`
       : `📱 手機直爬完成：更新 ${r.ok}｜失敗 ${r.fail}｜未開盤 ${r.noOdds}——` +
@@ -1297,7 +1330,8 @@ async function pollFbatch(){
   $('#btnOddsNow').disabled = false;
   if (st.error) { toast(st.error); return; }
   if (st.last) {
-    let msg = `⚡ 即時更新完成（${st.last}）：成功 ${st.ok}｜失敗 ${st.fail}`;
+    let msg = `⚡ 即時更新完成（${st.last}）：成功 ${st.ok}｜失敗 ${st.fail}` +
+          `｜大小 ${st.ou_ok || 0}｜歐盤 ${st.x2_ok || 0}`;
     /* 2026-10-22：顯示八系統資格重檢結果——更新後唔合資格嘅場次已即時剔走 */
     const rv = st.reval;
     if (rv && (rv.checked || rv.removed || rv.added)) {
@@ -1308,6 +1342,9 @@ async function pollFbatch(){
     $('#updInfo').textContent = msg;
     loadHome();
     refreshCurrentTool();
+  } else {
+    /* 從未跑完過（或伺服器剛重啟、進行中狀態已流失）——唔好靜默當冇事 */
+    $('#updInfo').textContent = '⚡ 更新進度已流失（伺服器可能重啟過）——請再撳一次';
   }
 }
 /* 2026-10-22：「即時更新全部」／重抓完成後，令當前工具頁有動作——

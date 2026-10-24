@@ -45,6 +45,12 @@ if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
+# engine/ 放尾（2026-10-24）：淨係令 crawl_extra 等 engine-only 模組喺
+# APP 進程 import 得到；擺尾係刻意——crawler 等雙份模組繼續解析倉庫根
+# 正本（ROOT crawler.py 係 crawl16/fleet 共用嘅正本，唔畀 engine 後備搶）。
+_ENGINE_DIR = os.path.join(PARENT_DIR, 'engine')
+if _ENGINE_DIR not in sys.path:
+    sys.path.append(_ENGINE_DIR)
 
 import numpy as np
 import screen_engine
@@ -1063,6 +1069,8 @@ def _eval_all(conn, ctx, light=False):
             elif row and row[0] is None:
                 conn.execute('DELETE FROM v3_featured WHERE match_id=?', (mid,))
                 acts.append('W移出')
+        except sqlite3.OperationalError:
+            raise   # 寫表鎖死：交返 caller 成場重試——唔可以部分表寫咗部分冇
         except Exception:
             traceback.print_exc(limit=3)
         # V1 十六字頭（＋同主隊 Z）——letters 同 V2 共用 ctx 計算
@@ -1136,6 +1144,8 @@ def _eval_all(conn, ctx, light=False):
             elif rowz2 and rowz2[0] is None:
                 conn.execute('DELETE FROM featured_z WHERE match_id=?', (mid,))
                 acts.append('V2Z移出')
+        except sqlite3.OperationalError:
+            raise   # 寫表鎖死：成場重試——部分寫咗部分冇會令 12 表資格不一致
         except Exception:
             traceback.print_exc(limit=3)
         # 格 7／8／12／8s——grid('8') 俾 8s/grid8s/8s紀錄共用
@@ -1167,6 +1177,8 @@ def _eval_all(conn, ctx, light=False):
                         'DELETE FROM fw_grid_featured WHERE grid=? AND match_id=?',
                         (g, mid))
                     acts.append('格%s移出' % g)
+        except sqlite3.OperationalError:
+            raise   # 寫表鎖死：成場重試（10-24 實證：grid INSERT 鎖死被吞→半寫）
         except Exception:
             traceback.print_exc(limit=3)
     # 2026-10-22 擴充（用戶規格：更新盤口後唔合資格嘅未開賽賽事要剔走）：
@@ -1193,6 +1205,8 @@ def _eval_all(conn, ctx, light=False):
                 'DELETE FROM w88_log WHERE match_id=? AND market=? '
                 'AND conds=? AND result IS NULL', (mid, mkt, conds))
             acts.append('88W移出')
+    except sqlite3.OperationalError:
+        raise   # 寫表鎖死：成場重試，保證各表一致
     except Exception:
         traceback.print_exc(limit=3)
     # 新精選
@@ -1209,6 +1223,8 @@ def _eval_all(conn, ctx, light=False):
         elif row and row[0] is None:
             conn.execute('DELETE FROM newjx_log WHERE match_id=?', (mid,))
             acts.append('新精選移出')
+    except sqlite3.OperationalError:
+        raise   # 寫表鎖死：成場重試，保證各表一致
     except Exception:
         traceback.print_exc(limit=3)
     # 8X
@@ -1232,6 +1248,8 @@ def _eval_all(conn, ctx, light=False):
         elif row and row[0] is None:
             conn.execute('DELETE FROM fw8x_log WHERE match_id=?', (mid,))
             acts.append('8X移出')
+    except sqlite3.OperationalError:
+        raise   # 寫表鎖死：成場重試，保證各表一致
     except Exception:
         traceback.print_exc(limit=3)
     # 8s 紀錄表（fw8s_log；rep8s 喺上面格循環已計，唔使重計。light 模式冇
@@ -1259,6 +1277,8 @@ def _eval_all(conn, ctx, light=False):
             elif row and row[0] is None:
                 conn.execute('DELETE FROM fw8s_log WHERE match_id=?', (mid,))
                 acts.append('8s移出')
+        except sqlite3.OperationalError:
+            raise   # 寫表鎖死：成場重試，保證各表一致
         except Exception:
             traceback.print_exc(limit=3)
     # 2026-10-22 用戶規格：入選/剔走即時推送＋清顯示快取（剔走 100% 唔殘留）
@@ -2222,13 +2242,17 @@ def win_status():
 # 同窗口更新分別：呢個係「畫面上列出的場次全部強制重抓最新」，已經有賠率嘅都會刷新；
 # 窗口更新只係補指定時段，唔會重抓已有嘅。
 _fbatch_state = {'running': False, 'phase': '', 'done': 0, 'total': 0,
-                 'ok': 0, 'fail': 0, 'last': None, 'error': None}
+                 'ok': 0, 'fail': 0, 'last': None, 'error': None,
+                 'reval': None, 'ou_ok': 0, 'x2_ok': 0}
 
 
 _FBATCH_PEND = {'hours': None, 'ts': 0.0}
 
 
-def _fetch_batch_worker(hours):
+def _fetch_batch_worker(hours, ids=None):
+    """ids（2026-10-24）：手機直爬核對後，淨重抓『唔一致/本機缺失』嘅場——
+    手機數據照舊唔直接寫庫（用戶 10-02 定調），由伺服器代理池重抓落庫，
+    跟住行同一套資格重檢＋結算。hours 模式照舊＝成個時間窗。"""
     import crawler
     with open(os.path.join(crawler.BASE_DIR, 'config.json'), encoding='utf-8') as f:
         cfg = json.load(f)
@@ -2243,16 +2267,24 @@ def _fetch_batch_worker(hours):
         if not crawler.data_host_probe():
             print('[fbatch] 前置探測未過——照樣開爬（代理輪轉可能有活得）',
                   flush=True)
-        cap = "AND m.kickoff <= datetime('now','+8 hours', ?) " if hours else ""
-        args = (f'+{hours} hours',) if hours else ()
-        todo = conn.execute(
-            'SELECT m.id, m.kickoff FROM matches m '
-            'WHERE m.home_score IS NULL '
-            "AND m.kickoff >= datetime('now','+8 hours') " + cap +
-            'ORDER BY m.kickoff', args).fetchall()
+        if ids:
+            marks = ','.join('?' * len(ids))
+            todo = conn.execute(
+                'SELECT m.id, m.kickoff FROM matches m '
+                'WHERE m.id IN (%s) ORDER BY m.kickoff' % marks,
+                tuple(ids)).fetchall()
+        else:
+            cap = "AND m.kickoff <= datetime('now','+8 hours', ?) " if hours else ""
+            args = (f'+{hours} hours',) if hours else ()
+            todo = conn.execute(
+                'SELECT m.id, m.kickoff FROM matches m '
+                'WHERE m.home_score IS NULL '
+                "AND m.kickoff >= datetime('now','+8 hours') " + cap +
+                'ORDER BY m.kickoff', args).fetchall()
         _fbatch_state.update(total=len(todo), done=0, ok=0, fail=0)
         fetcher = crawler.Fetcher(conn, cfg)
         ok_mids = []
+        changed_mids = []
         fail_streak = 0
         for i, (mid, ko) in enumerate(todo):
             _fbatch_state['phase'] = f'即時更新盤口及賠率 {i + 1}/{len(todo)}'
@@ -2273,6 +2305,24 @@ def _fetch_batch_worker(hours):
                 ok_mids.append(mid)
                 fail_streak = 0
                 after_odds_update(mid, before)   # 2026-10-20 尾盤變動→重檢
+                # 2026-10-24 用戶規格「更新所有盤口」：讓球搞掂→順手重抓
+                # 大小+歐盤（同一 changeDetail 家族頁、同一 Fetcher；失敗
+                # 唔影響讓球結果，唔計入 fail——兩個市場獨立計數顯示）
+                try:
+                    ko_dt = dt.datetime.strptime(ko, '%Y-%m-%d %H:%M')
+                    import crawl_extra
+                    for _mk in ('ou', '1x2'):
+                        try:
+                            if crawl_extra.task_odds_page(
+                                    conn, fetcher, mid, ko_dt, _mk) is True:
+                                _fbatch_state[
+                                    'ou_ok' if _mk == 'ou' else 'x2_ok'] += 1
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+                if _line_changed(before, _closing_now(conn, mid)):
+                    changed_mids.append(mid)
             else:
                 _fbatch_state['fail'] += 1
                 fail_streak += 1
@@ -2298,14 +2348,20 @@ def _fetch_batch_worker(hours):
             print('[fbatch] 熔斷收工：%d 成 / %d 敗（總 %d）——已登記補跑'
                   % (_fbatch_state['ok'], _fbatch_state['fail'], len(todo)),
                   flush=True)
-        # 2026-10-22 用戶規格「更新後要有動作同反應」：成批搞掂→即刻對全部
-        # 更新咗嘅場次做八系統資格重檢（唔合資格剔走／新合資格加入），
-        # 計數擺落狀態俾前端顯示「保留X・移出Y・新增Z」。
+        # 2026-10-22 用戶規格「更新後要有動作同反應」＋2026-10-24 收窄：
+        # 資格重檢淨做「尾盤有重大變動」＋「從未評估過」嘅場——冇變動嘅
+        # 場重評結果都一樣（規則確定性），慳返 sweep 上限名額俾真係要
+        # 重檢嘅場（舊制 ok_mids 全上，48h 窗一爆 300 場 cap 就靜默甩尾）。
         _fbatch_state['phase'] = '重檢各精選系統資格…'
         try:
-            _fbatch_state['reval'] = _requalify_sweep(ok_mids)
-            print('[fbatch] 資格重檢：%s' % _fbatch_state['reval'],
-                  flush=True)
+            sweep_mids = list(changed_mids)
+            for mid in ok_mids:
+                if mid not in changed_mids and _never_evaluated(conn, mid):
+                    sweep_mids.append(mid)
+            _fbatch_state['reval'] = _requalify_sweep(sweep_mids)
+            print('[fbatch] 資格重檢（變盤%d＋新評估%d）：%s'
+                  % (len(changed_mids), len(sweep_mids) - len(changed_mids),
+                     _fbatch_state['reval']), flush=True)
         except Exception:
             traceback.print_exc(limit=3)
             _fbatch_state['reval'] = None
@@ -2323,11 +2379,12 @@ def _fetch_batch_worker(hours):
         _fbatch_state['phase'] = ''
 
 
-def do_fetch_batch(hours=0):
+def do_fetch_batch(hours=0, ids=None):
     """人手撳『⚡ 即時更新全部』：可見場次全部重抓最新盤口賠率（後台線程）。
     2026-10-02 起雲端都用到：titan007 封嘅係 IP 段（屋企＋datacenter），
     代理池嘅公共代理任何來源都行得通——proxy_pool.json 隨映像焗入，
-    Fetcher 自動行代理通道，所以唔再按 DISABLE_UPDATE 拒絕。"""
+    Fetcher 自動行代理通道，所以唔再按 DISABLE_UPDATE 拒絕。
+    ids（2026-10-24）：指定場次清單（手機直爬 mismatch 通道），跳時間窗。"""
     if _fbatch_state['running']:
         return {'ok': False, 'running': True, 'error': '即時更新進行中'}
     if _win_state['running'] or _update_state['running']:
@@ -2336,10 +2393,17 @@ def do_fetch_batch(hours=0):
         return {'ok': False, 'running': True,
                 'error': '統一掃描進行中，等佢完成先（佢會順便重檢資格）'}
     hours = max(0, int(hours or 0))
+    if ids:
+        try:
+            ids = [int(x) for x in ids][:500]
+        except (TypeError, ValueError):
+            ids = None
+        if ids is not None and not ids:
+            ids = None
     _fbatch_state.update(running=True, error=None, phase='準備中…',
-                         done=0, total=0)
+                         done=0, total=0, reval=None, ou_ok=0, x2_ok=0)
     threading.Thread(target=_fetch_batch_worker, daemon=True,
-                     args=(hours,)).start()
+                     args=(hours, ids)).start()
     return {'ok': True, 'started': True}
 
 
@@ -8915,7 +8979,19 @@ def _line_move_watch_loop():
     降返做後備（漏網/排名變化兜底的）。"""
     time.sleep(120)   # 等開機
     import os as _os
-    fpath = _os.path.join(PARENT_DIR, 'engine', '_line_moves.txt')
+    # 2026-10-24 路徑修正：兩邊佈局唔同——本機 app.py 喺 screen_app/（engine
+    # 喺 PARENT_DIR/engine），雲端 app.py 喺 /app（PARENT_DIR=/ ，engine 喺
+    # BASE_DIR/engine）。舊制硬用 PARENT_DIR，雲端會變成讀 /engine/
+    # _line_moves.txt，同 crawler 寫嘅 /app/engine/_line_moves.txt 永遠打唔到
+    # （雲端 20 秒即時重算因此一直冇觸發過）。而家揀存在嗰個 engine/。
+    _eng = None
+    for _cand in (_os.path.join(PARENT_DIR, 'engine'),
+                  _os.path.join(BASE_DIR, 'engine')):
+        if _os.path.isdir(_cand):
+            _eng = _cand
+            break
+    fpath = _os.path.join(_eng or _os.path.join(PARENT_DIR, 'engine'),
+                          '_line_moves.txt')
     while True:
         time.sleep(20)
         try:
@@ -9976,7 +10052,9 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(n) or b'{}')
             try:
                 self._send(200, json.dumps(
-                    do_fetch_batch(int(body.get('hours', 0) or 0)), ensure_ascii=False))
+                    do_fetch_batch(int(body.get('hours', 0) or 0),
+                                   ids=body.get('ids') or None),
+                    ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()

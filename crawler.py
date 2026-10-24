@@ -1184,8 +1184,9 @@ def _save_standing(conn, season_id, st, now):
 # 2026-10-24：盤口變動即時通知（用戶：轉盤後工具要即刻更新，唔係等循環）。
 # 爬蟲（fleet 同 APP 都用 crawl_odds_for_match）一寫入新盤就 append
 # 場次去呢個檔；APP 每 20 秒讀一次即刻重算資格（600s/場節流）。
-LINE_MOVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              '_line_moves.txt')
+# 注意：正本位於倉庫根（BASE_DIR=倉庫根），通知檔喺 engine/ 度
+# （同 app.py _line_move_watch_loop 讀嘅 PARENT_DIR/engine/_line_moves.txt 一致）。
+LINE_MOVE_FILE = os.path.join(BASE_DIR, 'engine', '_line_moves.txt')
 
 
 def notify_line_move(match_id):
