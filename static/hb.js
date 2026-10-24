@@ -349,11 +349,16 @@
            ' → 尾盤 ' + ou.line + ' 球：' + mvTxt + '</div>';
     }
 
-    /* 49 項分析（2026-10-06 重做：FootballAnalysis 概念做大細） */
+    /* 49 項分析（2026-10-06 重做：FootballAnalysis 概念做大細）
+     * 2026-10-25 修正：呢區係純參考詳情。舊版 summary 將 ou.lean 標做「共識」——
+     * 但 lean 而家係規則訊號方向，叫「共識」係語義謊言。票數照顯示（事實），
+     * 但標明「純參考唔主導預測」；預測語義淨喺上面「預測」格嘅三態。 */
     if (ou.items && ou.items.length) {
       var votedN = ou.n_voted || 0;
-      var cons = (ou.lean ? ('共識：<b class="' + (ou.lean === '大' ? 'pct-over' : 'pct-under') + '">' + ou.lean + '</b>｜票數 大' + (ou.votes && ou.votes['大'] || 0) + '：細' + (ou.votes && ou.votes['細'] || 0)) : '共識：觀望（唔夠強唔硬估）');
-      if (ou.pick) cons += '｜<b style="color:var(--gold2)">⭐精選' + ou.pick.side + '（最高單項 ' + ou.pick.best + '%）</b>';
+      var cons = '51 項票數：大 ' + (ou.votes && ou.votes['大'] || 0) +
+                 '｜細 ' + (ou.votes && ou.votes['細'] || 0) +
+                 '（純參考，唔主導預測）';
+      if (ou.pick) cons += '｜<b style="color:var(--gold2)">⭐精選' + ou.pick.side + '（' + ou.pick.best + '%）</b>';
       var rows = ou.items.map(function (it) {
         var r = it.rates;
         var cls = it.side === '大' ? 'pct-over' : (it.side === '細' ? 'pct-under' : '');
