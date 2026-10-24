@@ -400,7 +400,8 @@ function playedSetCat(v){ playedCat = v; loadHome(); }
 let playedLg = 'all';
 function playedSetLg(v){ playedLg = v; renderHome(); }
 async function loadHome(){
-  $('#homeList').innerHTML = '<div class="note">載入中…</div>';
+  $('#homeList').innerHTML = '<div class="note">⏳ 載入緊：賽事清單（即將開賽＋已完賽）…</div>';
+  LoadX.show('載入賽事清單');
   const hours = $('#hoursSel').value;
   let q = '/api/v3/list?hours=' + hours;
   if (playedHours !== 120 || playedCat !== 'all'){
@@ -415,6 +416,7 @@ async function loadHome(){
     const d = await jget(q);
     window._jfRetryHook = null;
     homeData = d;
+    LoadX.hide();
     jget('/api/lgpred').then(p => { lgPred = p.predictions || {}; renderHome(); })
       .catch(() => {});
     renderHome();
@@ -426,6 +428,7 @@ async function loadHome(){
     });
   } catch (e) {
     window._jfRetryHook = null;
+    LoadX.hide();
     $('#homeList').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>';
   }
 }
@@ -1132,13 +1135,16 @@ $('#btnFetchAll').onclick = async function(){
     if (!list.length) { toast('全部場次都已有賠率'); this.disabled = false; return; }
     let ok = 0, fail = 0, cached = 0;
     $('#updInfo').textContent = `獲取賠率中 0/${list.length}…`;
+    LoadX.show('補爬缺賠率場次', list.length);
     for (const m of list) {
       try {
         const r = await jpost('/api/fetch', {id: m.id});
         if (r.cached) cached++; else r.ok ? ok++ : fail++;
       } catch (e) { fail++; }
       $('#updInfo').textContent = `獲取賠率中 ${ok + fail + cached}/${list.length}…`;
+      LoadX.prog(ok + fail + cached, list.length);
     }
+    LoadX.hide();
     $('#updInfo').textContent = `獲取完成：成功 ${ok}｜失敗 ${fail}${cached ? `｜${cached} 場兩分鐘內已獲取過（限流，唔使重複）` : ''}`;
   } finally {
     this.disabled = false;
@@ -1181,6 +1187,7 @@ function serverFetchBatch(btn, ids){
   jpost('/api/fetch-batch', body)
     .then(function(r){
       if (r.error && !r.running) { toast(r.error); btn.disabled = false; return; }
+      LoadX.show('更新賠率＋重算資格');
       pollFbatch();
     })
     .catch(function(e){ toast('即時更新失敗：' + e.message); btn.disabled = false; });
@@ -1211,6 +1218,7 @@ $('#btnRegrab').onclick = async function(){
   }
   if (r.mode === 'cloud')
     $('#updInfo').textContent = '🔄 雲端重算緊：合資格加入／唔合資格踢走（新精選＋88W 全年回查都做埋）…';
+  LoadX.show('重抓缺口＋重算資格');
   pollRegrab();
 };
 async function pollRegrab(){
@@ -1221,6 +1229,7 @@ async function pollRegrab(){
     $('#btnRegrab').disabled = false;
     return;
   }
+  LoadX.hide();
   if (!st.running) {
     if (!st.last) {
       /* 從未跑過（或伺服器剛重啟、進行中狀態已流失）——唔好假報「完成」 */
@@ -1265,11 +1274,14 @@ async function phoneBatchAll(btn){
   $('#updInfo').textContent =
     `📱 裝置 ${PhoneCrawl.device}（${PhoneCrawl.VERSION || '?'}）開始直爬 ${list.length} 場（手機網絡 → titan007）…`;
   try {
+    LoadX.show('📱 手機直爬', list.length);
     const r = await PhoneCrawl.crawlAll(list, st => {
       $('#updInfo').textContent =
         `📱 手機直爬緊 ${st.done}/${list.length} 場（✓${st.ok} ✗${st.fail} 未開盤${st.noOdds}）…` +
         (window.PhoneCrawl && PhoneCrawl._stop ? '（停止緊，下一場退出）' : '');
+      LoadX.prog(st.done, list.length);
     }, m => m.line || null);
+    LoadX.hide();
     /* 2026-10-24 用戶規格「更新賠率＋重算資格 一鍵＝更新所有盤口及賠率
      * 及所有工具重算」：舊制手機直爬淨係核對顯示（本機數據為準，唔寫庫），
      * 撳完掣雲端賠率同工具資格零變動＝空殼。而家：直爬完→唔一致/本機缺失/
@@ -1328,10 +1340,13 @@ async function pollFbatch(){
   if (st.running) {
     $('#updInfo').textContent =
       `⚡ ${st.phase || '即時更新中'}（成功 ${st.ok}・失敗 ${st.fail}）…`;
+    if (st.total) LoadX.prog(st.done, st.total);
     fbPoll = setTimeout(pollFbatch, 3000);
     return;
   }
+  LoadX.hide();
   $('#btnOddsNow').disabled = false;
+  LoadX.hide();
   if (st.error) { toast(st.error); return; }
   if (st.last) {
     let msg = `⚡ 即時更新完成（${st.last}）：成功 ${st.ok}｜失敗 ${st.fail}` +
@@ -1387,16 +1402,71 @@ async function pollUpdateLoop(){
   if (/^fw\d+$/.test(curPage)) loadFwGrid(curPage.slice(2));
 }
 
+/* 2026-10-25 統一載入狀態列（用戶規格：所有載入中都要話你知載入緊咩、
+ * 進度%、尚餘時間）。兩種模式：有總數→「項目 done/total（%）｜尚餘 Xs」；
+ * 冇總數（單一請求）→「項目…（已用 Ns）」——冇速率就唔顯示時間，唔呃人。 */
+const LoadX = (() => {
+  let bar = null, timer = null, t0 = 0, label = '', total = 0, done = 0;
+  let samples = [];
+  function ensure() {
+    if (bar) return bar;
+    bar = document.createElement('div');
+    bar.style.cssText = 'position:fixed;left:50%;bottom:56px;transform:translateX(-50%);' +
+      'background:#0e1626ee;border:1px solid #3d6fb4;color:#dce7f5;border-radius:10px;' +
+      'padding:6px 14px;font-size:13px;z-index:9990;display:none;box-shadow:0 2px 10px rgba(0,0,0,.5);' +
+      'max-width:94vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+    document.body.appendChild(bar);
+    return bar;
+  }
+  function eta() {
+    const now = Date.now();
+    samples = samples.filter(x => now - x[0] < 20000);
+    if (samples.length < 2) return null;
+    const r = (samples[samples.length - 1][1] - samples[0][1]) /
+              ((samples[samples.length - 1][0] - samples[0][0]) / 1000);
+    if (r <= 0) return null;
+    const rem = (total - done) / r;
+    if (!isFinite(rem) || rem < 0) return null;
+    return rem < 90 ? Math.round(rem) + 's' : '~' + Math.round(rem / 60) + ' 分鐘';
+  }
+  function render() {
+    const el = ensure();
+    const sec = ((Date.now() - t0) / 1000).toFixed(0);
+    let txt = '⏳ ' + label;
+    if (total > 0) {
+      const pct = Math.min(100, Math.round(done / total * 100));
+      txt += ' ' + done + '/' + total + ' (' + pct + '%)';
+      const e = eta();
+      txt += e ? '｜尚餘 ' + e : '｜已用 ' + sec + 's';
+    } else {
+      txt += '…（已用 ' + sec + 's）';
+    }
+    el.textContent = txt;
+  }
+  return {
+    show(lbl, tot) {
+      label = lbl; total = tot || 0; done = 0; t0 = Date.now();
+      samples = [[t0, 0]];
+      ensure().style.display = 'block';
+      clearInterval(timer); timer = setInterval(render, 500);
+      render();
+    },
+    prog(d, t) { done = d; if (t != null) total = t; samples.push([Date.now(), d]); render(); },
+    hide() { clearInterval(timer); timer = null; if (bar) bar.style.display = 'none'; }
+  };
+})();
+
 /* ---------- 場次分析（詳情頁） ---------- */
 let curMatch = null;
 async function openDetail(mid){
   goto('detail');
-  $('#detBody').innerHTML = '<div class="note">載入中…</div>';
+  $('#detBody').innerHTML = '<div class="note">⏳ 載入緊：場次詳情（盤口七時點＋分析）…</div>';
+  LoadX.show('載入場次詳情');
   $('#detMsg').textContent = '';
   let res;
   try { res = await jget('/api/v3/target?id=' + mid); }
-  catch (e) { $('#detBody').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
-  if (res.error) { $('#detBody').innerHTML = '<div class="err">' + esc(res.error) + '</div>'; return; }
+  catch (e) { LoadX.hide(); $('#detBody').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  if (res.error) { LoadX.hide(); $('#detBody').innerHTML = '<div class="err">' + esc(res.error) + '</div>'; return; }
   curMatch = res.target;
   const t = res.target;
   setV3UD(t);
@@ -1427,6 +1497,7 @@ async function openDetail(mid){
       <span class="hint">揀該場盤口±0.25｜入金額｜撳分享→入水位→再撳分享出文字</span>
     </div>`;
   $('#detBody').innerHTML = h;
+  LoadX.hide();
   wirePickBars(t.id);
   initV3Section(t.id);
   renderDetLgPred(t.id);
@@ -1574,7 +1645,7 @@ async function doPick(mid, choice, bar){
 }
 const RES_TXT = {W: '<b class="r-up">✓ 贏</b>', L: '<b class="r-down">✗ 輸</b>', P: '<b>➖ 走</b>', X: '<span style="color:var(--dim)">無法判定</span>'};
 async function loadPicksPage(){
-  $('#pkList').innerHTML = '<div class="note">載入中…</div>';
+  $('#pkList').innerHTML = '<div class="note">⏳ 載入緊：我的選擇…</div>';
   let d;
   try { d = await jget('/api/picks/full'); }
   catch (e) { $('#pkList').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
@@ -2089,7 +2160,7 @@ async function _fillHrBlocks(root){
     const key = kind + '|' + mid;
     let d = _hrCache[key];
     if (!d) {
-      el.innerHTML = '<div class="note" style="font-size:12px">命中率載入中…</div>';
+      el.innerHTML = '<div class="note" style="font-size:12px">⏳ 載入緊：同聯賽命中率…</div>';
       try { d = await jget(`/api/hitrate?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(mid)}`); }
       catch (e) { d = {error: String(e)}; }
       _hrCache[key] = d;
@@ -2319,10 +2390,12 @@ function _fwGridCard(p, g){
 }
 async function loadFwGrid(g){
   const listEl = $('#fw' + g + 'List');
-  listEl.innerHTML = '<div class="note">載入中…</div>';
+  listEl.innerHTML = '<div class="note">⏳ 載入緊：精選 ' + g + '…</div>';
+  LoadX.show('載入精選 ' + g + ' 格');
   let d;
   try { d = await jget('/api/fwgrid/full?g=' + g); }
-  catch (e) { listEl.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  catch (e) { LoadX.hide(); listEl.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+  LoadX.hide();
   if (d.error) { listEl.innerHTML = '<div class="err">' + esc(d.error) + '</div>'; return; }
   const s = d.stats;
   $('#fw' + g + 'Cnt').textContent = s.pending ? `(${s.pending})` : '';
@@ -2855,7 +2928,7 @@ async function runCheck(mid){
 
 /* ---------- 事後回查（精選W 賽果＋統計） ---------- */
 async function loadReview(){
-  $('#rvList').innerHTML = '<div class="note">載入中…</div>';
+  $('#rvList').innerHTML = '<div class="note">⏳ 載入緊：事後回查…</div>';
   let d;
   try { d = await jget('/api/v3/featured/full'); }
   catch (e) { $('#rvList').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
@@ -2897,7 +2970,7 @@ async function loadReview(){
 
 /* ---------- 過往紀錄（V3 精選W 自動紀錄） ---------- */
 async function loadFeatlog(){
-  $('#flList').innerHTML = '<div class="note">載入中…</div>';
+  $('#flList').innerHTML = '<div class="note">⏳ 載入緊：過往紀錄…</div>';
   let d;
   try { d = await jget('/api/v3/featlog'); }
   catch (e) { $('#flList').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
@@ -3031,15 +3104,17 @@ function _v1StatsBar(s, z, tag){
 async function loadV1(){
   const listEl = $('#v1List'), zlistEl = $('#v1zList');
   const v2El = $('#v2List'), v2zEl = $('#v2zList');
-  listEl.innerHTML = '<div class="note">載入中…</div>';
-  zlistEl.innerHTML = '<div class="note">載入中…</div>';
-  v2El.innerHTML = '<div class="note">載入中…</div>';
-  v2zEl.innerHTML = '<div class="note">載入中…</div>';
+  listEl.innerHTML = '<div class="note">⏳ 載入緊：V1/V2 字頭精選（Z 槽優先）…</div>';
+  zlistEl.innerHTML = '<div class="note">⏳ 載入緊：V1Z…</div>';
+  v2El.innerHTML = '<div class="note">⏳ 載入緊：V2…</div>';
+  v2zEl.innerHTML = '<div class="note">⏳ 載入緊：V2Z…</div>';
+  LoadX.show('載入舊版 V1/V2（＋Z 槽）');
   let d, dz;
   try {
     [d, dz] = await Promise.all([
       jget('/api/v1/featured/full'), jget('/api/v1/featured/full?z=1')]);
   } catch (e) {
+    LoadX.hide();
     listEl.innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>';
     return;
   }
@@ -3085,7 +3160,8 @@ async function loadV1(){
       render(d2, v2El, false, 'V2', '/api/featured/refresh');
       render(d2z, v2zEl, true, 'V2', '/api/featured/refresh');
     })
-    .catch(e => { v2El.innerHTML = '<div class="err">V2 載入失敗：' + esc(String(e)) + '</div>'; });
+    .catch(e => { v2El.innerHTML = '<div class="err">V2 載入失敗：' + esc(String(e)) + '</div>'; })
+    .finally(() => LoadX.hide());
 }
 function v1ShareText(p, z){
   const b = p.brief || {};
@@ -3150,7 +3226,7 @@ async function pollScanJob(key, url, btnSel, infoSel, onDone, fmtDone){
 
 /* ---------- 🗑 剔走專頁（2026-10-24：邊個工具剔走咗邊場＋實際命中率） ---------- */
 function loadRemoved(){
-  $('#removedStats').innerHTML = '<div class="note">載入中…</div>';
+  $('#removedStats').innerHTML = '<div class="note">⏳ 載入緊：剔走專頁…</div>';
   $('#removedBody').innerHTML = '';
   jget('/api/removed/full?limit=300').then(d => {
     const st = d.stats || {};
@@ -3278,7 +3354,7 @@ async function shareText(txt){
 
 /* ---------- 📐 同賽事盤口規則頁（2026-10-05） ---------- */
 async function loadOupred(){
-  $('#opPanel').innerHTML = '<div class="note">載入中…</div>';
+  $('#opPanel').innerHTML = '<div class="note">⏳ 載入緊：單場規律…</div>';
   $('#opHist').innerHTML = '';
   try {
     const [panel, hist] = await Promise.all([
@@ -3365,7 +3441,7 @@ function _fhSnapTxt(sp){
       + parts.join('｜') + '</span>' : '';
 }
 async function loadFeatHourly(){
-  $('#fhBody').innerHTML = '<div class="note">載入中…</div>';
+  $('#fhBody').innerHTML = '<div class="note">⏳ 載入緊：每小時紀錄…</div>';
   try {
     const d = await jget('/api/feathourly');
     let h = '';
