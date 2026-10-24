@@ -306,6 +306,13 @@ def api_crawl_state():
 
 def do_crawl_stop():
     _write_crawl_control('stop')
+    # 2026-10-25 修正（用戶：「停止掣又係廢」）：舊制淨停爬蟲 fleet——掃描同
+    # 「更新賠率」批量郁緊時撳掣完全冇反應。而家三線全停：掃描／批量會喺完
+    # 成手頭嗰場後退出（旗標由各自循環每場檢查）。
+    _unified_scan['stop'] = True
+    _fbatch_state['stop'] = True
+    _update_state['stop'] = True
+    _win_state['stop'] = True
     if _cloud_relay():
         _CRAWL_RELAY['cmd'] = 'stop'
         _CRAWL_RELAY['ts'] = time.time()
@@ -1627,7 +1634,7 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
     if st['running']:
         return False
     st.update(running=True, error=None, phase='準備中…', done=0,
-              added=0, removed=0, kept=0, full=full)
+              added=0, removed=0, kept=0, full=full, stop=False)
     st['triggered_by'] = tool or st.get('triggered_by') or '未知'
     _UNIFIED_RUNNING[0] = True
     _NOTIFY_N[0] = 0   # 本輪推送計數（>15 批量標讀防洗版）
@@ -1692,6 +1699,10 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
             # 將寫鎖縮到秒級，爬蟲/頁面請求穿插到行）。注意 _eval_all 每場
             # 自己寫 UPSERT，COMMIT 頻率係吞吐同鎖競爭嘅平衡點。
             for i, mid in enumerate(cands):
+                if st.get('stop'):
+                    _scanlog('🛑 收到停止指令——完成手頭呢場後收工'
+                             '（已搞 %d/%d 場）' % (i, len(cands)))
+                    break
                 st['phase'] = '統一掃描 %d/%d' % (i + 1, len(cands))
                 acts = None
                 for _att in range(4):
@@ -1807,11 +1818,13 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
         if not st['error']:
             for d in tools:
                 d['running'] = False
-        # 2026-10-25：消化排隊請求（有人排緊就即刻接力，唔等 5 分鐘循環）
-        try:
-            _drain_scan_queue()
-        except Exception:
-            pass
+        # 2026-10-25：消化排隊請求（有人排緊就即刻接力，唔等 5 分鐘循環）。
+        # 用戶撳咗停止就唔接力——停就要停得徹底。
+        if not st.get('stop'):
+            try:
+                _drain_scan_queue()
+            except Exception:
+                pass
     return True
 
 
@@ -2192,6 +2205,10 @@ def _update_worker():
         n_ok = n_fail = 0
         outage_streak = 0   # 連續斷線計數：代理池太殘時唔好逐場捱逾時拖死成條線
         for i, (mid, ko) in enumerate(todo):
+            if _update_state.get('stop'):
+                print('[update] 🛑 收到停止指令——完成手頭呢場後收工'
+                      '（已搞 %d/%d 場）' % (i, len(todo)), flush=True)
+                break
             _update_state['phase'] = (
                 f'刷新已存在場次嘅盤口及賠率 {i + 1}/{len(todo)}')
             try:
@@ -2277,6 +2294,7 @@ def do_update(auto=False):
                          '盤口賠率經代理池即時抓；賽果每 15 分鐘自動補'}
     if _update_state['running']:
         return {'ok': False, 'running': True, 'error': '更新進行中'}
+    _update_state['stop'] = False
     # 跨工作互鎖（2026-10-02）：窗口／即時更新進行緊就唔好開全量
     if _win_state['running'] or _fbatch_state['running']:
         return {'ok': False, 'running': True,
@@ -2326,6 +2344,9 @@ def _window_update_worker(win):
             'WHERE m.home_score IS NULL '
             "AND m.kickoff >= datetime('now','+8 hours') " + cond + ' '
             'ORDER BY m.kickoff').fetchall()
+        if _win_state.get('stop'):
+            print('[win] 🛑 收到停止指令——收工', flush=True)
+            return
         _win_state.update(total=len(todo), done=0, ok=0, fail=0)
         fetcher = crawler.Fetcher(conn, cfg)
         fail_streak = 0
@@ -2441,6 +2462,10 @@ def _fetch_batch_worker(hours, ids=None):
         changed_mids = []
         fail_streak = 0
         for i, (mid, ko) in enumerate(todo):
+            if _fbatch_state.get('stop'):
+                print('[fbatch] 🛑 收到停止指令——完成手頭呢場後收工'
+                      '（已搞 %d/%d 場）' % (i, len(todo)), flush=True)
+                break
             _fbatch_state['phase'] = f'即時更新盤口及賠率 {i + 1}/{len(todo)}'
             got = False
             try:
@@ -2480,6 +2505,8 @@ def _fetch_batch_worker(hours, ids=None):
             else:
                 _fbatch_state['fail'] += 1
                 fail_streak += 1
+                if _fbatch_state.get('stop'):
+                    fail_streak = 0   # 人手停止唔算熔斷，唔登記補跑
                 if fail_streak >= 5:
                     # 頭 5 場連滅＝真封鎖（唔係輪轉陣痛）——收工＋登記補跑
                     _FBATCH_PEND['hours'] = hours
@@ -2556,7 +2583,8 @@ def do_fetch_batch(hours=0, ids=None):
         if ids is not None and not ids:
             ids = None
     _fbatch_state.update(running=True, error=None, phase='準備中…',
-                         done=0, total=0, reval=None, ou_ok=0, x2_ok=0)
+                         done=0, total=0, reval=None, ou_ok=0, x2_ok=0,
+                         stop=False)
     threading.Thread(target=_fetch_batch_worker, daemon=True,
                      args=(hours, ids)).start()
     return {'ok': True, 'started': True}
