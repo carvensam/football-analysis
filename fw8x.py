@@ -551,6 +551,12 @@ def eval_match(conn, mid, lg=None):
     info = features_for(conn, mid, fill_live=_needs_live(f))
     if not info:
         return None
+    # 2026-10-25 深盤守衛（蘇超流浪 4-0 聖莊士東事件）：down 公式喺深盤
+    # （|尾盤|≥1.5）停用——班霸對弱旅臨場升盤係市場確認實力差距（1.75→2.0），
+    # 誘盤邏輯失效，照推下盤係送人。up 公式唔受影響。2026 全庫回測驗證：
+    # 守衛前 370 注 78.7%；低過/唔變先會留低（見 fw8x_bt2026 重建）。
+    if f.get('dir') == 'down' and info.get('hc') is not None             and abs(info['hc']) >= 1.5:
+        return None
     if all(pred_match(info['feat'], p) for p in f['preds']):
         return info, f
     return None
