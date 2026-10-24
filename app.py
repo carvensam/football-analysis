@@ -1472,7 +1472,33 @@ _unified_scan = {'running': False, 'phase': '', 'done': 0, 'total': 0,
                  'triggered_by': None}
 # 2026-10-25 掃描排隊（用戶規格：log 要見到邊個工具觸發緊＋邊個排緊隊）：
 # 統一掃描行緊時，新請求唔再靜默丟棄——入隊，跑完依家嗰輪逐個消化。
+# 根治（用戶 10-25 指示 #4）：隊列同熔斷補跑登記全部落碟
+# engine/_scan_state.json——APP 重啟唔再靜默消失。
 _SCAN_QUEUE = []
+_SCAN_STATE_PATH = os.path.join(PARENT_DIR, 'engine', '_scan_state.json')
+
+
+def _load_scan_state():
+    try:
+        d = json.load(open(_SCAN_STATE_PATH, encoding='utf-8'))
+        for q in d.get('queue') or []:
+            _SCAN_QUEUE.append(q)
+        if d.get('pend_hours') is not None:
+            _FBATCH_PEND['hours'] = d['pend_hours']
+            _FBATCH_PEND['ts'] = float(d.get('pend_ts') or 0.0)
+    except Exception:
+        pass
+
+
+def _save_scan_state():
+    try:
+        with open(_SCAN_STATE_PATH, 'w', encoding='utf-8') as f:
+            json.dump({'queue': _SCAN_QUEUE,
+                       'pend_hours': _FBATCH_PEND.get('hours'),
+                       'pend_ts': _FBATCH_PEND.get('ts')},
+                      f, ensure_ascii=False)
+    except OSError:
+        pass
 _LAST_UNIFIED = [None]   # 上次統一掃描完成時間（HK，文字）；None＝未掃過
 _UNIFIED_RUNNING = [False]   # 掃描進行中：after_odds_update 讓路＋釘住數據池
 _UNIFIED_STATE_PATH = os.path.join(PARENT_DIR, 'engine',
@@ -1811,6 +1837,7 @@ def _drain_scan_queue():
     下一個，避免同時開兩輪互鬥）。"""
     while _SCAN_QUEUE and not _unified_scan['running']:
         req = _SCAN_QUEUE.pop(0)
+        _save_scan_state()
         _scanlog('🚀 執行排隊請求：%s（重剩 %d 個排緊）'
                  % (req['tool'], len(_SCAN_QUEUE)))
         _unified_scan['triggered_by'] = req['tool']
@@ -1843,10 +1870,12 @@ def _start_unified_scan(mids=None, full=False, light=None, tool='未知'):
             _SCAN_QUEUE.append({'tool': tool, 'full': bool(full),
                                 'mids': mids,
                                 'ts': time.strftime('%H:%M:%S')})
+            _save_scan_state()
             _scanlog('⏳ %s 掃描排隊緊（等依家嗰輪搞掂自動接力；前面仲有 %d 個）'
                      % (tool, len(_SCAN_QUEUE) - 1))
         return {'running': True, 'started': False, 'queued': True}
     _unified_scan['triggered_by'] = tool
+    _save_scan_state()
     threading.Thread(target=_unified_scan_job,
                      kwargs={'mids': mids, 'full': full, 'light': light,
                              'tool': tool},
@@ -2366,6 +2395,7 @@ _fbatch_state = {'running': False, 'phase': '', 'done': 0, 'total': 0,
 
 
 _FBATCH_PEND = {'hours': None, 'ts': 0.0}
+_load_scan_state()   # 2026-10-25 根治：重啟讀返排隊＋熔斷登記（用戶指示 #4）
 
 
 def _fetch_batch_worker(hours, ids=None):
@@ -2449,6 +2479,7 @@ def _fetch_batch_worker(hours, ids=None):
                     # 頭 5 場連滅＝真封鎖（唔係輪轉陣痛）——收工＋登記補跑
                     _FBATCH_PEND['hours'] = hours
                     _FBATCH_PEND['ts'] = time.time()
+                    _save_scan_state()
                     _fbatch_state['error'] = (
                         '連頭 5 場都爬唔到——titan007 而家真係封緊。'
                         '已登記：復活後自動補跑，唔使再撳')
@@ -11405,6 +11436,7 @@ if __name__ == '__main__':
                                  '「更新賠率＋重算資格」')
                         do_fetch_batch(_FBATCH_PEND['hours'])
                         _FBATCH_PEND['hours'] = None
+                        _save_scan_state()
                     # 行人手模式（auto=False）跳過 30 分鐘節流——復活觸發每次中斷
                     # 只會有一次，但之前失敗嘅更新更新咗 last_done，auto 模式會
                     # 誤判做「啱啱更新過」而跳過（復活後數據其實未刷新嘅漏洞）
