@@ -245,13 +245,17 @@
        *   個方向字埋喺中間唔夠显眼）
        * 2026-10-11 修正（用戶：「表列無展示大小」）：共識門檻外，有最強單項訊號
        *   （n≥30 已係引擎保證）就照顯示方向，52–58% 加「（弱）」標記，
-       *   只有 <52% 或完全冇訊號先顯示「觀望（共識不足）」。 */
-      var side = ou.strongest.side;
-      var strong = ou.strongest.rate >= 0.58;
-      lean.innerHTML = (strong ? '<b>' + side + '</b> ' : side + ' ') +
-        Math.round(ou.strongest.rate * 100) + '%' +
-        '<small>（最強訊號 n=' + ou.strongest.n + (strong ? '' : '，弱') + '）</small>';
-      lean.className = 'lean ' + (side === '大' ? 'big' : 'small');
+       *   只有 <52% 或完全冇訊號先顯示「觀望（共識不足）」。
+       * 2026-10-25 修正（重跑檢查發現）：呢個「最強訊號」係 51 項分析票數
+       *   共識嘅最強一項＝舊共識系統殘留（10-22 已廢：實戰 50.9%＝擲毫）。
+       *   唔再顯示方向做訊號——只標「舊系統參考」防誤導；真方向睇 ⭐精選
+       *   或規則訊號。 */
+      lean.textContent = '舊系統參考（勿當訊號）';
+      lean.className = 'lean';
+      lean.style.color = 'var(--dim)';
+      lean.title = '51 項分析最強單項：' + (ou.strongest.side === '大' ? '大' : '細') +
+        ' ' + Math.round(ou.strongest.rate * 100) + '%（n=' + ou.strongest.n +
+        '）——屬已廢舊共識系統（實戰 50.9%），純參考唔係預測';
     } else if (ou.line != null) {
       lean.textContent = '觀望（共識不足）';
       lean.className = 'lean';
