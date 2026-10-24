@@ -457,17 +457,19 @@ def scan(conn, hours=168, grace_min=10):
 
 
 def settle(conn):
-    """賽後結算：有賽果＋尾盤嘅記錄→result W/L/P。"""
+    """賽後結算：有賽果嘅記錄→result W/L/P。
+    用落注時影低嘅 line_h/giver；legacy 行（line_h 為 NULL）先對 closing。"""
     migrate(conn)
     rows = conn.execute(
-        'SELECT f.match_id, f.direction, oc.handicap, oc.giver, '
-        'm.home_score, m.away_score FROM fw8x_log f '
+        'SELECT f.match_id, f.direction, f.line_h, f.giver, '
+        'oc.handicap, oc.giver, m.home_score, m.away_score FROM fw8x_log f '
         'JOIN matches m ON m.id=f.match_id '
         'LEFT JOIN odds_asian oc ON oc.match_id=f.match_id '
         "AND oc.label='closing' AND oc.company_id=12 "
         'WHERE f.settled=0 AND m.home_score IS NOT NULL').fetchall()
     n = 0
-    for mid, d, hc, gv, hs, aws in rows:
+    for mid, d, lh, lgv, chc, cgv, hs, aws in rows:
+        hc, gv = (lh, lgv) if lh is not None else (chc, cgv)
         pr = pick_result(hc, gv, hs, aws)
         if pr is None:
             continue

@@ -52,7 +52,7 @@ def load_meta():
 
 
 # ---------- 特徵構建（礦工／運行時共用） ----------
-def feats(line=None, init_line=None, over=None, under=None,
+def feats(line=None, init_line=None, over=None, under=None, x8dir=None, jxdir=None,
           init_over=None, pre4h_line=None,
           lg_avg_total=None,
           h_avg_total=None, a_avg_total=None,
@@ -130,6 +130,11 @@ def feats(line=None, init_line=None, over=None, under=None,
             F.add('sline=ad')
         elif abs(sline) < 0.25:
             F.add('sline=eq')
+    # 2026-10-24 用戶驗證：8X／新精選 方向作為原子條件（有預測先計）
+    if x8dir in ('up', 'down'):
+        F.add('x8=' + x8dir)
+    if jxdir in ('up', 'down'):
+        F.add('jx=' + jxdir)
     if rank_h is not None and rank_a is not None:
         if rank_h + 5 <= rank_a:
             F.add('rankd=h5')

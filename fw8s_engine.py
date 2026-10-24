@@ -17,6 +17,8 @@ import fw_grid_engine
 import screen_engine as se
 
 # 分聯賽獨立公式（key＝competitions.name_tc；引擎會用 req_name→name_tc 映射對位）
+# 2026-10-22 R5 debug：澳維超／歐國聯標記 dead——全庫回測「同向＆尾客讓0.75」
+# 歷史觸發 0 次（死規則），fw8s_report 會跳過，頁面公式計數照實扣減。
 FORMULAS = {
     '智利甲': {'type': 'grid', 'cells': ['1I', '1O', '3I', '7'],
               'desc': '格1I+1O+3I+7 全部投上'},
@@ -25,12 +27,19 @@ FORMULAS = {
     '歐霸盃': {'type': 'slice', 'fam': '同向', 'sc': -0.75,
               'desc': '同向＆尾盤客讓0.75'},
     '澳維超': {'type': 'slice', 'fam': '同向', 'sc': -0.75,
-              'desc': '同向＆尾盤客讓0.75'},
+              'desc': '同向＆尾盤客讓0.75（2026-10-22 回測 n=0，停用）',
+              'status': 'dead'},
     '瑞典盃': {'type': 'slice', 'fam': '同向', 'sc': -0.75,
               'desc': '同向＆尾盤客讓0.75'},
     '歐國聯': {'type': 'slice', 'fam': '同向', 'sc': -0.75,
-              'desc': '同向＆尾盤客讓0.75'},
+              'desc': '同向＆尾盤客讓0.75（2026-10-22 回測 n=0，停用）',
+              'status': 'dead'},
 }
+
+
+def _active_formulas():
+    return {k: f for k, f in FORMULAS.items()
+            if f.get('status') != 'dead'}
 
 
 def _name_tc_map(conn):
@@ -49,7 +58,7 @@ def fw8s_report(conn, t, grid8_rep=None):
     grid8_rep（2026-10-22 加速重構）：grid 型公式要用嘅 12 格報告——統一掃描
     已經計過嘅話傳入嚟慳一次重複運算（grid_report 約 0.75 秒/場）。"""
     lg_tc = _name_tc_map(conn).get(t.get('league'), t.get('league'))
-    f = FORMULAS.get(lg_tc)
+    f = _active_formulas().get(lg_tc)
     if f is None:
         return {'pass': False, 'direction': None, 'fail': '此聯賽沒有精選8s公式',
                 'formula': None, 'grid': '8s'}
@@ -116,8 +125,9 @@ def fw8s_meta(rep):
 # ---------- /api/fw8s 合約：load_rules ＋ scan_upcoming（fw8s.js 用） ----------
 
 def load_rules(conn=None):
-    """每聯賽公式表（key＝req_name）：6 條達標公式→direct；其餘有 check_rows
-    上盤紀錄嘅聯賽→watch。供 /api/fw8s/rules 標模式、/api/fw8s/full 計聯賽數。"""
+    """每聯賽公式表（key＝req_name）：公式聯賽→direct；其餘有 check_rows
+    上盤紀錄嘅聯賽→watch。供 /api/fw8s/rules 標模式、/api/fw8s/full 計聯賽數。
+    2026-10-22：澳維超／歐國聯公式全庫 n=0 觸發已標 dead——active 得 4 條。"""
     own = conn is None
     if own:
         conn = sqlite3.connect(se.DB_PATH)
@@ -132,7 +142,7 @@ def load_rules(conn=None):
         rules = {}
         # 6 條公式聯賽必定 direct（即使 check_rows 未有佢哋嘅紀錄）
         tc2req = {v: k for k, v in ntc.items()}
-        for tc in FORMULAS:
+        for tc in _active_formulas():
             rn = tc2req.get(tc)
             if rn:
                 rules[rn] = {'mode': 'direct', 'conds': [FORMULAS[tc]['desc']],
@@ -190,7 +200,7 @@ def scan_upcoming(conn, hours=72):
         "SELECT match_id FROM fw_grid_featured "
         "WHERE grid='8' AND direction='up' AND result IS NULL")}
     f_rows = [(mid, rn) for mid, rn in rows
-              if ntc.get(rn, rn) in FORMULAS]
+              if ntc.get(rn, rn) in _active_formulas()]
     # 預熱 V3 池（grid 型公式要用；有快取就即刻返）
     if any(FORMULAS[ntc.get(rn, rn)]['type'] == 'grid' for _, rn in f_rows):
         v3_engine.load_v3_pool(conn)
@@ -235,7 +245,7 @@ def scan_upcoming(conn, hours=72):
             traceback.print_exc()
     # 非公式聯賽：格8共識上＋歷史未過 65% → watch
     for mid, rn in rows:
-        if ntc.get(rn, rn) in FORMULAS or mid not in grid8_up:
+        if ntc.get(rn, rn) in _active_formulas() or mid not in grid8_up:
             continue
         try:
             t = se.get_target(conn, mid)

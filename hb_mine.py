@@ -57,6 +57,30 @@ def main():
     lg_avg = df.dropna(subset=['home_score']).groupby('league').apply(
         lambda s: (s['home_score'] + s['away_score']).mean())
     lg_avg_d = lg_avg.to_dict()
+    # 2026-10-24：8X／新精選 方向特徵（用戶驗證——礦工/運行時共用 eval_match，
+    # 條件一致唔會漂移；惰性快取，淨係 8X/新精選 有公式嘅聯賽至會計）
+    _x8_cache = {}
+    _jx_cache = {}
+    import fw8x as _fw8x
+    import newjx_engine as _nje
+    def _dirs(mid):
+        x8 = _x8_cache.get(mid)
+        if x8 is None:
+            try:
+                r = _fw8x.eval_match(conn, mid)
+                x8 = r[1]['dir'] if r else 'none'
+            except Exception:
+                x8 = 'none'
+            _x8_cache[mid] = x8
+        jx = _jx_cache.get(mid)
+        if jx is None:
+            try:
+                v = _nje.eval_match(conn, mid)
+                jx = v[2] if v else 'none'
+            except Exception:
+                jx = 'none'
+            _jx_cache[mid] = jx
+        return x8, jx
     # 逐場特徵集合
     print('[hb-mine] 構建特徵…', flush=True)
     feat_sets = []
@@ -82,6 +106,7 @@ def main():
             return None if x is None or (isinstance(x, float) and np.isnan(x)) \
                 else float(x)
         pr = ps.get(mids[i]) or (None, None)
+        _x8d, _jxd = _dirs(mids[i])
         feat_sets.append(R.feats(
             line=_f(lines[i]), init_line=_f(ilines[i]),
             over=_f(overs[i]), under=_f(unders[i]),
@@ -91,7 +116,9 @@ def main():
             a_avg_total=float(a_avg.get(aids[i], np.nan)) or None,
             h_ga=float(h_ga.get(hids[i], np.nan)) or None,
             a_ga=float(a_ga.get(aids[i], np.nan)) or None,
-            sline=sline, rank_h=pr[0], rank_a=pr[1]))
+            sline=sline, rank_h=pr[0], rank_a=pr[1],
+            x8dir=None if _x8d == 'none' else _x8d,
+            jxdir=None if _jxd == 'none' else _jxd))
     print('[hb-mine] 特徵完成 %.0fs' % (time.time() - t0), flush=True)
     # 逐聯賣挖掘
     out = {'meta': {

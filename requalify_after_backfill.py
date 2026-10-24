@@ -108,6 +108,40 @@ def before_stats():
     return {'counts': c, 'hit': hit}
 
 
+# ---------------- 落注時盤 helpers（同 app.py 同款；唔跨檔 import app.py）----------------
+_PICK_LINE_COLS_TBLS = ('featured', 'featured_z', 'v1_featured',
+                        'v1_featured_z', 'v3_featured', 'fw_grid_featured')
+
+
+def _migrate_pick_line_cols(conn):
+    """六張精選表補落注時盤口欄 hc/giver（idempotent）。舊行留 NULL，
+    結算遇 NULL 先對 closing——legacy 行口徑唔變。"""
+    for t in _PICK_LINE_COLS_TBLS:
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(%s)' % t)}
+        if 'hc' not in cols:
+            conn.execute('ALTER TABLE %s ADD COLUMN hc REAL' % t)
+        if 'giver' not in cols:
+            conn.execute('ALTER TABLE %s ADD COLUMN giver TEXT' % t)
+
+
+def _pick_line(conn, mid):
+    """該場 company12 落注時讓球盤：優先 closing，冇就用 change_time 最新。"""
+    r = conn.execute(
+        "SELECT handicap, giver FROM odds_asian WHERE match_id=? "
+        "AND company_id=12 AND handicap IS NOT NULL "
+        "ORDER BY (label='closing') DESC, change_time DESC LIMIT 1",
+        (mid,)).fetchone()
+    return (r[0], r[1]) if r else (None, None)
+
+
+def _tgt_pick_line(conn, t, mid):
+    """INSERT 位優先用 target 入面嘅 closing 盤；冇先查庫。"""
+    oc = ((t or {}).get('odds') or {}).get('closing') or {}
+    if oc.get('h') is not None:
+        return oc.get('h'), oc.get('g')
+    return _pick_line(conn, mid)
+
+
 # ---------------- P1 featured 家族逐場重評 ----------------
 def phase_p1(limit=None):
     import screen_engine
@@ -115,6 +149,7 @@ def phase_p1(limit=None):
     import v3_engine
     conn = sqlite3.connect(DB, timeout=180)
     conn.execute('PRAGMA busy_timeout=180000')
+    _migrate_pick_line_cols(conn)
     v2_engine.load_v2_pool(conn)
     v3_engine.load_v3_pool(conn)
     # 重評範圍（準確性×可行性平衡，2026-10-21 實測全庫逐場要 25 小時）：
@@ -166,15 +201,18 @@ def phase_p1(limit=None):
             dz = zpass[0]['dir'] if zpass else None
             meta = json.dumps({'letters': passed, 'states': fl.get('states')},
                               ensure_ascii=False)
+            phc, pgv = _tgt_pick_line(conn, t, mid)
             # featured / featured_z（同 scan job 同一口徑，但加踢走）
             row = conn.execute('SELECT result FROM featured WHERE match_id=?',
                                (mid,)).fetchone()
             if d:
                 conn.execute(
-                    'INSERT INTO featured(match_id,direction,letters,added_at) '
-                    'VALUES(?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                    'direction=excluded.direction, letters=excluded.letters',
-                    (mid, d, meta, now))
+                    'INSERT INTO featured(match_id,direction,letters,added_at,'
+                    'hc,giver) VALUES(?,?,?,?,?,?) ON CONFLICT(match_id) '
+                    'DO UPDATE SET direction=excluded.direction, '
+                    'letters=excluded.letters, hc=excluded.hc, '
+                    'giver=excluded.giver',
+                    (mid, d, meta, now, phc, pgv))
                 acted = True
             elif row:
                 conn.execute('DELETE FROM featured WHERE match_id=?', (mid,))
@@ -184,10 +222,12 @@ def phase_p1(limit=None):
                                 (mid,)).fetchone()
             if dz:
                 conn.execute(
-                    'INSERT INTO featured_z(match_id,direction,letters,added_at) '
-                    'VALUES(?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                    'direction=excluded.direction, letters=excluded.letters',
-                    (mid, dz, meta, now))
+                    'INSERT INTO featured_z(match_id,direction,letters,added_at,'
+                    'hc,giver) VALUES(?,?,?,?,?,?) ON CONFLICT(match_id) '
+                    'DO UPDATE SET direction=excluded.direction, '
+                    'letters=excluded.letters, hc=excluded.hc, '
+                    'giver=excluded.giver',
+                    (mid, dz, meta, now, phc, pgv))
                 acted = True
             elif rowz:
                 conn.execute('DELETE FROM featured_z WHERE match_id=?', (mid,))
@@ -198,9 +238,11 @@ def phase_p1(limit=None):
                                (mid,)).fetchone()
             if d:
                 conn.execute(
-                    'INSERT INTO v1_featured(match_id,direction,added_at) '
-                    'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                    'direction=excluded.direction', (mid, d, now))
+                    'INSERT INTO v1_featured(match_id,direction,added_at,'
+                    'hc,giver) VALUES(?,?,?,?,?) ON CONFLICT(match_id) '
+                    'DO UPDATE SET direction=excluded.direction, '
+                    'hc=excluded.hc, giver=excluded.giver',
+                    (mid, d, now, phc, pgv))
                 acted = True
             elif row:
                 conn.execute('DELETE FROM v1_featured WHERE match_id=?', (mid,))
@@ -210,9 +252,11 @@ def phase_p1(limit=None):
                                 (mid,)).fetchone()
             if dz:
                 conn.execute(
-                    'INSERT INTO v1_featured_z(match_id,direction,added_at) '
-                    'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                    'direction=excluded.direction', (mid, dz, now))
+                    'INSERT INTO v1_featured_z(match_id,direction,added_at,'
+                    'hc,giver) VALUES(?,?,?,?,?) ON CONFLICT(match_id) '
+                    'DO UPDATE SET direction=excluded.direction, '
+                    'hc=excluded.hc, giver=excluded.giver',
+                    (mid, dz, now, phc, pgv))
                 acted = True
             elif rowz:
                 conn.execute('DELETE FROM v1_featured_z WHERE match_id=?', (mid,))
@@ -225,10 +269,12 @@ def phase_p1(limit=None):
             if fw.get('pass'):
                 det = json.dumps(fw, ensure_ascii=False)[:500]
                 conn.execute(
-                    'INSERT INTO v3_featured(match_id,direction,detail,added_at) '
-                    'VALUES(?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                    'direction=excluded.direction, detail=excluded.detail',
-                    (mid, fw['direction'], det, now))
+                    'INSERT INTO v3_featured(match_id,direction,detail,added_at,'
+                    'hc,giver) VALUES(?,?,?,?,?,?) ON CONFLICT(match_id) '
+                    'DO UPDATE SET direction=excluded.direction, '
+                    'detail=excluded.detail, hc=excluded.hc, '
+                    'giver=excluded.giver',
+                    (mid, fw['direction'], det, now, phc, pgv))
                 acted = True
             elif row:
                 conn.execute('DELETE FROM v3_featured WHERE match_id=?', (mid,))
@@ -258,6 +304,7 @@ def phase_p1b(limit=None):
     import fw_grid_engine
     conn = sqlite3.connect(DB, timeout=180)
     conn.execute('PRAGMA busy_timeout=180000')
+    _migrate_pick_line_cols(conn)
     # 受影響 = 補數觸及（crawl16 asian 成功）+ 原有入選格（+雲端：近期窗口）
     try:
         affected = set(r[0] for r in conn.execute(
@@ -290,12 +337,14 @@ def phase_p1b(limit=None):
                     (g, mid)).fetchone()
                 if rep.get('pass'):
                     meta = json.dumps(rep, ensure_ascii=False)[:500]
+                    phc, pgv = _tgt_pick_line(conn, t, mid)
                     conn.execute(
                         'INSERT INTO fw_grid_featured(grid,match_id,direction,'
-                        'detail,added_at) VALUES(?,?,?,?,?) '
+                        'detail,added_at,hc,giver) VALUES(?,?,?,?,?,?) '
                         'ON CONFLICT(grid,match_id) DO UPDATE SET '
-                        'direction=excluded.direction, detail=excluded.detail',
-                        (g, mid, rep['direction'], meta, now))
+                        'direction=excluded.direction, detail=excluded.detail, '
+                        'hc=excluded.hc, giver=excluded.giver',
+                        (g, mid, rep['direction'], meta, now, phc, pgv))
                     st['in'] += 1
                 elif row:
                     conn.execute(

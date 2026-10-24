@@ -26,6 +26,7 @@
 """
 import json
 import os
+import re
 import socket
 import sqlite3
 import threading
@@ -586,6 +587,18 @@ def _migrate_db():
             match_id INTEGER, label TEXT, company_id INTEGER,
             total_line REAL, over_odds REAL, under_odds REAL,
             change_time TEXT)''')
+        # 2026-10-24：結算準則大修——featured×5＋fw_grid_featured 記落注盤
+        # （hc REAL/giver TEXT）。雲端舊庫冇呢兩欄，本機 delta 同步 schema
+        # 唔夾會 skip 晒精選表（手機冇新精選）。開機冇欄即補，補完同步恢復。
+        for t in ('featured', 'featured_z', 'v1_featured', 'v1_featured_z',
+                  'v3_featured', 'fw_grid_featured'):
+            cols = [r[1] for r in conn.execute(f'PRAGMA table_info({t})')]
+            if not cols:
+                continue  # 舊庫冇呢張表——_apply_delta 會照源 schema 即場起
+            if 'hc' not in cols:
+                conn.execute(f'ALTER TABLE {t} ADD COLUMN hc REAL')
+            if 'giver' not in cols:
+                conn.execute(f'ALTER TABLE {t} ADD COLUMN giver TEXT')
         conn.commit()
     finally:
         conn.close()
@@ -840,6 +853,80 @@ def _closing_ctx(conn, mid):
     return hc, gv, (ou[0] if ou else None)
 
 
+def _pick_line(conn, mid):
+    """該場 company12 嘅落注時讓球盤：優先 label='closing'，冇就用
+    change_time 最新一筆任何 label。回傳 (handicap, giver)。"""
+    r = conn.execute(
+        "SELECT handicap, giver FROM odds_asian WHERE match_id=? "
+        "AND company_id=12 AND handicap IS NOT NULL "
+        "ORDER BY (label='closing') DESC, change_time DESC LIMIT 1",
+        (mid,)).fetchone()
+    return (r[0], r[1]) if r else (None, None)
+
+
+def _tgt_pick_line(conn, t, mid):
+    """INSERT 位用：target 入面已有 odds（同評估同一來源）就優先用佢哋嘅
+    closing 盤；真係冇先查庫（_pick_line）。"""
+    oc = ((t or {}).get('odds') or {}).get('closing') or {}
+    if oc.get('h') is not None:
+        return oc.get('h'), oc.get('g')
+    return _pick_line(conn, mid)
+
+
+_LINE_TXT_TO_H = {}
+
+
+def _parse_pick_line_txt(s):
+    """解析 fw8s_log.line（fmt_line 中文格式：主讓一球／客讓半/一／平手）
+    → (handicap, giver)；解析唔到（NULL/雜質）返回 None，由 caller 對
+    closing 做 fallback。reverse 表用 fmt_line 正向生成，0–20 球每 0.25
+    一檔全覆蓋。"""
+    if not s:
+        return None
+    s = str(s).strip()
+    if not s:
+        return None
+    if not _LINE_TXT_TO_H:
+        for i in range(0, 81):
+            h = i * 0.25
+            _LINE_TXT_TO_H[screen_engine.fmt_line(h, 'home')[2:]] = h
+    if s == '平手':
+        return (0.0, None)
+    if s.startswith('主讓'):
+        gv, name = 'home', s[2:]
+    elif s.startswith('客讓'):
+        gv, name = 'away', s[2:]
+    else:
+        gv, name = None, s
+    h = _LINE_TXT_TO_H.get(name)
+    if h is None:
+        m = re.match(r'-?\d+(?:\.\d+)?', name)   # 冇中文名就當係數字串
+        if not m:
+            return None
+        h = float(m.group(0))
+    return (h, gv)
+
+
+_PICK_LINE_COLS_TBLS = ('featured', 'featured_z', 'v1_featured',
+                        'v1_featured_z', 'v3_featured', 'fw_grid_featured')
+
+
+def _migrate_pick_line_cols(conn):
+    """六張精選表補落注時盤口欄 hc/giver（idempotent）。舊行留 NULL，
+    結算遇 NULL 先對 closing——legacy 行口徑唔變。"""
+    for t in _PICK_LINE_COLS_TBLS:
+        cols = {r[1] for r in conn.execute('PRAGMA table_info(%s)' % t)}
+        if 'hc' not in cols:
+            conn.execute('ALTER TABLE %s ADD COLUMN hc REAL' % t)
+        if 'giver' not in cols:
+            conn.execute('ALTER TABLE %s ADD COLUMN giver TEXT' % t)
+
+
+def _stored_first(shc, sgv, chc, cgv):
+    """stored 落注盤優先；NULL 先 closing（一對 line 成對 fallback）。"""
+    return (shc, sgv) if shc is not None else (chc, cgv)
+
+
 _RM_SNAP_SQL = {
     'v3_featured': 'SELECT direction, detail FROM v3_featured '
                    'WHERE match_id=? AND result IS NULL',
@@ -952,6 +1039,12 @@ def _eval_all(conn, ctx, light=False):
         except Exception:
             _pre_rm = {}
     if not light:
+        try:
+            _migrate_pick_line_cols(conn)
+        except sqlite3.Error:
+            pass
+        # 落注時盤（INSERT 六張精選表一併寫入；stored-first 結算用）
+        phc, pgv = _tgt_pick_line(conn, t, mid)
         # 精選W（V3 六條件）
         try:
             fw = ctx.fw()
@@ -959,10 +1052,12 @@ def _eval_all(conn, ctx, light=False):
                                (mid,)).fetchone()
             if fw.get('pass'):
                 conn.execute(
-                    'INSERT INTO v3_featured(match_id,direction,detail,added_at) '
-                    'VALUES(?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                    'direction=excluded.direction, detail=excluded.detail',
-                    (mid, fw['direction'], _fw_meta(fw), now))
+                    'INSERT INTO v3_featured(match_id,direction,detail,added_at,'
+                    'hc,giver) VALUES(?,?,?,?,?,?) '
+                    'ON CONFLICT(match_id) DO UPDATE SET '
+                    'direction=excluded.direction, detail=excluded.detail, '
+                    'hc=excluded.hc, giver=excluded.giver',
+                    (mid, fw['direction'], _fw_meta(fw), now, phc, pgv))
                 log_v3_featured(conn, mid, fw['direction'])
                 acts.append('W保留' if row else 'W新增')
             elif row and row[0] is None:
@@ -986,10 +1081,11 @@ def _eval_all(conn, ctx, light=False):
                                (mid,)).fetchone()
             if d:
                 conn.execute(
-                    'INSERT INTO v1_featured(match_id,direction,added_at) '
-                    'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                    'direction=excluded.direction',
-                    (mid, d, now))
+                    'INSERT INTO v1_featured(match_id,direction,added_at,hc,giver) '
+                    'VALUES(?,?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                    'direction=excluded.direction, hc=excluded.hc, '
+                    'giver=excluded.giver',
+                    (mid, d, now, phc, pgv))
                 log_featured(conn, mid, d)
                 acts.append('V1保留' if row else 'V1新增')
             elif row and row[0] is None:
@@ -999,10 +1095,12 @@ def _eval_all(conn, ctx, light=False):
                                 (mid,)).fetchone()
             if d:
                 conn.execute(
-                    'INSERT INTO featured(match_id,direction,letters,added_at) '
-                    'VALUES(?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                    'direction=excluded.direction, letters=excluded.letters',
-                    (mid, d, meta, now))
+                    'INSERT INTO featured(match_id,direction,letters,added_at,'
+                    'hc,giver) VALUES(?,?,?,?,?,?) '
+                    'ON CONFLICT(match_id) DO UPDATE SET '
+                    'direction=excluded.direction, letters=excluded.letters, '
+                    'hc=excluded.hc, giver=excluded.giver',
+                    (mid, d, meta, now, phc, pgv))
                 log_featured(conn, mid, d)
                 acts.append('V2保留' if row2 else 'V2新增')
             elif row2 and row2[0] is None:
@@ -1012,10 +1110,12 @@ def _eval_all(conn, ctx, light=False):
                                 (mid,)).fetchone()
             if dz:
                 conn.execute(
-                    'INSERT INTO v1_featured_z(match_id,direction,added_at) '
-                    'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                    'direction=excluded.direction',
-                    (mid, dz, now))
+                    'INSERT INTO v1_featured_z(match_id,direction,added_at,'
+                    'hc,giver) VALUES(?,?,?,?,?) '
+                    'ON CONFLICT(match_id) DO UPDATE SET '
+                    'direction=excluded.direction, hc=excluded.hc, '
+                    'giver=excluded.giver',
+                    (mid, dz, now, phc, pgv))
                 log_featured_z(conn, mid, dz)
                 acts.append('V1Z保留' if rowz else 'V1Z新增')
             elif rowz and rowz[0] is None:
@@ -1025,10 +1125,12 @@ def _eval_all(conn, ctx, light=False):
                 'SELECT result FROM featured_z WHERE match_id=?', (mid,)).fetchone()
             if dz:
                 conn.execute(
-                    'INSERT INTO featured_z(match_id,direction,letters,added_at) '
-                    'VALUES(?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                    'direction=excluded.direction, letters=excluded.letters',
-                    (mid, dz, meta, now))
+                    'INSERT INTO featured_z(match_id,direction,letters,added_at,'
+                    'hc,giver) VALUES(?,?,?,?,?,?) '
+                    'ON CONFLICT(match_id) DO UPDATE SET '
+                    'direction=excluded.direction, letters=excluded.letters, '
+                    'hc=excluded.hc, giver=excluded.giver',
+                    (mid, dz, meta, now, phc, pgv))
                 log_featured_z(conn, mid, dz)
                 acts.append('V2Z保留' if rowz2 else 'V2Z新增')
             elif rowz2 and rowz2[0] is None:
@@ -1052,12 +1154,13 @@ def _eval_all(conn, ctx, light=False):
                 if rep.get('pass'):
                     conn.execute(
                         'INSERT INTO fw_grid_featured(grid,match_id,direction,'
-                        'detail,added_at) VALUES(?,?,?,?,?) '
+                        'detail,added_at,hc,giver) VALUES(?,?,?,?,?,?) '
                         'ON CONFLICT(grid,match_id) DO UPDATE SET '
-                        'direction=excluded.direction, detail=excluded.detail',
+                        'direction=excluded.direction, detail=excluded.detail, '
+                        'hc=excluded.hc, giver=excluded.giver',
                         (g, mid, rep['direction'],
                          fw8s_engine.fw8s_meta(rep) if g == '8s'
-                         else _fw_grid_meta(rep), now))
+                         else _fw_grid_meta(rep), now, phc, pgv))
                     acts.append('格%s保留' % g if row else '格%s新增' % g)
                 elif row and row[0] is None:
                     conn.execute(
@@ -1616,25 +1719,31 @@ def _start_unified_scan(mids=None, full=False, light=None):
 # 精選W／精選7／8／8s／8X／88W／新精選／精選12／半全場／V1／V2／好波 全部結果） ============
 def _settle_finished_tools(conn):
     """主動幫全部精選/紀錄表「已完場但未結算」嘅列做結算——語義逐字對齊
-    各頁 lazy settle（pick_result＋入選方向＋company12 尾盤；好波=總入球對
+    各頁 lazy settle（pick_result＋入選方向＋落注時盤 stored hc/giver；
+    legacy 冇 stored 先對 company12 closing；好波=總入球對
     大小線），只係由「被讀先結」變「循環主動全結」。回傳 {表: 結算場數}。
     只 UPDATE result IS NULL 嘅列，歷史永不改動。"""
     now = time.strftime('%Y-%m-%d %H:%M:%S')
     out = {}
+    try:
+        _migrate_pick_line_cols(conn)
+    except sqlite3.Error:
+        pass
 
     def _dir_tbl(tbl):
-        # featured 系五張平表：direction up/down + company12 尾盤
+        # featured 系五張平表：direction up/down + 落注時盤（NULL 先 closing）
         rows = conn.execute(
-            'SELECT x.match_id, x.direction, o.handicap, o.giver, '
-            'm.home_score, m.away_score FROM %s x JOIN matches m '
-            'ON m.id=x.match_id LEFT JOIN odds_asian o '
+            'SELECT x.match_id, x.direction, x.hc, x.giver, '
+            'o.handicap, o.giver, m.home_score, m.away_score FROM %s x '
+            'JOIN matches m ON m.id=x.match_id LEFT JOIN odds_asian o '
             "ON o.match_id=x.match_id AND o.label='closing' "
             'AND o.company_id=12 WHERE x.result IS NULL '
             'AND m.home_score IS NOT NULL' % tbl).fetchall()
         n = 0
-        for mid, d, hc, gv, hs, aws in rows:
+        for mid, d, shc, sgv, chc, cgv, hs, aws in rows:
             if d not in ('up', 'down'):
                 continue
+            hc, gv = _stored_first(shc, sgv, chc, cgv)
             r = pick_result(hc, gv, hs, aws)
             if r is None:
                 continue
@@ -1656,16 +1765,18 @@ def _settle_finished_tools(conn):
     # fw_grid_featured：PK 係 (grid, match_id)——同一場可入多格，方向各自計
     try:
         rows = conn.execute(
-            'SELECT x.grid, x.match_id, x.direction, o.handicap, o.giver, '
-            'm.home_score, m.away_score FROM fw_grid_featured x '
+            'SELECT x.grid, x.match_id, x.direction, x.hc, x.giver, '
+            'o.handicap, o.giver, m.home_score, m.away_score '
+            'FROM fw_grid_featured x '
             'JOIN matches m ON m.id=x.match_id LEFT JOIN odds_asian o '
             "ON o.match_id=x.match_id AND o.label='closing' "
             'AND o.company_id=12 WHERE x.result IS NULL '
             'AND m.home_score IS NOT NULL').fetchall()
         n = 0
-        for g, mid, d, hc, gv, hs, aws in rows:
+        for g, mid, d, shc, sgv, chc, cgv, hs, aws in rows:
             if d not in ('up', 'down'):
                 continue
+            hc, gv = _stored_first(shc, sgv, chc, cgv)
             r = pick_result(hc, gv, hs, aws)
             if r is None:
                 continue
@@ -1725,14 +1836,15 @@ def _settle_finished_tools(conn):
             out['hb_pick_log'] = cur.rowcount
     except sqlite3.Error:
         pass
-    # feat_hourly（語義同 _result_settle.py）
+    # feat_hourly（語義同 _result_settle.py）：用每行自己影低嘅 ah_handicap/
+    # ah_giver（嗰個鐘頭嘅盤＝落注時盤）；NULL 先對 closing
     try:
         rows = conn.execute(
-            'SELECT x.id, x.match_id, x.direction FROM feat_hourly x '
-            'JOIN matches m ON m.id=x.match_id '
+            'SELECT x.id, x.match_id, x.direction, x.ah_handicap, x.ah_giver '
+            'FROM feat_hourly x JOIN matches m ON m.id=x.match_id '
             'WHERE x.settled=0 AND m.home_score IS NOT NULL').fetchall()
         n = 0
-        for rid, mid, direction in rows:
+        for rid, mid, direction, shc, sgv in rows:
             if direction not in ('up', 'down'):
                 continue
             r = conn.execute(
@@ -1740,9 +1852,10 @@ def _settle_finished_tools(conn):
                 'FROM matches m LEFT JOIN odds_asian o ON o.match_id=m.id '
                 "AND o.label='closing' AND o.company_id=12 "
                 'WHERE m.id=?', (mid,)).fetchone()
-            if not r or r[0] is None or r[2] is None:
+            if not r or r[2] is None:
                 continue
-            pr = pick_result(r[0], r[1], r[2], r[3])
+            hc, gv = _stored_first(shc, sgv, r[0], r[1])
+            pr = pick_result(hc, gv, r[2], r[3])
             if pr is None:
                 continue
             res = 'P' if pr == 'P' else ('W' if (pr == 'A')
@@ -2028,6 +2141,9 @@ def _window_update_worker(win):
     import crawler
     with open(os.path.join(crawler.BASE_DIR, 'config.json'), encoding='utf-8') as f:
         cfg = json.load(f)
+    # 同 fbatch（2026-10-24）：人手觸發要快閃失敗，唔好逐場長等重試——
+    # 全死環境每個 get() 最壞 ~11 分鐘，預設 3 次重試會將窗口掣變僵屍
+    cfg['blocked_retry_times'] = 1
     # 限流跟 config.json 分層休息方案（2026-09-29），唔再禁用休息
     cond, wname = WIN_SQL[win]
     conn = sqlite3.connect(DB_PATH, timeout=180)
@@ -2039,15 +2155,29 @@ def _window_update_worker(win):
             'ORDER BY m.kickoff').fetchall()
         _win_state.update(total=len(todo), done=0, ok=0, fail=0)
         fetcher = crawler.Fetcher(conn, cfg)
+        fail_streak = 0
         for i, (mid, ko) in enumerate(todo):
             _win_state['phase'] = f'更新{wname}盤口及賠率 {i + 1}/{len(todo)}'
             try:
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
                     _win_state['ok'] += 1
+                    fail_streak = 0
                 else:
                     _win_state['fail'] += 1
+                    fail_streak += 1
             except Exception:
                 _win_state['fail'] += 1
+                fail_streak += 1
+            _win_state['done'] += 1   # 舊制漏咗——進度條一直 0/N
+            if fail_streak >= 5:
+                # 同 fbatch 斷路器：5 連敗＝真封鎖——收工留清楚訊息，
+                # 唔再逐場捱晒變僵屍（殭屍會鎖死「即時更新」掣）
+                _win_state['error'] = (
+                    '連頭 5 場都爬唔到——titan007 而家真係封緊。'
+                    '等 30 秒週期重試／換網絡後再撳')
+                _scanlog('窗口更新遇真封鎖（5 連敗）——已收工')
+                print('[win-update] 5 連敗收工', flush=True)
+                break
         _win_state['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
         _win_state['error'] = None
         print(f"[win-update] {wname} 完成：{_win_state['ok']} 成 / "
@@ -2158,9 +2288,16 @@ def _fetch_batch_worker(hours):
                     break
             _fbatch_state['done'] += 1
         _fbatch_state['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
-        _fbatch_state['error'] = None
-        print(f"[fbatch] 完成：{_fbatch_state['ok']} 成 / "
-              f"{_fbatch_state['fail']} 敗 / 共 {len(todo)} 場", flush=True)
+        if fail_streak < 5:
+            _fbatch_state['error'] = None
+            print(f"[fbatch] 完成：{_fbatch_state['ok']} 成 / "
+                  f"{_fbatch_state['fail']} 敗 / 共 {len(todo)} 場", flush=True)
+        else:
+            # 熔斷收工：保留已設嘅 error/補跑登記（2026-10-24 修正——
+            # 舊制跌落嚟會被 error=None 洗走，仲印『完成』誤導）
+            print('[fbatch] 熔斷收工：%d 成 / %d 敗（總 %d）——已登記補跑'
+                  % (_fbatch_state['ok'], _fbatch_state['fail'], len(todo)),
+                  flush=True)
         # 2026-10-22 用戶規格「更新後要有動作同反應」：成批搞掂→即刻對全部
         # 更新咗嘅場次做八系統資格重檢（唔合資格剔走／新合資格加入），
         # 計數擺落狀態俾前端顯示「保留X・移出Y・新增Z」。
@@ -2906,7 +3043,8 @@ def _apply_delta(path):
                 rep[t] = 'skip（唔喺白名單）'
                 continue
             dst_cols = {r[1] for r in conn.execute(f'PRAGMA table_info({t})')}
-            cols = [r[1] for r in src.execute(f'PRAGMA table_info({t})')]
+            src_info = src.execute(f'PRAGMA table_info({t})').fetchall()
+            cols = [r[1] for r in src_info]
             if not dst_cols:
                 # 2026-10-21：雲端舊庫冇嘅表（如 competitions）——照源庫 schema 即場起表
                 create_sql = src.execute(
@@ -2916,8 +3054,16 @@ def _apply_delta(path):
                 conn.commit()
                 dst_cols = {r[1] for r in conn.execute(f'PRAGMA table_info({t})')}
             if set(cols) - dst_cols:
-                rep[t] = 'skip（schema 唔夾）'
-                continue
+                # 2026-10-24：由 skip 改自動補欄（additive only——淨係加缺少嘅
+                # 欄，唔郁原有）。本機新加欄位（如今日精選表 hc/giver）雲端
+                # 唔會再成表停同步。boot 遷移都做同樣升級，雙重保險。
+                for _cid, cname, ctype, *_r in src_info:
+                    if cname in dst_cols:
+                        continue
+                    conn.execute(f'ALTER TABLE {t} ADD COLUMN {cname} '
+                                 f'{ctype or "TEXT"}')
+                    dst_cols.add(cname)
+                conn.commit()
             collist = ','.join(cols)
             ph = ','.join('?' * len(cols))
             n = 0
@@ -3026,20 +3172,30 @@ def do_featured_refresh(mid):
         rowz = conn.execute('SELECT result FROM featured_z WHERE match_id=?',
                             (mid,)).fetchone()
         removed = removed_z = False
+        if d or dz:
+            try:
+                _migrate_pick_line_cols(conn)
+            except sqlite3.Error:
+                pass
+            phc, pgv = _pick_line(conn, mid)
         if d:
             conn.execute(
-                'INSERT INTO featured(match_id, direction, added_at) VALUES(?,?,?) '
-                'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction',
-                (mid, d, time.strftime('%Y-%m-%d %H:%M:%S')))
+                'INSERT INTO featured(match_id, direction, added_at, hc, giver) '
+                'VALUES(?,?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                'direction=excluded.direction, hc=excluded.hc, '
+                'giver=excluded.giver',
+                (mid, d, time.strftime('%Y-%m-%d %H:%M:%S'), phc, pgv))
             log_featured(conn, mid, d)
         elif row and row[0] is None:
             conn.execute('DELETE FROM featured WHERE match_id=?', (mid,))
             removed = True
         if dz:
             conn.execute(
-                'INSERT INTO featured_z(match_id, direction, added_at) VALUES(?,?,?) '
-                'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction',
-                (mid, dz, time.strftime('%Y-%m-%d %H:%M:%S')))
+                'INSERT INTO featured_z(match_id, direction, added_at, hc, '
+                'giver) VALUES(?,?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                'direction=excluded.direction, hc=excluded.hc, '
+                'giver=excluded.giver',
+                (mid, dz, time.strftime('%Y-%m-%d %H:%M:%S'), phc, pgv))
             log_featured_z(conn, mid, dz)
         elif rowz and rowz[0] is None:
             conn.execute('DELETE FROM featured_z WHERE match_id=?', (mid,))
@@ -3559,6 +3715,10 @@ def _featured_scan_job():
         _feat_scan['total'] = len(rows)
         import v2_engine
         v2_engine.load_v2_pool(conn)   # 預熱數據池
+        try:
+            _migrate_pick_line_cols(conn)
+        except sqlite3.Error:
+            pass
         added = added_z = 0
         for (mid,) in rows:
             try:
@@ -3570,12 +3730,14 @@ def _featured_scan_job():
                 passed = fl.get('passed_letters') or []
                 meta = json.dumps({'letters': passed, 'states': fl.get('states')},
                                   ensure_ascii=False)
+                phc, pgv = _tgt_pick_line(conn, t, mid)
                 if d and not conn.execute(
                         'SELECT 1 FROM featured WHERE match_id=?', (mid,)).fetchone():
                     conn.execute(
-                        'INSERT INTO featured(match_id, direction, letters, added_at) '
-                        'VALUES(?,?,?,?)',
-                        (mid, d, meta, time.strftime('%Y-%m-%d %H:%M:%S')))
+                        'INSERT INTO featured(match_id, direction, letters, added_at,'
+                        'hc, giver) VALUES(?,?,?,?,?,?)',
+                        (mid, d, meta, time.strftime('%Y-%m-%d %H:%M:%S'),
+                         phc, pgv))
                     log_featured(conn, mid, d)
                     conn.commit()
                     added += 1
@@ -3588,9 +3750,10 @@ def _featured_scan_job():
                 if dz and not conn.execute(
                         'SELECT 1 FROM featured_z WHERE match_id=?', (mid,)).fetchone():
                     conn.execute(
-                        'INSERT INTO featured_z(match_id, direction, letters, added_at) '
-                        'VALUES(?,?,?,?)',
-                        (mid, dz, meta, time.strftime('%Y-%m-%d %H:%M:%S')))
+                        'INSERT INTO featured_z(match_id, direction, letters, '
+                        'added_at, hc, giver) VALUES(?,?,?,?,?,?)',
+                        (mid, dz, meta, time.strftime('%Y-%m-%d %H:%M:%S'),
+                         phc, pgv))
                     log_featured_z(conn, mid, dz)
                     conn.commit()
                     added_z += 1
@@ -3679,9 +3842,10 @@ def _hist_hit(tbl):
 
 
 def _build_featured_rec(row, tbl, now):
-    """精選單場卡片：基本資料＋自動結算（未結算嘅以入選方向計 贏/輸/走）＋brief＋check＋letters"""
+    """精選單場卡片：基本資料＋自動結算（未結算嘅以入選方向計 贏/輸/走）＋brief＋check＋letters
+    結算用落注時影低嘅 stored hc/giver；legacy 冇 stored 先對 closing。"""
     (mid, d, res, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv, ho, ao,
-     letters, hr_, ar_) = row
+     letters, hr_, ar_, phc, pgv) = row
     _hh = _hist_hit(tbl)
     rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
            'hist_hit': _hh['hit'], 'hist_n': _hh['n'],
@@ -3696,7 +3860,8 @@ def _build_featured_rec(row, tbl, now):
         except Exception:
             rec['letters'] = None
     if hs is not None:
-        r = pick_result(hc, gv, hs, aws)
+        shc, sgv = _stored_first(phc, pgv, hc, gv)
+        r = pick_result(shc, sgv, hs, aws)
         if res is None and r is not None:
             # 自動結算（以入選方向計）
             res = 'P' if r == 'P' else ('W' if (r == 'A') == (d == 'up') else 'L')
@@ -3747,13 +3912,18 @@ def _get_featured_full_impl(z=False):
     tbl = 'featured_z' if z else 'featured'
     conn = db()
     now = time.strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        _migrate_pick_line_cols(conn)
+    except sqlite3.Error:
+        pass
     pending_rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
         'm.home_score, m.away_score, m.half_home, m.half_away, '
         '(SELECT g.side FROM match_goals g WHERE g.match_id=m.id '
         "ORDER BY g.seq LIMIT 1) AS fg, ht.name_tc, at.name_tc, c.req_name, "
         'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, f.letters, '
-        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
+        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank), '
+        'f.hc, f.giver '
         f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
         'JOIN competitions c ON c.titan_id=s.titan_id '
@@ -3773,7 +3943,8 @@ def _get_featured_full_impl(z=False):
         '(SELECT g.side FROM match_goals g WHERE g.match_id=m.id '
         "ORDER BY g.seq LIMIT 1) AS fg, ht.name_tc, at.name_tc, c.req_name, "
         'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, f.letters, '
-        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
+        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank), '
+        'f.hc, f.giver '
         f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
         'JOIN competitions c ON c.titan_id=s.titan_id '
@@ -3791,7 +3962,7 @@ def _get_featured_full_impl(z=False):
 
     def _fallback(row):
         (mid, d, res, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv,
-         ho, ao, letters, hr_, ar_) = row
+         ho, ao, letters, hr_, ar_, _phc, _pgv) = row
         rec = {'id': mid, 'direction': d, 'result': res, 'added_at': added,
                'kickoff': ko, 'home': h, 'away': a, 'league': lg,
                'rank_home': hr_, 'rank_away': ar_,
@@ -3856,6 +4027,10 @@ def _v1_scan_job():
         _v1_scan['total'] = len(rows)
         import v2_engine
         v2_engine.load_v2_pool(conn)   # 預熱數據池
+        try:
+            _migrate_pick_line_cols(conn)
+        except sqlite3.Error:
+            pass
         added = added_z = 0
         for (mid,) in rows:
             try:
@@ -3865,12 +4040,13 @@ def _v1_scan_job():
                 fl = v2_engine.featured_letters(conn, t) or {}
                 d = fl.get('direction')
                 passed = fl.get('passed_letters') or []
+                phc, pgv = _tgt_pick_line(conn, t, mid)
                 if d and not conn.execute(
                         'SELECT 1 FROM v1_featured WHERE match_id=?', (mid,)).fetchone():
                     conn.execute(
-                        'INSERT INTO v1_featured(match_id, direction, added_at) '
-                        'VALUES(?,?,?)',
-                        (mid, d, time.strftime('%Y-%m-%d %H:%M:%S')))
+                        'INSERT INTO v1_featured(match_id, direction, added_at,'
+                        'hc, giver) VALUES(?,?,?,?,?)',
+                        (mid, d, time.strftime('%Y-%m-%d %H:%M:%S'), phc, pgv))
                     log_featured(conn, mid, d)
                     conn.commit()
                     added += 1
@@ -3883,9 +4059,9 @@ def _v1_scan_job():
                 if dz and not conn.execute(
                         'SELECT 1 FROM v1_featured_z WHERE match_id=?', (mid,)).fetchone():
                     conn.execute(
-                        'INSERT INTO v1_featured_z(match_id, direction, added_at) '
-                        'VALUES(?,?,?)',
-                        (mid, dz, time.strftime('%Y-%m-%d %H:%M:%S')))
+                        'INSERT INTO v1_featured_z(match_id, direction, added_at,'
+                        'hc, giver) VALUES(?,?,?,?,?)',
+                        (mid, dz, time.strftime('%Y-%m-%d %H:%M:%S'), phc, pgv))
                     log_featured_z(conn, mid, dz)
                     conn.commit()
                     added_z += 1
@@ -3929,13 +4105,18 @@ def _get_v1_featured_full_impl(z=False):
     tbl = 'v1_featured_z' if z else 'v1_featured'
     conn = db()
     now = time.strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        _migrate_pick_line_cols(conn)
+    except sqlite3.Error:
+        pass
     base = (
         'SELECT f.match_id, f.direction, f.result, f.added_at, m.kickoff, '
         'm.home_score, m.away_score, m.half_home, m.half_away, '
         '(SELECT g.side FROM match_goals g WHERE g.match_id=m.id '
         "ORDER BY g.seq LIMIT 1) AS fg, ht.name_tc, at.name_tc, c.req_name, "
         'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, NULL, '
-        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
+        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank), '
+        'f.hc, f.giver '
         f'FROM {tbl} f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
         'JOIN competitions c ON c.titan_id=s.titan_id '
@@ -3956,7 +4137,7 @@ def _get_v1_featured_full_impl(z=False):
 
     def _fallback(row):
         (mid, d, res, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv,
-         ho, ao, _letters, hr_, ar_) = row
+         ho, ao, _letters, hr_, ar_, _phc, _pgv) = row
         rec = {'id': mid, 'direction': d, 'result': res, 'added_at': added,
                'kickoff': ko, 'home': h, 'away': a, 'league': lg,
                'rank_home': hr_, 'rank_away': ar_,
@@ -4009,6 +4190,7 @@ def do_v1_featured_refresh(mid):
         except Exception:
             pass
         d = dz = None
+        t = None
         try:
             t = screen_engine.get_target(conn, mid)
             if t:
@@ -4027,20 +4209,30 @@ def do_v1_featured_refresh(mid):
         rowz = conn.execute('SELECT result FROM v1_featured_z WHERE match_id=?',
                             (mid,)).fetchone()
         removed = removed_z = False
+        if d or dz:
+            try:
+                _migrate_pick_line_cols(conn)
+            except sqlite3.Error:
+                pass
+            phc, pgv = _tgt_pick_line(conn, t, mid)
         if d:
             conn.execute(
-                'INSERT INTO v1_featured(match_id, direction, added_at) VALUES(?,?,?) '
-                'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction',
-                (mid, d, time.strftime('%Y-%m-%d %H:%M:%S')))
+                'INSERT INTO v1_featured(match_id, direction, added_at, hc, giver) '
+                'VALUES(?,?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                'direction=excluded.direction, hc=excluded.hc, '
+                'giver=excluded.giver',
+                (mid, d, time.strftime('%Y-%m-%d %H:%M:%S'), phc, pgv))
             log_featured(conn, mid, d)
         elif row and row[0] is None:
             conn.execute('DELETE FROM v1_featured WHERE match_id=?', (mid,))
             removed = True
         if dz:
             conn.execute(
-                'INSERT INTO v1_featured_z(match_id, direction, added_at) VALUES(?,?,?) '
-                'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction',
-                (mid, dz, time.strftime('%Y-%m-%d %H:%M:%S')))
+                'INSERT INTO v1_featured_z(match_id, direction, added_at, hc, '
+                'giver) VALUES(?,?,?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                'direction=excluded.direction, hc=excluded.hc, '
+                'giver=excluded.giver',
+                (mid, dz, time.strftime('%Y-%m-%d %H:%M:%S'), phc, pgv))
             log_featured_z(conn, mid, dz)
         elif rowz and rowz[0] is None:
             conn.execute('DELETE FROM v1_featured_z WHERE match_id=?', (mid,))
@@ -5120,6 +5312,10 @@ def _v3_featured_scan_job():
             (v3_engine.hk_now_str(),)).fetchall()
         _v3_scan['total'] = len(rows)
         v3_engine.load_v3_pool(conn)   # 預熱 V3 數據池
+        try:
+            _migrate_pick_line_cols(conn)
+        except sqlite3.Error:
+            pass
         added = 0
         for (mid,) in rows:
             try:
@@ -5129,12 +5325,15 @@ def _v3_featured_scan_job():
                 fw = v3_engine.featured_w(conn, t)
                 if fw.get('pass'):
                     d = fw['direction']
+                    phc, pgv = _tgt_pick_line(conn, t, mid)
                     conn.execute(
-                        'INSERT INTO v3_featured(match_id, direction, detail, added_at) '
-                        'VALUES(?,?,?,?) '
-                        'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction, '
-                        'detail=excluded.detail',
-                        (mid, d, _fw_meta(fw), time.strftime('%Y-%m-%d %H:%M:%S')))
+                        'INSERT INTO v3_featured(match_id, direction, detail, '
+                        'added_at, hc, giver) VALUES(?,?,?,?,?,?) '
+                        'ON CONFLICT(match_id) DO UPDATE SET '
+                        'direction=excluded.direction, detail=excluded.detail, '
+                        'hc=excluded.hc, giver=excluded.giver',
+                        (mid, d, _fw_meta(fw), time.strftime('%Y-%m-%d %H:%M:%S'),
+                         phc, pgv))
                     log_v3_featured(conn, mid, d)
                     conn.commit()
                     added += 1
@@ -5199,12 +5398,18 @@ def do_v3_featured_refresh(mid):
         removed = False
         if fw.get('pass'):
             d = fw['direction']
+            try:
+                _migrate_pick_line_cols(conn)
+            except sqlite3.Error:
+                pass
+            phc, pgv = _tgt_pick_line(conn, t, mid)
             conn.execute(
-                'INSERT INTO v3_featured(match_id, direction, detail, added_at) '
-                'VALUES(?,?,?,?) '
+                'INSERT INTO v3_featured(match_id, direction, detail, added_at, '
+                'hc, giver) VALUES(?,?,?,?,?,?) '
                 'ON CONFLICT(match_id) DO UPDATE SET direction=excluded.direction, '
-                'detail=excluded.detail',
-                (mid, d, _fw_meta(fw), time.strftime('%Y-%m-%d %H:%M:%S')))
+                'detail=excluded.detail, hc=excluded.hc, giver=excluded.giver',
+                (mid, d, _fw_meta(fw), time.strftime('%Y-%m-%d %H:%M:%S'),
+                 phc, pgv))
             log_v3_featured(conn, mid, d)
         elif row and row[0] is None:
             conn.execute('DELETE FROM v3_featured WHERE match_id=?', (mid,))
@@ -5217,9 +5422,10 @@ def do_v3_featured_refresh(mid):
 
 
 def _build_v3_rec(row, now):
-    """精選W 單場卡片：基本資料＋狀態＋自動結算（以入選方向計 贏/輸/走）＋conds/gap30"""
+    """精選W 單場卡片：基本資料＋狀態＋自動結算（以入選方向計 贏/輸/走）＋conds/gap30
+    結算用落注時影低嘅 stored hc/giver；legacy 冇 stored 先對 closing。"""
     (mid, d, res, detail, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv,
-     ho, ao, hr_, ar_, shc, sgv, sho, sao, sadded) = row
+     ho, ao, hr_, ar_, shc, sgv, sho, sao, sadded, phc, pgv) = row
     rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
            'home': h, 'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
            'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
@@ -5260,7 +5466,8 @@ def _build_v3_rec(row, now):
         except Exception:
             pass
     if hs is not None:
-        r = pick_result(hc, gv, hs, aws)
+        pkh, pkg = _stored_first(phc, pgv, hc, gv)
+        r = pick_result(pkh, pkg, hs, aws)
         if res is None and r is not None:
             res = 'P' if r == 'P' else ('W' if (r == 'A') == (d == 'up') else 'L')
             c2 = db()
@@ -5282,6 +5489,10 @@ def get_v3_featured_full():
     頁頂統計：場數／命中場數／命中率。"""
     import v3_engine
     conn = db()
+    try:
+        _migrate_pick_line_cols(conn)
+    except sqlite3.Error:
+        pass
     now = v3_engine.hk_now_str()
     rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.detail, f.added_at, '
@@ -5292,7 +5503,8 @@ def get_v3_featured_full():
         'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank), '
         # 2026-10-20：入選/上次檢定時嘅尾盤快照（v3_featured_log）——同而家尾盤
         # 對比，變動大就喺卡片出警告（資格透明度，用戶 10-20 投訴修正）
-        'vl.handicap, vl.giver, vl.home_odds, vl.away_odds, vl.added_at '
+        'vl.handicap, vl.giver, vl.home_odds, vl.away_odds, vl.added_at, '
+        'f.hc, f.giver '
         'FROM v3_featured f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
         'JOIN competitions c ON c.titan_id=s.titan_id '
@@ -5415,8 +5627,13 @@ def _fw_grid_scan_job(g):
         conn.execute('''CREATE TABLE IF NOT EXISTS fw_grid_featured(
             grid TEXT NOT NULL, match_id INTEGER NOT NULL, direction TEXT NOT NULL,
             detail TEXT, added_at TEXT, result TEXT, settled_at TEXT,
+            hc REAL, giver TEXT,
             PRIMARY KEY(grid, match_id))''')
         conn.commit()
+        try:
+            _migrate_pick_line_cols(conn)
+        except sqlite3.Error:
+            pass
         rows = conn.execute(
             "SELECT DISTINCT m.id FROM matches m "
             "JOIN odds_asian oc ON oc.match_id=m.id "
@@ -5435,15 +5652,17 @@ def _fw_grid_scan_job(g):
                        else fw_grid_engine.grid_report(conn, t, g))
                 if rep.get('pass'):
                     d = rep['direction']
+                    phc, pgv = _tgt_pick_line(conn, t, mid)
                     conn.execute(
                         'INSERT INTO fw_grid_featured(grid, match_id, direction, '
-                        'detail, added_at) VALUES(?,?,?,?,?) '
+                        'detail, added_at, hc, giver) VALUES(?,?,?,?,?,?) '
                         'ON CONFLICT(grid, match_id) DO UPDATE SET '
-                        'direction=excluded.direction, detail=excluded.detail',
+                        'direction=excluded.direction, detail=excluded.detail, '
+                        'hc=excluded.hc, giver=excluded.giver',
                         (g, mid, d,
                          fw8s_engine.fw8s_meta(rep) if g == '8s'
                          else _fw_grid_meta(rep),
-                         time.strftime('%Y-%m-%d %H:%M:%S')))
+                         time.strftime('%Y-%m-%d %H:%M:%S'), phc, pgv))
                     conn.commit()
                     added += 1
             except Exception:
@@ -5459,9 +5678,10 @@ def _fw_grid_scan_job(g):
 
 
 def _build_fw_grid_rec(row, now, g):
-    """精選7/8/12 單場卡片（結構同 _build_v3_rec）。"""
+    """精選7/8/12 單場卡片（結構同 _build_v3_rec）。
+    結算用落注時影低嘅 stored hc/giver；legacy 冇 stored 先對 closing。"""
     (mid, d, res, detail, added, ko, hs, aws, hh, ha, fg, h, a, lg, hc, gv,
-     ho, ao) = row
+     ho, ao, phc, pgv) = row
     rec = {'id': mid, 'direction': d, 'added_at': added, 'kickoff': ko,
            'home': h, 'away': a, 'league': lg, 'grid': g,
            'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
@@ -5479,7 +5699,8 @@ def _build_fw_grid_rec(row, now, g):
         except Exception:
             pass
     if hs is not None:
-        r = pick_result(hc, gv, hs, aws)
+        pkh, pkg = _stored_first(phc, pgv, hc, gv)
+        r = pick_result(pkh, pkg, hs, aws)
         if res is None and r is not None:
             res = 'P' if r == 'P' else ('W' if (r == 'A') == (d == 'up') else 'L')
             c2 = db()
@@ -5503,15 +5724,21 @@ def get_fw_grid_full(g):
     conn.execute('''CREATE TABLE IF NOT EXISTS fw_grid_featured(
         grid TEXT NOT NULL, match_id INTEGER NOT NULL, direction TEXT NOT NULL,
         detail TEXT, added_at TEXT, result TEXT, settled_at TEXT,
+        hc REAL, giver TEXT,
         PRIMARY KEY(grid, match_id))''')
     conn.commit()
+    try:
+        _migrate_pick_line_cols(conn)
+    except sqlite3.Error:
+        pass
     now = v3_engine.hk_now_str()
     rows = conn.execute(
         'SELECT f.match_id, f.direction, f.result, f.detail, f.added_at, '
         'm.kickoff, m.home_score, m.away_score, m.half_home, m.half_away, '
         '(SELECT g.side FROM match_goals g WHERE g.match_id=m.id '
         'ORDER BY g.seq LIMIT 1) AS fg, ht.name_tc, at.name_tc, '
-        'c.req_name, oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
+        'c.req_name, oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
+        'f.hc, f.giver '
         'FROM fw_grid_featured f JOIN matches m ON m.id=f.match_id '
         'JOIN seasons s ON s.id=m.season_id '
         'JOIN competitions c ON c.titan_id=s.titan_id '
@@ -5572,14 +5799,20 @@ def do_fw_grid_refresh(mid, g):
         removed = False
         if rep.get('pass'):
             d = rep['direction']
+            try:
+                _migrate_pick_line_cols(conn)
+            except sqlite3.Error:
+                pass
+            phc, pgv = _tgt_pick_line(conn, t, mid)
             conn.execute(
                 'INSERT INTO fw_grid_featured(grid, match_id, direction, '
-                'detail, added_at) VALUES(?,?,?,?,?) '
+                'detail, added_at, hc, giver) VALUES(?,?,?,?,?,?) '
                 'ON CONFLICT(grid, match_id) DO UPDATE SET '
-                'direction=excluded.direction, detail=excluded.detail',
+                'direction=excluded.direction, detail=excluded.detail, '
+                'hc=excluded.hc, giver=excluded.giver',
                 (g, mid, d,
                  fw8s_engine.fw8s_meta(rep) if g == '8s' else _fw_grid_meta(rep),
-                 time.strftime('%Y-%m-%d %H:%M:%S')))
+                 time.strftime('%Y-%m-%d %H:%M:%S'), phc, pgv))
         elif row and row[0] is None:
             conn.execute('DELETE FROM fw_grid_featured WHERE grid=? AND match_id=?',
                          (g, mid))
@@ -5864,7 +6097,8 @@ def get_htft_rules_full():
 
 # ============ 📊 預測結果統計（完場場次逐來源結算一覽，2026-10-11 新增） ============
 # 一頁過睇晒每場比賽各來源（上下盤／精選V2／V1／精選W／精選7/8/12／我的選擇／好波大小）
-# 方向＋結算（贏/輸/走）。結算口徑：讓球 source 對 company12 closing 亞盤
+# 方向＋結算（贏/輸/走）。結算口徑：讓球 source 對落注時盤（各表 stored
+# hc/giver；legacy 冇 stored 先對 company12 closing 亞盤
 # （odds_asian company_id=12 label='closing'）＋全場比分；direction up＝揀讓球方
 # （上盤）。用戶揀嘅場次對「揀嗰刻」影低嘅 pick 線結算。
 _PREDSTATS_TTL = 120
@@ -5993,15 +6227,23 @@ def _predstats_build(days=30, lg=''):
             return {r[0]: r[1:] for r in conn.execute(
                 sql + tail, mids).fetchall()}
 
-        # 各來源方向／已結算 result（有 result 用 result，冇先計）
+        # 各來源方向／已結算 result（有 result 用 result，冇先對落注時盤計，
+        # legacy 冇 stored 先 closing）
+        try:
+            _migrate_pick_line_cols(conn)
+        except sqlite3.Error:
+            pass
         m_main = _map1("SELECT match_id, side, label, pct, den FROM prediction_log"
                        " WHERE label NOT LIKE '%大小%'")
         m_ou = _map1("SELECT match_id, side, label FROM prediction_log"
                      " WHERE label LIKE '%大小%'")
-        m_feat = _map1('SELECT match_id, direction, result FROM featured')
-        m_v1 = _map1('SELECT match_id, direction, result FROM v1_featured')
-        m_v3 = _map1('SELECT match_id, direction, result FROM v3_featured')
-        m_fwg = _map1('SELECT match_id, direction, result, grid'
+        m_feat = _map1('SELECT match_id, direction, result, hc, giver'
+                       ' FROM featured')
+        m_v1 = _map1('SELECT match_id, direction, result, hc, giver'
+                     ' FROM v1_featured')
+        m_v3 = _map1('SELECT match_id, direction, result, hc, giver'
+                     ' FROM v3_featured')
+        m_fwg = _map1('SELECT match_id, direction, result, grid, hc, giver'
                       ' FROM fw_grid_featured')
         m_user = _map1('SELECT match_id, choice, pick_handicap, pick_giver'
                        ' FROM user_picks')
@@ -6014,8 +6256,8 @@ def _predstats_build(days=30, lg=''):
                 f' AND match_id IN ({ph})', mids).fetchall()}
 
         fwg = {}
-        for mid, d, res, g in ((k, *v) for k, v in m_fwg.items()):
-            fwg.setdefault(g or '?', {})[mid] = (d, res)
+        for mid, d, res, g, shc, sgv in ((k, *v) for k, v in m_fwg.items()):
+            fwg.setdefault(g or '?', {})[mid] = (d, res, shc, sgv)
 
         agg = {k: {'n': 0, 'hit': 0, 'miss': 0, 'push': 0, 'rate': None}
                for k, _ in _PREDSTATS_SOURCES}
@@ -6069,9 +6311,11 @@ def _predstats_build(days=30, lg=''):
             for k, tbl in (('v2', m_feat), ('v1', m_v1), ('v3', m_v3)):
                 if mid not in tbl:
                     continue
-                d, res = tbl[mid]
-                v = {'W': '贏', 'L': '輸', 'P': '走'}.get(res) \
-                    or _ps_settle_dir(d, hc, gv, hs, aws)
+                d, res, shc, sgv = tbl[mid]
+                v = {'W': '贏', 'L': '輸', 'P': '走'}.get(res)
+                if v is None:
+                    pkh, pkg = _stored_first(shc, sgv, hc, gv)
+                    v = _ps_settle_dir(d, pkh, pkg, hs, aws)
                 src[k] = {'side': ('上' if d == 'up' else ('下' if d == 'down'
                                                            else d)),
                           'verdict': v}
@@ -6079,9 +6323,11 @@ def _predstats_build(days=30, lg=''):
             for g, k in (('7', 'f7'), ('8', 'f8'), ('12', 'f12')):
                 if mid not in fwg.get(g, {}):
                     continue
-                d, res = fwg[g][mid]
-                v = {'W': '贏', 'L': '輸', 'P': '走'}.get(res) \
-                    or _ps_settle_dir(d, hc, gv, hs, aws)
+                d, res, shc, sgv = fwg[g][mid]
+                v = {'W': '贏', 'L': '輸', 'P': '走'}.get(res)
+                if v is None:
+                    pkh, pkg = _stored_first(shc, sgv, hc, gv)
+                    v = _ps_settle_dir(d, pkh, pkg, hs, aws)
                 src[k] = {'side': ('上' if d == 'up' else ('下' if d == 'down'
                                                            else d)),
                           'verdict': v}
@@ -8130,20 +8376,26 @@ _FW8S_RULES_CACHE = {'ts': 0.0, 'data': None}
 
 
 def _fw8s_settle(conn):
-    """幫 fw8s_log 未結算場次結算（上盤方向='up'：A=贏 B=輸 P=走）。"""
+    """幫 fw8s_log 未結算場次結算（上盤方向='up'：A=贏 B=輸 P=走）。
+    用落注時影低嘅 line（中文盤文字）解析；解析唔到/NULL 先對 closing。"""
     now = time.strftime('%Y-%m-%d %H:%M:%S')
     conn.execute('''CREATE TABLE IF NOT EXISTS fw8s_log(
         match_id INTEGER PRIMARY KEY, league TEXT, direction TEXT,
         mode TEXT, conds TEXT, line TEXT, odds TEXT,
         added_at TEXT, result TEXT, settled_at TEXT)''')
     rows = conn.execute(
-        'SELECT f.match_id, m.home_score, m.away_score, o.handicap, o.giver '
-        'FROM fw8s_log f JOIN matches m ON m.id=f.match_id '
+        'SELECT f.match_id, m.home_score, m.away_score, f.line, '
+        'o.handicap, o.giver FROM fw8s_log f '
+        'JOIN matches m ON m.id=f.match_id '
         'LEFT JOIN odds_asian o ON o.match_id=f.match_id '
         "AND o.label='closing' AND o.company_id=12 "
         'WHERE f.result IS NULL AND m.home_score IS NOT NULL').fetchall()
-    for mid, hs, aws, hc, gv in rows:
+    for mid, hs, aws, ltxt, chc, cgv in rows:
+        pl = _parse_pick_line_txt(ltxt)
+        hc, gv = pl if pl is not None else (chc, cgv)
         r = pick_result(hc, gv, hs, aws)
+        if r is None:
+            continue
         res = 'P' if r == 'P' else ('W' if r == 'A' else 'L')
         conn.execute('UPDATE fw8s_log SET result=?, settled_at=? '
                      'WHERE match_id=?', (res, now, mid))
@@ -8526,9 +8778,11 @@ def _feat_hourly_log(conn, ts):
 
 
 def _feat_hourly_settle(conn):
-    """結算已完場未結算：賽果 W/L/P＋尾盤重算最後資格。"""
+    """結算已完場未結算：賽果 W/L/P（用自己影低嘅 ah_handicap/ah_giver，
+    NULL 先對 closing）＋尾盤重算最後資格。"""
     pend = conn.execute(
-        'SELECT f.id, f.match_id, f.kind, f.direction FROM feat_hourly f '
+        'SELECT f.id, f.match_id, f.kind, f.direction, f.ah_handicap, '
+        'f.ah_giver FROM feat_hourly f '
         'JOIN matches m ON m.id=f.match_id '
         'WHERE f.settled=0 AND m.home_score IS NOT NULL').fetchall()
     if not pend:
@@ -8537,7 +8791,7 @@ def _feat_hourly_settle(conn):
     import fw_grid_engine
     v3_engine.load_v3_pool(conn)
     cache = {}
-    for fid, mid, kind, d in pend:
+    for fid, mid, kind, d, shc, sgv in pend:
         r = conn.execute(
             "SELECT oc.handicap, oc.giver, m.home_score, m.away_score "
             "FROM matches m LEFT JOIN odds_asian oc ON oc.match_id=m.id "
@@ -8546,7 +8800,8 @@ def _feat_hourly_settle(conn):
         res = None
         final_elig = None
         if r and r[2] is not None:
-            pr = pick_result(r[0], r[1], r[2], r[3])
+            hc, gv = _stored_first(shc, sgv, r[0], r[1])
+            pr = pick_result(hc, gv, r[2], r[3])
             if pr == 'P':
                 res = 'P'
             elif pr:
@@ -10134,6 +10389,10 @@ def _seed_v3_featured_import():
             conn.close()
             return False
         now = time.strftime('%Y-%m-%d %H:%M:%S')
+        try:
+            _migrate_pick_line_cols(conn)
+        except sqlite3.Error:
+            pass
         n_ins = 0
         for r in rows:
             mid = int(r['id'])
@@ -10144,18 +10403,18 @@ def _seed_v3_featured_import():
             detail = json.dumps({'imported': 1, 'conds': None, 'gap30': None,
                                  'lookback': r.get('lookback')},
                                 ensure_ascii=False)
-            cur = conn.execute(
-                'INSERT INTO v3_featured(match_id, direction, detail, '
-                'added_at, result, settled_at) VALUES(?,?,?,?,?,?) '
-                'ON CONFLICT(match_id) DO NOTHING',
-                (mid, d, detail, r['kickoff'], result, now))
-            n_ins += cur.rowcount
             oc = conn.execute(
                 "SELECT handicap, giver, home_odds, away_odds FROM odds_asian "
                 "WHERE match_id=? AND company_id=12 "
-                "ORDER BY (label='closing') DESC, label DESC LIMIT 1",
+                "ORDER BY (label='closing') DESC, change_time DESC LIMIT 1",
                 (mid,)).fetchone()
             hc, gv, ho, ao = oc if oc else (None, None, None, None)
+            cur = conn.execute(
+                'INSERT INTO v3_featured(match_id, direction, detail, '
+                'added_at, result, settled_at, hc, giver) VALUES(?,?,?,?,?,?,?,?) '
+                'ON CONFLICT(match_id) DO NOTHING',
+                (mid, d, detail, r['kickoff'], result, now, hc, gv))
+            n_ins += cur.rowcount
             conn.execute(
                 'INSERT INTO v3_featured_log(match_id, direction, added_at, '
                 'handicap, giver, home_odds, away_odds) '

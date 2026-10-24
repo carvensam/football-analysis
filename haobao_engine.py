@@ -507,7 +507,11 @@ class HB:
                     a_avg_total=(((A2.get('gf_a') or 0) + (A2.get('ga_a') or 0))
                                  if A2.get('n_a') else None),
                     h_ga=H.get('ga_h'), a_ga=A2.get('ga_a'),
-                    sline=sline, rank_h=rank_h, rank_a=rank_a)
+                    sline=sline, rank_h=rank_h, rank_a=rank_a,
+                    # 2026-10-24 用戶驗證：8X／新精選 方向原子（由
+                    # _hb_predict_compute 經 fw8x_log/newjx_log 傳入；
+                    # 同 hb_mine 用同一 eval_match 邏輯，唔會漂移）
+                    x8dir=x8dir, jxdir=jxdir)
                 rule_hits = hb_ou_rules.eval_rules(league, F)
             except Exception:
                 import traceback
