@@ -1812,6 +1812,23 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
         _bg_scan_info['newjx']['error'] = st['error']
         _bg_scan_info['w88']['error'] = st['error']
     finally:
+        # 2026-10-25：重爬重算補好波（本地；雲端 demand-driven 唔做）
+        try:
+            if not DISABLE_UPDATE:
+                _conn = db()
+                try:
+                    _mids = [r[0] for r in _conn.execute(
+                        "SELECT m.id FROM matches m WHERE m.home_score IS NULL "
+                        "AND m.kickoff >= datetime('now','+8 hours') "
+                        "AND m.kickoff <= datetime('now','+8 hours','+48 hours') "
+                        "AND EXISTS(SELECT 1 FROM odds_ou o WHERE o.match_id=m.id "
+                        "AND o.label='closing') LIMIT 150")]
+                finally:
+                    _conn.close()
+                if _mids:
+                    _hb_refresh_mids(_mids)
+        except Exception:
+            pass
         st['running'] = False
         st['phase'] = ''
         _UNIFIED_RUNNING[0] = False
@@ -2558,6 +2575,11 @@ def _fetch_batch_worker(hours, ids=None):
         # 順手主動結算（完場場次嘅結果即刻寫入全部工具表）
         try:
             _settle_finished_tools_bg()
+        except Exception:
+            pass
+        # 2026-10-25：批量更新埋好波——變盤場次有 OU 線嘅即刻重算（快取保護）
+        try:
+            _hb_refresh_mids(changed_mids)
         except Exception:
             pass
     except Exception:
@@ -7421,6 +7443,41 @@ def _hb_requalify():
     finally:
         conn.close()
     return removed
+
+
+def _hb_refresh_mids(mids, limit=150):
+    """2026-10-25 重爬重算補好波：crawl16/crawl_mk 補完缺口／批量更新後，對有
+    OU 尾盤嘅場次重算好波（api_hb_predict 自帶賠率 signature 快取——冇變嘅場
+    微秒過，變咗嘅先真計），完事 _hb_requalify 清走唔合資格。
+    背景：重算（requalify_after_backfill）淨做八個精選系統；而 crawl16/mk
+    舊版補完都冇 notify——好波兩頭都漏（用戶一問即中）。雲端唔做
+    （DISABLE_UPDATE）：手機開好波頁時按 signature 即場重算，慳 1C。"""
+    if DISABLE_UPDATE or not mids:
+        return 0
+    n = 0
+    for mid in list(dict.fromkeys(mids))[:limit]:
+        try:
+            conn = db()
+            try:
+                has = conn.execute(
+                    "SELECT 1 FROM odds_ou WHERE match_id=? AND label='closing' "
+                    'LIMIT 1', (mid,)).fetchone()
+            finally:
+                conn.close()
+            if not has:
+                continue
+            api_hb_predict(mid)
+            n += 1
+        except Exception:
+            pass
+    try:
+        _hb_requalify()
+    except Exception:
+        pass
+    if n:
+        print('[hb-refresh] 重算好波 %d 場' % n, flush=True)
+        _scanlog('⚽ 重爬重算：好波重檢 %d 場' % n)
+    return n
 
 
 def api_hb_picks():
