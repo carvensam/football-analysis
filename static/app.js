@@ -1407,6 +1407,10 @@ async function openDetail(mid){
       ${lb('開賽前30分鐘', t.h30)}${lb('開賽前15分鐘', t.h15)}${lb('開賽前10分鐘', t.h10)}${lb('開賽前5分鐘', t.h5)}
     </div>
     <div id="detLgPred"></div>${BetSlip.btn(t, '🎯 我想投注')}</div>
+    <div class="tcard">
+      <h2 style="color:var(--gold2)">🧰 工具預測<span style="font-weight:400;font-size:12px;color:var(--dim)">（每工具＋逐篩選法嘅全庫／同聯賽命中率；ⓩ＝Z 槽同主隊組合）</span></h2>
+      <div id="toolPredBox"><div class="note">工具預測載入中…</div></div>
+    </div>
     ${_pickBar(t.id, 'top')}
     <div class="tcard" id="v3sec">
       <h2 style="color:var(--gold2)">⚽ V3 場次分析（45 項）</h2>
@@ -1422,6 +1426,51 @@ async function openDetail(mid){
   wirePickBars(t.id);
   initV3Section(t.id);
   renderDetLgPred(t.id);
+  loadMatchTools(t.id);
+}
+/* 2026-10-25 詳情頁「🧰 工具預測」（用戶規格，唔簡化到睇唔明）：
+ * 每個有預測嘅工具列出：工具名（Z 槽標明 ⓩ）＋預測（方向/隊/盤/賠率/結果）
+ * ＋工具全庫命中率＋同聯賽命中率＋逐篩選法命中率（全庫＋同聯賽；
+ * 精選W＝每條條件、字頭工具＝每個字頭、格＝每格、8X＝每條因子、
+ * 88W＝每個 market+conds 組合、好波＝每條規則）。數據 /api/match/tools。 */
+async function loadMatchTools(mid){
+  const box = $('#toolPredBox');
+  if (!box) return;
+  let d;
+  try { d = await jget('/api/match/tools?id=' + mid); }
+  catch (e) { box.innerHTML = '<div class="err">工具預測載入失敗：' + esc(String(e)) + '</div>'; return; }
+  if (d.error || !d.tools || !d.tools.length){
+    box.innerHTML = '<div class="note">呢場暫時冇任何工具有預測。（撳「⚡ 更新賠率＋重算資格」即時重檢資格後再睇）</div>';
+    return;
+  }
+  box.innerHTML = d.tools.map(_toolPredHtml).join('');
+}
+function _rateHtml(r, label){
+  if (!r || !r.n) return `<span style="color:var(--dim)">${label} —（無樣本）</span>`;
+  const h = r.hit;
+  const cls = h >= 65 ? 'r-up' : (h < 50 ? 'r-down' : '');
+  return `<span class="${cls}">${label} <b>${h}%</b></span><span style="color:var(--dim)">（${r.w}贏/${r.l}輸/${r.p}走・n=${r.n}）</span>`;
+}
+function _toolPredHtml(t){
+  const dirTxt = t.dir === 'up' ? '上盤' : t.dir === 'down' ? '下盤'
+    : t.dir === '大' ? '大球' : t.dir === '細' ? '細球'
+    : (t.key === 'W88' ? '組合' : (t.dir || '—'));
+  const res = !t.result ? '<span style="color:var(--dim)">未結算</span>'
+    : t.result === 'W' ? '<b class="r-up">✅ 命中</b>'
+    : t.result === 'L' ? '<b class="r-down">❌ 未中</b>'
+    : '<b>➖ 走盤</b>';
+  const zBadge = t.z ? ' <span class="tag" style="background:#5b2ea6;color:#fff;font-size:10px" title="Z 槽＝同主隊字頭組合（舊版 V1/V2 嘅獨立篩選槽）">ⓩ Z</span>' : '';
+  const meth = (t.methods || []).map(m =>
+    `<div class="note" style="margin:1px 0 1px 14px">・${esc(m.name)}：${_rateHtml(m.all, '全庫')}｜${_rateHtml(m.league, '同聯賽')}</div>`
+  ).join('');
+  return `<div style="border:1px solid #2a3550;border-radius:8px;padding:6px 8px;margin:6px 0">
+    <div><b style="color:var(--gold2)">${esc(t.name)}</b>${zBadge}
+      ｜預測：<b>${esc(dirTxt)}${t.team ? '（' + esc(t.team) + '）' : ''}</b>
+      ${t.line ? `｜${esc(t.line)}${t.odds ? ' ' + esc(t.odds) : ''}` : ''}
+      ｜${res}${t.added_at ? `<span style="color:var(--dim);font-size:11px">（${esc(String(t.added_at).slice(0, 16))}入選）</span>` : ''}</div>
+    <div style="margin:2px 0">${_rateHtml(t.all, '【工具】全庫')}　${_rateHtml(t.league, '【工具】同聯賽')}</div>
+    ${meth ? `<div style="margin-top:2px"><span style="font-size:11px;color:var(--dim)">篩選法：</span></div>${meth}` : ''}
+  </div>`;
 }
 /* 🎯 聯賽預測明細：>78% 規則適用嘅場次，喺詳情頂部列出每條規則（lgPred＝主頁已載入嘅 /api/lgpred） */
 function renderDetLgPred(mid){
@@ -2932,6 +2981,7 @@ function _v1Card(p, z, tag){
       <span class="f-teams">${esc(rn(p.home, p.rank_home))} vs ${esc(rn(p.away, p.rank_away))}</span>
       ${p.score ? `<span class="f-score">${esc(p.score)}${p.ht ? `<span style="color:var(--dim);font-weight:400">（半${esc(p.ht)}）</span>` : ''}${p.first_goal ? ` <span style="color:var(--gold2)">首球${p.first_goal === 'home' ? '主' : '客'}</span>` : ''}</span>` : (p.ht ? `<span class="f-score" style="color:var(--dim)">半${esc(p.ht)}</span>` : '')}
       <span class="tag ${p.direction}">${dName}</span>
+      ${z ? '<span class="tag" style="background:#5b2ea6;color:#fff" title="Z 槽＝同主隊字頭組合（同正選字頭獨立篩選，命中統計獨立計）">ⓩ Z 槽</span>' : ''}
       ${p.hist_hit != null ? `<span class="tag" style="border-color:${p.hist_hit >= 80 ? '#2c5c3c' : '#6b5510'};color:${p.hist_hit >= 80 ? '#7ee2a0' : 'var(--gold2)'}" title="呢類訊號（${z ? '同主隊Z' : '正選'}字頭合格）嘅歷史實戰命中率">歷史 ${p.hist_hit}%<small style="opacity:.75">（n=${p.hist_n}）</small></span>` : ''}
       ${lts.length ? `<span class="tag lt">字頭 ${lts.join(' ')}</span>` : ''}
       <span>${res}</span>

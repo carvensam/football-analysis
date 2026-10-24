@@ -5339,6 +5339,286 @@ def _match_result(mid):
         conn.close()
 
 
+def api_match_tools(mid):
+    """2026-10-25 詳情頁「工具預測」（用戶規格，唔簡化到睇唔明）：
+    呢場有預測嘅每個工具——工具名＋預測內容（方向/隊/盤/賠率/結果）＋
+    ① 工具全庫命中率 ② 同一聯賽命中率 ③ 逐篩選法命中率（全庫＋同聯賽；
+    部份工具有多個篩選法：精選W＝每條條件、字頭工具＝每個字頭、格工具＝每格、
+    8X＝每條因子、88W＝每個 market+conds 組合、好波＝每條規則）。
+    「同聯賽」＝同 competitions.req_name（主頁/詳情一貫口徑）。
+    命中率＝(贏+0.5×走)÷總場；樣本細會照顯示 n，等用戶自己判斷可信程度。"""
+    conn = db()
+    try:
+        base = conn.execute(
+            'SELECT c.req_name, ht.name_tc, at.name_tc, '
+            'oc.handicap, oc.giver, oc.home_odds, oc.away_odds '
+            'FROM matches m JOIN seasons s ON s.id=m.season_id '
+            'JOIN competitions c ON c.titan_id=s.titan_id '
+            'JOIN teams ht ON ht.titan_id=m.home_id '
+            'JOIN teams at ON at.titan_id=m.away_id '
+            "LEFT JOIN odds_asian oc ON oc.match_id=m.id AND oc.label='closing' "
+            'AND oc.company_id=12 WHERE m.id=?', (mid,)).fetchone()
+        if not base:
+            return {'error': '找不到賽事'}
+        league, home, away, hc, giver, ho, ao = base
+        line = screen_engine.fmt_line(hc, giver) if hc is not None else None
+        odds = (f'主{ho}/客{ao}' if ho is not None and ao is not None else None)
+
+        def _hit(t):
+            w, l, p = t
+            n = w + l + p
+            return {'w': w, 'l': l, 'p': p, 'n': n,
+                    'hit': round((w + 0.5 * p) / n * 100) if n else None}
+
+        def _bump(dic, name, res):
+            t = dic.setdefault(name, [0, 0, 0])
+            t[0 if res == 'W' else (1 if res == 'L' else 2)] += 1
+
+        def _tally(payload_col, table, where='', params=()):
+            """回 {method: (全庫hit, 同聯賽hit)}：逐行解析 payload（JSON）入面嘅
+            篩選法名單，全庫同同聯賽分開計。"""
+            rows = conn.execute(
+                f'SELECT t.result, c.req_name, t.{payload_col} FROM {table} t '
+                'JOIN matches m ON m.id=t.match_id '
+                'JOIN seasons s ON s.id=m.season_id '
+                'JOIN competitions c ON c.titan_id=s.titan_id '
+                f'WHERE t.result IS NOT NULL {where}', params).fetchall()
+            a, g = {}, {}
+            for res, rl, payload in rows:
+                try:
+                    ms = _methods(payload)
+                except Exception:
+                    continue
+                for name in ms:
+                    if not name:
+                        continue
+                    _bump(a, name, res)
+                    if rl == league:
+                        _bump(g, name, res)
+            return ({k: _hit(v) for k, v in a.items()},
+                    {k: _hit(v) for k, v in g.items()})
+
+        def _plain_rates(table, where='', params=()):
+            rows = conn.execute(
+                f'SELECT t.result, c.req_name FROM {table} t '
+                'JOIN matches m ON m.id=t.match_id '
+                'JOIN seasons s ON s.id=m.season_id '
+                'JOIN competitions c ON c.titan_id=s.titan_id '
+                f'WHERE t.result IS NOT NULL {where}', params).fetchall()
+            a, g = [0, 0, 0], [0, 0, 0]
+            for res, rl in rows:
+                a[0 if res == 'W' else (1 if res == 'L' else 2)] += 1
+                if rl == league:
+                    g[0 if res == 'W' else (1 if res == 'L' else 2)] += 1
+            return _hit(a), _hit(g)
+
+        def _side(dirn):
+            # up＝上盤＝讓球方；down＝下盤＝受讓方
+            if dirn == 'up':
+                return away if giver == 'away' else home
+            if dirn == 'down':
+                return home if giver == 'away' else away
+            return ''
+
+        tools = []
+
+        def add(key, name, is_z, pick, methods_all, methods_lg):
+            """pick=(dir欄值, added_at, result, payload)；methods_*={法:hit}。
+            本場 pick 用咗嘅篩選法先至列出（冇法嘅工具＝齋工具命中率）。"""
+            dirn, added_at, result, payload = pick
+            used = []
+            try:
+                used = [m for m in _methods(payload) if m]
+            except Exception:
+                used = []
+            if not used and payload and isinstance(payload, str) \
+                    and payload not in ('[]', '{}', ''):
+                used = [payload]
+            mrows = []
+            for mname in used:
+                ma = methods_all.get(mname)
+                ml = methods_lg.get(mname)
+                if ma is None and ml is None:
+                    continue
+                mrows.append({'name': mname, 'all': ma, 'league': ml})
+            tools.append({
+                'key': key, 'name': name, 'z': bool(is_z),
+                'dir': dirn, 'team': _side(dirn),
+                'line': line, 'odds': odds,
+                'added_at': added_at, 'result': result,
+                'all': None, 'league': None,   # 下填工具級
+                'methods': mrows})
+
+        def tool_rate_fill(idx, table, where='', params=()):
+            ar, lgr = _plain_rates(table, where, params)
+            tools[idx]['all'] = ar
+            tools[idx]['league'] = lgr
+
+        # ---- 精選W（條件喺 detail JSON conds[].note）----
+        row = conn.execute(
+            'SELECT direction, added_at, result, detail FROM v3_featured '
+            'WHERE match_id=?', (mid,)).fetchone()
+        if row:
+            def _methods(payload):
+                d = json.loads(payload or '{}')
+                return [c.get('note') or c.get('name') or ''
+                        for c in (d.get('conds') or [])]
+            ma, ml = _tally('detail', 'v3_featured')
+            add('W', '精選W', False, row, ma, ml)
+            tool_rate_fill(len(tools) - 1, 'v3_featured')
+
+        # ---- 字頭工具 V1/V2（＋Z 槽）：篩選法＝合格字頭 ----
+        # 注意：letters 淨係 featured/featured_z 有——V1 同 V2 共用同一套字頭
+        # 邏輯（_eval_all 一併寫），所以 V1 嘅篩選法名單同源借過嚟，命中率
+        # 都係照 featured 家族計（同一數據唔重複起爐灶）。
+        def _letters_methods(payload):
+            d = json.loads(payload or '{}')
+            return list((d.get('letters') or {}).get('letters') or [])
+        for key, name, tbl, is_z in (
+                ('V2', '精V2', 'featured', False),
+                ('V2Z', '精V2Z', 'featured_z', True)):
+            row = conn.execute(
+                f'SELECT direction, added_at, result, letters FROM {tbl} '
+                'WHERE match_id=?', (mid,)).fetchone()
+            if not row:
+                continue
+            _methods = _letters_methods
+            ma, ml = _tally('letters', tbl)
+            add(key, name, is_z, row, ma, ml)
+            tool_rate_fill(len(tools) - 1, tbl)
+        for key, name, tbl, is_z, letters_tbl in (
+                ('V1', '精V1', 'v1_featured', False, 'featured'),
+                ('V1Z', '精V1Z', 'v1_featured_z', True, 'featured_z')):
+            row = conn.execute(
+                f'SELECT direction, added_at, result FROM {tbl} '
+                'WHERE match_id=?', (mid,)).fetchone()
+            if not row:
+                continue
+            lt_row = conn.execute(
+                f'SELECT letters FROM {letters_tbl} WHERE match_id=?',
+                (mid,)).fetchone()
+            _methods = _letters_methods
+            ma, ml = _tally('letters', letters_tbl)
+            add(key, name, is_z,
+                (row[0], row[1], row[2], lt_row[0] if lt_row else None),
+                ma, ml)
+            tool_rate_fill(len(tools) - 1, tbl)
+
+        # ---- 格工具 7/8/12/8s：篩選法＝入選格（detail cells[].name）----
+        def _cells_methods(payload):
+            d = json.loads(payload or '{}')
+            return [c.get('name') or c.get('cell') or ''
+                    for c in (d.get('cells') or [])]
+        for g, label in (('7', '精選7'), ('8', '精選8'),
+                         ('12', '精選12'), ('8s', '格8s')):
+            row = conn.execute(
+                "SELECT direction, added_at, result, detail FROM fw_grid_featured "
+                "WHERE grid=? AND match_id=?", (g, mid)).fetchone()
+            if not row:
+                continue
+            _methods = _cells_methods
+            ma, ml = _tally('detail', 'fw_grid_featured',
+                            "AND t.grid=?", (g,))
+            add('F' + g, label, False, row, ma, ml)
+            tool_rate_fill(len(tools) - 1, 'fw_grid_featured',
+                           'AND t.grid=?', (g,))
+
+        # ---- 8s 公式引擎：篩選法＝conds 中文法名 ----
+        def _arr_methods(payload):
+            return [str(x) for x in json.loads(payload or '[]')]
+        row = conn.execute(
+            'SELECT direction, added_at, result, conds FROM fw8s_log '
+            'WHERE match_id=?', (mid,)).fetchone()
+        if row:
+            _methods = _arr_methods
+            ma, ml = _tally('conds', 'fw8s_log')
+            add('S8', '精選8s', False, row, ma, ml)
+            tool_rate_fill(len(tools) - 1, 'fw8s_log')
+
+        # ---- 8X：篩選法＝每條因子 preds ----
+        row = conn.execute(
+            "SELECT direction, datetime(created_ts, 'unixepoch', '+8 hours'), "
+            "result, preds FROM fw8x_log WHERE match_id=?", (mid,)).fetchone()
+        if row:
+            _methods = _arr_methods
+            ma, ml = _tally('preds', 'fw8x_log')
+            add('X8', '8X', False, row, ma, ml)
+            tool_rate_fill(len(tools) - 1, 'fw8x_log')
+
+        # ---- 88W：一場可以中多個 market+conds 組合——每個組合一條（篩選法）----
+        rows = conn.execute(
+            'SELECT market, conds, added_at, result FROM w88_log '
+            'WHERE match_id=?', (mid,)).fetchall()
+        if rows:
+            _methods = lambda payload: [payload]   # payload 預製好組合名
+            all_rows = conn.execute(
+                'SELECT t.result, c.req_name, '
+                "t.market || '＋' || t.conds FROM w88_log t "
+                'JOIN matches m ON m.id=t.match_id '
+                'JOIN seasons s ON s.id=m.season_id '
+                'JOIN competitions c ON c.titan_id=s.titan_id '
+                'WHERE t.result IS NOT NULL').fetchall()
+            a, g = {}, {}
+            for res, rl, combo in all_rows:
+                _bump(a, combo, res)
+                if rl == league:
+                    _bump(g, combo, res)
+            ma = {k: _hit(v) for k, v in a.items()}
+            ml = {k: _hit(v) for k, v in g.items()}
+            ar, lgr = _plain_rates('w88_log')
+            for mkt, conds, added_at, result in rows:
+                tools.append({
+                    'key': 'W88', 'name': '88W', 'z': False,
+                    'dir': None, 'team': '',
+                    'line': line, 'odds': odds,
+                    'added_at': added_at, 'result': result,
+                    'all': ar, 'league': lgr,
+                    'methods': [{'name': f'{mkt}＋{conds}',
+                                 'all': ma.get(f'{mkt}＋{conds}'),
+                                 'league': ml.get(f'{mkt}＋{conds}')}],
+                    'market': mkt})
+
+        # ---- 新精選：篩選法＝16 欄位組合（conds 陣列）----
+        row = conn.execute(
+            'SELECT dir, added_at, result, conds FROM newjx_log '
+            'WHERE match_id=?', (mid,)).fetchone()
+        if row:
+            dirn, added_at, result, conds = row
+            _methods = lambda payload: [
+                '＋'.join(str(x) for x in json.loads(payload or '[]'))]
+            ma, ml = _tally('conds', 'newjx_log')
+            add('JX', '新精選', False,
+                (dirn, added_at, result, conds), ma, ml)
+            tool_rate_fill(len(tools) - 1, 'newjx_log')
+
+        # ---- 好波（大小球）：預測＝大/細；篩選法＝規則 rule ----
+        row = conn.execute(
+            'SELECT side, added_at, result, rule FROM hb_pick_log '
+            'WHERE match_id=?', (mid,)).fetchone()
+        if row:
+            side, added_at, result, rule = row
+            _methods = lambda payload: [payload] if payload else []
+            ma, ml = _tally('rule', 'hb_pick_log')
+            add('HB', '好波', False,
+                (side, added_at, result, rule), ma, ml)
+            tools[-1]['all'], tools[-1]['league'] = _plain_rates('hb_pick_log')
+
+        # ---- K3：篩選法＝conds ----
+        row = conn.execute(
+            'SELECT NULL, added_at, result, conds FROM k3_log '
+            'WHERE match_id=?', (mid,)).fetchone()
+        if row:
+            _methods = _arr_methods
+            ma, ml = _tally('conds', 'k3_log')
+            add('K3', 'K3', False, row, ma, ml)
+            tool_rate_fill(len(tools) - 1, 'k3_log')
+
+        return {'ok': True, 'league': league, 'tools': tools}
+    finally:
+        conn.close()
+
+
+
 def api_v3_summary(mid):
     """V3 一頁過：45 項適用情況＋精選W 六條件結果＋完場賽果（詳情頁頂＋Check 下先用）"""
     import v3_engine
@@ -9706,6 +9986,18 @@ class Handler(BaseHTTPRequestHandler):
                 qs = parse_qs(u.query)
                 mid = int(qs.get('id', ['0'])[0])
                 self._send(200, json.dumps(api_v3_target(mid), ensure_ascii=False, default=_jdefault))
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/match/tools':
+            # 2026-10-25 詳情頁「工具預測」：各工具命中情況＋逐篩選法命中率
+            try:
+                qs = parse_qs(u.query)
+                mid = int(qs.get('id', ['0'])[0])
+                self._send(200, json.dumps(api_match_tools(mid),
+                                           ensure_ascii=False, default=_jdefault))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
