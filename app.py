@@ -2721,6 +2721,21 @@ _INGEST_WHITELIST = {
     'alerts',
 }
 
+# 2026-10-25：細表「全量 replace」清單（同 sync_delta.py FULL_TABLES 對應）——
+# delta 呢啲表係本地全量 dump，所以雲端要行 true replace：唔喺 delta PK
+# 集合嘅雲端行一律 DELETE。舊制淨係 INSERT OR REPLACE，本機資格重檢剔走
+# 咗嘅 pick 永遠殘留雲端，手機 pending 清單越積越多同本機對唔上（10-24
+# 實證：featured 雲端 pending 64 vs 本機 8）。場次範圍表（matches/
+# odds_*/match_*）同 feat_hourly 唔入此列——delta 只係 36h-72h 窗口，
+# 誤用會清走雲端歷史行。
+_DELTA_FULL_REPLACE = frozenset({
+    'v3_featured', 'v3_featured_log', 'featured', 'featured_log',
+    'featured_z', 'featured_z_log', 'v1_featured', 'v1_featured_z',
+    'fw_grid_featured', 'hb_pick_log', 'k3_log', 'newjx_log',
+    'w88_log', 'fw8s_log', 'fw8x_log', 'fw8x_bt2026', 'fw8s_bt',
+    'tool_bt', 'competitions', 'seasons', 'teams',
+})
+
 
 # ============ 2026-10-22 工具入選/剔走推送（用戶規格） ============
 # 邊度觸發：_eval_all 每次評估完（統一掃描/即時更新重檢/逐場重檢全部
@@ -3140,6 +3155,38 @@ def _apply_delta(path):
                     f'INSERT OR REPLACE INTO {t} ({collist}) VALUES ({ph})',
                     rows)
                 n += len(rows)
+            if t in _DELTA_FULL_REPLACE:
+                # true replace：delta 有呢啲表嘅全量內容——雲端 PK 唔喺
+                # delta 集合嘅行要 DELETE（將本機嘅剔走/移除同步落雲端，
+                # 手機 pending 先同本機一致）。PK 用 PRAGMA declared pk；
+                # 臨時表裝 delta PK＋unique index，DELETE 用 NOT EXISTS probe。
+                pk_info = [r for r in src_info if r[5]]
+                if pk_info and not (set(cols) - dst_cols):
+                    conn.execute('DROP TABLE IF EXISTS temp._sync_delta_pk')
+                    conn.execute(
+                        'CREATE TEMP TABLE temp._sync_delta_pk (%s)'
+                        % ', '.join('"%s" %s' % (r[1], r[2] or '')
+                                    for r in pk_info))
+                    pk_list = ', '.join('"%s"' % r[1] for r in pk_info)
+                    conn.executemany(
+                        'INSERT INTO temp._sync_delta_pk (%s) VALUES (%s)'
+                        % (pk_list, ', '.join('?' * len(pk_info))),
+                        src.execute('SELECT %s FROM %s' % (pk_list, t)))
+                    conn.execute(
+                        # SQLite 唔畀 CREATE INDEX 用 schema 限定表名——
+                        # 全部 unqualified，temp 表自然解析到 temp 庫
+                        'CREATE UNIQUE INDEX IF NOT EXISTS '
+                        '_sync_delta_pk_i ON _sync_delta_pk (%s)'
+                        % pk_list)
+                    conds = ' AND '.join(
+                        '{t}."{c}" IS p."{c}"'.format(t=t, c=r[1])
+                        for r in pk_info)
+                    cur = conn.execute(
+                        'DELETE FROM {t} WHERE NOT EXISTS (SELECT 1 FROM '
+                        'temp._sync_delta_pk p WHERE {c})'.format(t=t, c=conds))
+                    if cur.rowcount:
+                        print('[ingest] %s：清走雲端多餘 %d 行（本機已剔走）'
+                              % (t, cur.rowcount), flush=True)
             rep[t] = n
         src.close()
         conn.commit()
