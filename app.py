@@ -1468,7 +1468,11 @@ def _requalify_sweep(mids, cap=300):
 # 冇可能變資格，直接跳。手动掃描通常只涉及近期變動嘅 5-15 場，秒級完成。
 _unified_scan = {'running': False, 'phase': '', 'done': 0, 'total': 0,
                  'added': 0, 'removed': 0, 'kept': 0, 'error': None,
-                 'full': False, 'last': None, 'passes': 0}
+                 'full': False, 'last': None, 'passes': 0,
+                 'triggered_by': None}
+# 2026-10-25 掃描排隊（用戶規格：log 要見到邊個工具觸發緊＋邊個排緊隊）：
+# 統一掃描行緊時，新請求唔再靜默丟棄——入隊，跑完依家嗰輪逐個消化。
+_SCAN_QUEUE = []
 _LAST_UNIFIED = [None]   # 上次統一掃描完成時間（HK，文字）；None＝未掃過
 _UNIFIED_RUNNING = [False]   # 掃描進行中：after_odds_update 讓路＋釘住數據池
 _UNIFIED_STATE_PATH = os.path.join(PARENT_DIR, 'engine',
@@ -1584,19 +1588,22 @@ def _unified_candidates(conn, full):
     return out, sigs
 
 
-def _unified_scan_job(mids=None, full=False, light=False):
+def _unified_scan_job(mids=None, full=False, light=False, tool=None):
     """一場一次過評 12 表＋結算。各工具自家狀態 dict 同步更新——
     所有舊進度條／scan-status 接口照舊有得顯示，前端零改動。
     light=True（雲端 512MB）：淨做純 SQL 系統（8X/88W/新精選），
-    唔預熱數據池，RAM 接近零——同舊雲端三循環總負載相若。"""
+    唔預熱數據池，RAM 接近零——同舊雲端三循環總負載相若。
+    tool（2026-10-25）＝邊個工具觸發（log 歸因）；queue 喺 finally 消化。"""
     st = _unified_scan
     if st['running']:
         return False
     st.update(running=True, error=None, phase='準備中…', done=0,
               added=0, removed=0, kept=0, full=full)
+    st['triggered_by'] = tool or st.get('triggered_by') or '未知'
     _UNIFIED_RUNNING[0] = True
     _NOTIFY_N[0] = 0   # 本輪推送計數（>15 批量標讀防洗版）
-    _scanlog('🔎 統一篩描開始（%s）' % ('全量' if full else '增量'))
+    _scanlog('🔎 統一掃描開始（%s｜觸發：%s）'
+             % ('全量' if full else '增量', st['triggered_by']))
     tools = (_feat_scan, _v1_scan, _v3_scan,
              _fw_grid_scan['7'], _fw_grid_scan['8'],
              _fw_grid_scan['12'], _fw_grid_scan['8s'])
@@ -1771,6 +1778,11 @@ def _unified_scan_job(mids=None, full=False, light=False):
         if not st['error']:
             for d in tools:
                 d['running'] = False
+        # 2026-10-25：消化排隊請求（有人排緊就即刻接力，唔等 5 分鐘循環）
+        try:
+            _drain_scan_queue()
+        except Exception:
+            pass
     return True
 
 
@@ -1784,7 +1796,7 @@ def _unified_loop():
             light = bool(DISABLE_UPDATE)
             full = (not light and _unified_scan['passes'] > 0
                     and _unified_scan['passes'] % 18 == 0)
-            _unified_scan_job(full=full, light=light)
+            _unified_scan_job(full=full, light=light, tool='5分鐘定時循環')
         except Exception:
             traceback.print_exc(limit=3)
         # 2026-10-24：20 分鐘→5 分鐘——爬蟲直接寫新盤唔會即刻通知
@@ -1794,15 +1806,50 @@ def _unified_loop():
         time.sleep(300)
 
 
-def _start_unified_scan(mids=None, full=False, light=None):
-    """所有「重新掃描」掣共用入口：已在跑就回 running，否則背景啟動。
-    light 預設跟環境行（雲端 light），本機全量評估。"""
+def _drain_scan_queue():
+    """統一掃描收工後消化排隊請求（一個一個嚟——每個請求跑完先再 pop
+    下一個，避免同時開兩輪互鬥）。"""
+    while _SCAN_QUEUE and not _unified_scan['running']:
+        req = _SCAN_QUEUE.pop(0)
+        _scanlog('🚀 執行排隊請求：%s（重剩 %d 個排緊）'
+                 % (req['tool'], len(_SCAN_QUEUE)))
+        _unified_scan['triggered_by'] = req['tool']
+        threading.Thread(target=_unified_scan_job,
+                         kwargs={'mids': req['mids'], 'full': req['full'],
+                                 'tool': req['tool']},
+                         daemon=True).start()
+        return
+
+
+def _scan_meta_extra():
+    """2026-10-25：各工具 scan-status 共用附加欄位——邊個工具觸發緊統一
+    掃描＋排隊緊嘅請求（用戶規格：log/進度要見到歸因同排隊）。"""
+    return {'triggered_by': _unified_scan.get('triggered_by'),
+            'queue': [q['tool'] for q in _SCAN_QUEUE],
+            'unified_running': _unified_scan['running'],
+            'unified_done': _unified_scan['done'],
+            'unified_total': _unified_scan['total']}
+
+def _start_unified_scan(mids=None, full=False, light=None, tool='未知'):
+    """所有「重新掃描」掣共用入口：得閒即開；行緊就入隊（2026-10-25 用戶
+    規格——舊制繁忙時靜默丟棄，用戶以為掃描冇反應），跑完依家嗰輪自動接力，
+    每個請求都記低邊個工具觸發，log 全程可見。"""
     if light is None:
         light = bool(DISABLE_UPDATE)
     if _unified_scan['running']:
-        return {'running': True, 'started': False}
+        key = (tool, bool(full), bool(mids))
+        if not any((q['tool'], q['full'], q['mids'] is not None) == key
+                   for q in _SCAN_QUEUE):
+            _SCAN_QUEUE.append({'tool': tool, 'full': bool(full),
+                                'mids': mids,
+                                'ts': time.strftime('%H:%M:%S')})
+            _scanlog('⏳ %s 掃描排隊緊（等依家嗰輪搞掂自動接力；前面仲有 %d 個）'
+                     % (tool, len(_SCAN_QUEUE) - 1))
+        return {'running': True, 'started': False, 'queued': True}
+    _unified_scan['triggered_by'] = tool
     threading.Thread(target=_unified_scan_job,
-                     kwargs={'mids': mids, 'full': full, 'light': light},
+                     kwargs={'mids': mids, 'full': full, 'light': light,
+                             'tool': tool},
                      daemon=True).start()
     return {'running': True, 'started': True}
 
@@ -9936,7 +9983,15 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/featured/scan-status':
-            self._send(200, json.dumps(_feat_scan, ensure_ascii=False))
+            # 2026-10-25 附加掃描歸因＋排隊（前端進度條顯示「邊個觸發」用）；
+            # _feat_scan 原欄位不動，附加 key 向後兼容
+            _st = dict(_feat_scan)
+            _st['triggered_by'] = _unified_scan.get('triggered_by')
+            _st['queue'] = [q['tool'] for q in _SCAN_QUEUE]
+            _st['unified_running'] = _unified_scan['running']
+            _st['unified_done'] = _unified_scan['done']
+            _st['unified_total'] = _unified_scan['total']
+            self._send(200, json.dumps(_st, ensure_ascii=False))
             return
         if u.path == '/api/v1/featured/full':
             try:
@@ -9949,7 +10004,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/v1/featured/scan-status':
-            self._send(200, json.dumps(_v1_scan, ensure_ascii=False))
+            _st = dict(_v1_scan)
+            _st.update(_scan_meta_extra())
+            self._send(200, json.dumps(_st, ensure_ascii=False))
             return
         if u.path == '/api/check/full':
             try:
@@ -10354,7 +10411,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(500, json.dumps({'error': 'w88_engine 模組未載入'},
                                                ensure_ascii=False))
                     return
-                started = _start_unified_scan()
+                started = _start_unified_scan(tool='88W掃描掣')
                 _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps(
                     {'running': True, 'started': started.get('started')},
@@ -10371,7 +10428,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(500, json.dumps({'error': 'newjx_engine 模組未載入'},
                                                ensure_ascii=False))
                     return
-                started = _start_unified_scan()
+                started = _start_unified_scan(tool='新精選掃描掣')
                 _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps(
                     {'running': True, 'started': started.get('started')},
@@ -10522,10 +10579,8 @@ class Handler(BaseHTTPRequestHandler):
                     conn.execute('DELETE FROM featured')
                     conn.commit()
                     conn.close()
-                if not _feat_scan['running'] or not _unified_scan['running']:
-                    _st = _start_unified_scan()
-                else:
-                    _st = {'running': True, 'started': False}
+                # 2026-10-25：行緊都照樣 call——入面會排隊（舊制喺度靜默跳過）
+                _st = _start_unified_scan(tool=body.get('tool') or 'V2/精選W掃描掣')
                 _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps(
                     {'started': _st.get('started', False),
@@ -10555,10 +10610,8 @@ class Handler(BaseHTTPRequestHandler):
                     conn.execute('DELETE FROM v1_featured_z')
                     conn.commit()
                     conn.close()
-                if not _v1_scan['running'] or not _unified_scan['running']:
-                    _st = _start_unified_scan()
-                else:
-                    _st = {'running': True, 'started': False}
+                # 2026-10-25：行緊都照樣 call——入面會排隊
+                _st = _start_unified_scan(tool=body.get('tool') or 'V1掃描掣')
                 _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps(
                     {'started': _st.get('started', False),
@@ -10604,8 +10657,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, json.dumps({'ok': False, 'error': 'g 只可以係 7/8/12/8s'}))
                 return
             try:
-                if not _fw_grid_scan[g]['running']:
-                    _start_unified_scan()
+                # 2026-10-25：行緊都照樣 call——入面會排隊
+                _start_unified_scan(tool='格%s掃描掣' % g)
                 _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
             except Exception as e:
@@ -10681,8 +10734,8 @@ class Handler(BaseHTTPRequestHandler):
                                  '(SELECT id FROM matches WHERE home_score IS NULL)')
                     conn.commit()
                     conn.close()
-                if not _v3_scan['running']:
-                    _start_unified_scan()
+                # 2026-10-25：行緊都照樣 call——入面會排隊
+                _start_unified_scan(tool=body.get('tool') or '精選W掃描掣')
                 _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps({'started': True, 'running': True,
                                             'reset': bool(body.get('reset'))},

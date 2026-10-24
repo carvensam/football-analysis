@@ -2245,7 +2245,7 @@ function fwShareText(p, ud){
 $('#btnFwScan').onclick = async function(){
   this.disabled = true;
   try {
-    await jpost('/api/v3/featured/scan', {});
+    await jpost('/api/v3/featured/scan', {tool: '精選W掃描掣'});
     pollScanJob('fw', '/api/v3/featured/scan-status', '#btnFwScan', '#fwScanInfo', loadFeaturedW);
   } catch (e) {
     toast('掃描失敗：' + e.message);
@@ -3098,7 +3098,7 @@ function v1ShareText(p, z){
 $('#btnV1Scan').onclick = async function(){
   this.disabled = true;
   try {
-    await jpost('/api/v1/featured/scan', {});
+    await jpost('/api/v1/featured/scan', {tool: 'V1掃描掣'});
     pollScanJob('v1', '/api/v1/featured/scan-status', '#btnV1Scan', '#v1ScanInfo', loadV1,
       s => `完成｜新增 ${s.added || 0}（Z ${s.added_z || 0}）${s.error ? '｜錯誤：' + s.error : ''}`);
   } catch (e) {
@@ -3109,7 +3109,7 @@ $('#btnV1Scan').onclick = async function(){
 $('#btnV2Scan').onclick = async function(){
   this.disabled = true;
   try {
-    await jpost('/api/featured/scan', {});
+    await jpost('/api/featured/scan', {tool: 'V2掃描掣'});
     pollScanJob('v2', '/api/featured/scan-status', '#btnV2Scan', '#v1ScanInfo', loadV1);
   } catch (e) {
     toast('掃描失敗：' + e.message);
@@ -3130,8 +3130,11 @@ async function pollScanJob(key, url, btnSel, infoSel, onDone, fmtDone){
     return;
   }
   const info = $(infoSel);
-  if (s.running) {
-    info.textContent = `掃描中 ${s.done}/${s.total}…`;
+  if (s.running || s.unified_running) {
+    const trig = s.triggered_by ? `｜觸發：${s.triggered_by}` : '';
+    const q = (s.queue && s.queue.length) ? `｜⏳排隊：${s.queue.join('、')}` : '';
+    const prog = s.unified_running ? `（統一掃描 ${s.unified_done}/${s.unified_total}）` : '';
+    info.textContent = `掃描中 ${s.done}/${s.total}${prog}${trig}${q}…`;
     _scanTimers[key] = setTimeout(() => pollScanJob(key, url, btnSel, infoSel, onDone, fmtDone), 5000);
     return;
   }
