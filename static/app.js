@@ -1445,11 +1445,19 @@ async function loadMatchTools(mid){
   }
   box.innerHTML = d.tools.map(_toolPredHtml).join('');
 }
-function _rateHtml(r, label){
-  if (!r || !r.n) return `<span style="color:var(--dim)">${label} —（無樣本）</span>`;
-  const h = r.hit;
-  const cls = h >= 65 ? 'r-up' : (h < 50 ? 'r-down' : '');
-  return `<span class="${cls}">${label} <b>${h}%</b></span><span style="color:var(--dim)">（${r.w}贏/${r.l}輸/${r.p}走・n=${r.n}）</span>`;
+function _rateBox(r, lab){
+  if (!r || !r.n) return `<div class="tp-rate"><span class="lab">${lab}</span><span class="big" style="color:var(--dim)">—</span><div class="sub">無樣本</div></div>`;
+  const cls = r.n < 10 ? 'tp-small' : (r.hit >= 65 ? 'tp-hi' : (r.hit < 50 ? 'tp-lo' : ''));
+  const warn = r.n < 10 ? ' ⚠️樣本少' : '';
+  return `<div class="tp-rate ${cls}" title="${lab}：${r.w}贏/${r.l}輸/${r.p}走・共${r.n}場（命中率＝(贏+0.5×走)÷總場）">
+    <span class="lab">${lab}${warn}</span>
+    <span class="big">${r.hit}%</span>
+    <span class="sub">${r.w}贏/${r.l}輸/${r.p}走・n=${r.n}</span></div>`;
+}
+function _methRateTxt(r){
+  if (!r || !r.n) return '—（無樣本）';
+  const pct = `<b style="color:${r.n < 10 ? 'var(--gold2)' : (r.hit >= 65 ? '#7ee2a0' : (r.hit < 50 ? '#ff9d9d' : 'inherit'))}">${r.hit}%</b>`;
+  return `${pct}<small>(n=${r.n})</small>`;
 }
 function _toolPredHtml(t){
   const dirTxt = t.dir === 'up' ? '上盤' : t.dir === 'down' ? '下盤'
@@ -1459,17 +1467,19 @@ function _toolPredHtml(t){
     : t.result === 'W' ? '<b class="r-up">✅ 命中</b>'
     : t.result === 'L' ? '<b class="r-down">❌ 未中</b>'
     : '<b>➖ 走盤</b>';
-  const zBadge = t.z ? ' <span class="tag" style="background:#5b2ea6;color:#fff;font-size:10px" title="Z 槽＝同主隊字頭組合（舊版 V1/V2 嘅獨立篩選槽）">ⓩ Z</span>' : '';
+  const zChip = t.z ? '<span class="tp-z" title="Z 槽＝同主隊字頭組合（舊版 V1/V2 嘅獨立篩選槽，命中統計獨立計）">ⓩ Z 槽</span>' : '';
   const meth = (t.methods || []).map(m =>
-    `<div class="note" style="margin:1px 0 1px 14px">・${esc(m.name)}：${_rateHtml(m.all, '全庫')}｜${_rateHtml(m.league, '同聯賽')}</div>`
+    `<div class="tp-mrow"><span class="tp-mname" title="${esc(m.name)}">${esc(m.name)}</span>` +
+    `<span class="tp-mrate">全庫 ${_methRateTxt(m.all)}｜同聯賽 ${_methRateTxt(m.league)}</span></div>`
   ).join('');
-  return `<div style="border:1px solid #2a3550;border-radius:8px;padding:6px 8px;margin:6px 0">
-    <div><b style="color:var(--gold2)">${esc(t.name)}</b>${zBadge}
-      ｜預測：<b>${esc(dirTxt)}${t.team ? '（' + esc(t.team) + '）' : ''}</b>
-      ${t.line ? `｜${esc(t.line)}${t.odds ? ' ' + esc(t.odds) : ''}` : ''}
-      ｜${res}${t.added_at ? `<span style="color:var(--dim);font-size:11px">（${esc(String(t.added_at).slice(0, 16))}入選）</span>` : ''}</div>
-    <div style="margin:2px 0">${_rateHtml(t.all, '【工具】全庫')}　${_rateHtml(t.league, '【工具】同聯賽')}</div>
-    ${meth ? `<div style="margin-top:2px"><span style="font-size:11px;color:var(--dim)">篩選法：</span></div>${meth}` : ''}
+  return `<div class="tp-card">
+    <div class="tp-head"><span class="tp-name">${esc(t.name)}</span>${zChip}
+      <span>預測：<span class="tp-dir ${t.dir === 'up' || t.dir === '大' ? 'r-up' : 'r-down'}">${esc(dirTxt)}${t.team ? '（' + esc(t.team) + '）' : ''}</span></span>
+      ${t.line ? `<span class="tp-line">${esc(t.line)}${t.odds ? ' ' + esc(t.odds) : ''}</span>` : ''}
+      <span class="tp-res">${res}${t.added_at ? ` <small style="color:var(--dim)">${esc(String(t.added_at).slice(0, 16))}入選</small>` : ''}</span>
+    </div>
+    <div class="tp-rates">${_rateBox(t.all, '全庫命中率')}${_rateBox(t.league, '同聯賽命中率')}</div>
+    ${meth ? `<div class="tp-meth"><div class="tp-mhead">篩選法（本場用咗嘅；每個法嘅全庫／同聯賽命中率）：</div>${meth}</div>` : ''}
   </div>`;
 }
 /* 🎯 聯賽預測明細：>78% 規則適用嘅場次，喺詳情頂部列出每條規則（lgPred＝主頁已載入嘅 /api/lgpred） */
