@@ -216,49 +216,40 @@
       });
   }
 
+  /* 好波預測狀態機（2026-10-25 起——同 haobao_engine.predict 嘅輸出契約，
+   * 得三態，一一對應；改引擎嗰陣一定要埋呢度一齊改）：
+   *   1. ou.pick    → ⭐精選（特大字）——挖掘規則：單條≥88% 或 ≥2 條同向共識。
+   *                    唯一記錄落 hb_pick_log、計命中率、上「高機會精選」專區。
+   *   2. ou.signal  → 🔔訊號（普通字）——挖掘規則單條 82.5-88%，未達精選線。
+   *                    方向＋% 全部來自呢條規則（min(訓練期,驗證期) 命中率），
+   *                    純參考、唔記錄。show 埋規則名（hover）。
+   *   3. 兩者都冇   → 觀望——規則冇命中，冇意見。
+   * 舊制殘留（lg_rule 同聯賽規律／strongest 51項最強訊號／best_rates 共識率）
+   * 已喺 10-25 全數移除——嗰啲係實戰 50.9%＝擲毫嘅已廢系統，唔再顯示。 */
   function fillLean(row, d) {
     var lean = row.querySelector('[data-lean]');
     if (!lean) return;
     var ou = d.ou || {};
-    if (ou.lg_rule) {
-      /* 10-17 同聯賽規律（礦工v3 雙重驗證）——規律 verdict 最優先 */
-      lean.textContent = '🎯規' + ou.lg_rule.side + ' ' + ou.lg_rule.rate + '%';
-      lean.className = 'lean ' + (ou.lg_rule.side === '大' ? 'big' : 'small');
-      lean.style.borderColor = 'var(--gold)';
-      return;
-    }
     if (ou.pick) {
       lean.textContent = '⭐精選' + ou.pick.side + ' ' + ou.pick.best + '%';
       lean.className = 'lean mega ' + (ou.pick.side === '大' ? 'big' : 'small');
       lean.style.borderColor = 'var(--gold)';
+      lean.title = '挖掘規則精選（單條≥88% 或 ≥2 條同向共識）——記錄落庫計統計';
       return;
     }
-    if (ou.lean) {
-      var br = (ou.best_rates || {})[ou.lean];
-      lean.textContent = (ou.lean === '大' ? '大球' : '細球') +
-        (br != null ? ' ' + br + '%' : '') +
-        (ou.n_voted != null ? '｜' + ou.n_voted + '項' : '');
-      lean.className = 'lean ' + (ou.lean === '大' ? 'big' : 'small');
-    } else if (ou.strongest && ou.strongest.rate >= 0.52 && ou.line != null) {
-      /* 大字/細字擺最前面＋色碼（大=金、細=綠），一眼睇到方向，唔使撳入去
-       * （2026-10-11 用戶：「61% 即係大定細？」——舊版「最強訊號細 61%」
-       *   個方向字埋喺中間唔夠显眼）
-       * 2026-10-11 修正（用戶：「表列無展示大小」）：共識門檻外，有最強單項訊號
-       *   （n≥30 已係引擎保證）就照顯示方向，52–58% 加「（弱）」標記，
-       *   只有 <52% 或完全冇訊號先顯示「觀望（共識不足）」。
-       * 2026-10-25 修正（重跑檢查發現）：呢個「最強訊號」係 51 項分析票數
-       *   共識嘅最強一項＝舊共識系統殘留（10-22 已廢：實戰 50.9%＝擲毫）。
-       *   唔再顯示方向做訊號——只標「舊系統參考」防誤導；真方向睇 ⭐精選
-       *   或規則訊號。 */
-      lean.textContent = '舊系統參考（勿當訊號）';
+    if (ou.signal) {
+      lean.textContent = '🔔訊號' + ou.signal.side + ' ' + ou.signal.rate + '%';
+      lean.className = 'lean ' + (ou.signal.side === '大' ? 'big' : 'small');
+      lean.style.borderColor = 'var(--gold)';
+      lean.title = '單條挖掘規則 ' + ou.signal.rate + '%（訓練/驗證兩期較低者）——' +
+        '未達精選門檻（≥88% 或共識），純參考唔記錄。規則：' +
+        (ou.signal.label || '（無名）');
+      return;
+    }
+    if (ou.line != null) {
+      lean.textContent = '觀望';
       lean.className = 'lean';
-      lean.style.color = 'var(--dim)';
-      lean.title = '51 項分析最強單項：' + (ou.strongest.side === '大' ? '大' : '細') +
-        ' ' + Math.round(ou.strongest.rate * 100) + '%（n=' + ou.strongest.n +
-        '）——屬已廢舊共識系統（實戰 50.9%），純參考唔係預測';
-    } else if (ou.line != null) {
-      lean.textContent = '觀望（共識不足）';
-      lean.className = 'lean';
+      lean.title = '規則冇命中——唔場場預測，觀望係常態';
     } else {
       lean.textContent = '未開盤';
       lean.className = 'lean';
@@ -296,50 +287,24 @@
       h += gi('尾盤線', ou.line + ' 球');
       h += gi('水位', '大 ' + (ou.over_odds != null ? ou.over_odds : '—') +
                   '｜細 ' + (ou.under_odds != null ? ou.under_odds : '—'));
-      /* 2026-10-16：同列表徽章完全同一優先次序（精選＞共識＞最強單項≥52%＞觀望）。
-       * 舊版淨係顯示共識——85% 場次共識不足時，列表話「細 64%」、詳情話
-       * 「觀望」，用戶回報「列表同詳情唔一致」。最強單項做主打時照實標明
-       * 來源同「共識不足」，等用戶知邊個為準。 */
+      /* 2026-10-25：同 fillLean（列表徽章）完全同一三態合約——
+       * ⭐精選（ou.pick）→ 🔔訊號（ou.signal）→ 觀望。舊制殘留
+       * （lg_rule／strongest 最強單項／best_rates 共識）已全數移除：
+       * 嗰啲係 10-22 已廢嘅舊共識系統（實戰 50.9%＝擲毫），唔再主導顯示。 */
       var leanTxt;
-      if (ou.lg_rule) {
-        /* 10-17 同聯賽規律（礦工v3 雙重驗證 82.5% 閘）——最優先 verdict */
-        var _lr = ou.lg_rule;
-        leanTxt = '<span style="color:var(--gold2)">🎯同聯賽規律 ' +
-                  esc(String(_lr.side)) + ' ' + esc(String(_lr.rate)) + '%</span>' +
-                  '<br><small style="color:var(--dim)">' +
-                  esc(((_lr.conds || []).join('＋'))) +
-                  '｜同聯賽 n=' + esc(String(_lr.n_lg != null ? _lr.n_lg : '?')) +
-                  '・全庫 n=' + esc(String(_lr.n_all != null ? _lr.n_all : '?')) + '</small>';
-      } else if (ou.pick) {
+      if (ou.pick) {
         leanTxt = '<span style="color:var(--gold2)">⭐精選' + ou.pick.side + '</span>' +
-                  '（最高單項 ' + ou.pick.best + '%）' +
-                  (ou.lean && ou.lean !== ou.pick.side
-                    ? '<br><small style="color:var(--dim)">共識：' + ou.lean +
-                      '｜同精選相反，以精選為準</small>' : '');
-      } else if (ou.lean === '大' || ou.lean === '細') {
-        leanTxt = '<span class="' + (ou.lean === '大' ? 'pct-over' : 'pct-under') +
-                  '">' + (ou.lean === '大' ? '大球' : '細球') + '</span>';
-        if (ou.strongest && ou.strongest.side !== ou.lean) {
-          leanTxt += '<br><small style="color:var(--dim)">最強單項訊號：' +
-            ou.strongest.side + ' ' + Math.round(ou.strongest.rate * 100) +
-            '%（n=' + ou.strongest.n + '）｜同共識相反，以共識為準</small>';
-        }
-      } else if (ou.strongest && ou.strongest.rate >= 0.52 && ou.line != null) {
-        var s0 = ou.strongest.side;
-        var sstrong = ou.strongest.rate >= 0.58;
-        leanTxt = '<span class="' + (s0 === '大' ? 'pct-over' : 'pct-under') +
-                  '">' + (s0 === '大' ? '大球' : '細球') + ' ' +
-                  Math.round(ou.strongest.rate * 100) + '%</span>' +
-                  '<br><small style="color:var(--dim)">最強單項訊號 n=' +
-                  ou.strongest.n + (sstrong ? '' : '，弱') +
-                  '｜共識不足，以單項訊號顯示（同列表一致）</small>';
+                  '（' + ou.pick.best + '%｜單條≥88% 或 ≥2 條同向共識）' +
+                  '<br><small style="color:var(--dim)">' +
+                  esc(ou.pick.title || '') + '</small>';
+      } else if (ou.signal) {
+        leanTxt = '<span style="color:var(--gold2)">🔔訊號' + ou.signal.side + '</span>' +
+                  '（' + ou.signal.rate + '%｜單條規則，未達精選線）' +
+                  '<br><small style="color:var(--dim)">規則：' +
+                  esc(ou.signal.label || '（無名）') + '</small>';
       } else {
-        leanTxt = '<span style="color:var(--dim)">觀望（共識不足）</span>';
-        if (ou.strongest) {
-          leanTxt += '<br><small style="color:var(--dim)">最強單項訊號：' +
-            ou.strongest.side + ' ' + Math.round(ou.strongest.rate * 100) +
-            '%（n=' + ou.strongest.n + '）</small>';
-        }
+        leanTxt = '<span style="color:var(--dim)">觀望</span>' +
+                  '<br><small style="color:var(--dim)">規則冇命中——唔場場預測，觀望係常態</small>';
       }
       h += gi('預測', leanTxt +
                   (ou.confidence ? '（信心' + ou.confidence + '）' : ''));
