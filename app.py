@@ -1146,6 +1146,23 @@ def _eval_all(conn, ctx, light=False):
         t = None
     if not t:
         return acts
+    # 2026-10-26 馬後炮守衛（用戶實證：8X 通知彈 2024-01-06 舊場）：
+    # backfill_removed_from_alerts／watcher 等通道會對**已開賽**嘅歷史場
+    # 重評，舊制 _eval_all 照樣 INSERT 各預測表——而且方向用「而家」嘅
+    # 排名/近績計（開賽嗰刻根本冇呢啲數據），係純垃圾行兼觸發新預測
+    # 彈窗。開賽超過 10 分鐘（同各引擎 scan grace 一致）→ 全部寫表分支
+    # 跳過（唔新增亦唔刪；結算由 settle 流程負責）。kickoff 係本地時間
+    # 字串，用 utcnow+8 比較（同機器時區無關）。
+    _ko = t.get('kickoff')
+    if _ko:
+        try:
+            from datetime import datetime, timedelta, timezone
+            _hk_now = datetime.now(timezone.utc) + timedelta(hours=8)
+            if datetime.strptime(str(_ko)[:16], '%Y-%m-%d %H:%M') \
+                    < _hk_now - timedelta(minutes=10):
+                return acts
+        except ValueError:
+            pass
     now = time.strftime('%Y-%m-%d %H:%M:%S')
     # 2026-10-24 剔走記錄：評估前快照各表未結算列（方向＝被剔嗰注嘅方向）。
     # 只係 PK 查詢，微秒級；light（雲端）跳過。

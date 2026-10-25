@@ -529,6 +529,11 @@ def newsince(conn, since):
     cur = conn.execute(
         'SELECT match_id, kickoff, league, home, away, direction, '
         'created_ts FROM fw8x_log WHERE created_ts > ? '
+        # 2026-10-26 修正（用戶實證：彈窗出 2024-01-06 舊場）：新預測彈窗
+        # 淨係彈「未開賽／啱啱開賽」嘅場；馬後炮行（歷史場重評插入）
+        # 唔可以再彈出嚟。kickoff 係本地時間字串，同 _unified_candidates
+        # 一樣用 '+8 hours' 口徑（同機器時區無關）。
+        "AND kickoff >= datetime('now','+8 hours','-30 minutes') "
         'ORDER BY created_ts', (since,))
     cols = [d[0] for d in cur.description]
     return [dict(zip(cols, r)) for r in cur.fetchall()]
