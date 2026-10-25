@@ -9842,6 +9842,27 @@ def _sync_push_now(force=False, cooldown=300):
                  os.path.join(PARENT_DIR, 'sync_delta.py'), '--push'],
                 timeout=600, capture_output=True)
             print('[sync-now] 事件驅動推送完成', flush=True)
+            # 2026-10-25 代理池熱同步：最靚 400 個驗證代理推俾雲端（Fetcher
+            # mtime 重載，手機爬行即提速）
+            try:
+                _gp = os.path.join(PARENT_DIR, 'logs', 'good_proxies.log')
+                _lines = [l.strip() for l in open(_gp, encoding='ascii',
+                                                  errors='ignore')
+                          if l.strip().startswith('http')][-400:]
+                if _lines:
+                    _req = urllib.request.Request(
+                        'https://football-analysis-uk0s.onrender.com'
+                        '/api/admin/pool',
+                        data=json.dumps(_lines).encode(),
+                        headers={'X-Sync-Key': SYNC_KEY,
+                                 'Content-Type': 'application/json'},
+                        method='POST')
+                    _r = urllib.request.urlopen(_req, timeout=60)
+                    print('[sync-now] 代理池已推雲：%s' % _r.read()[:60],
+                          flush=True)
+            except Exception as _e:
+                print('[sync-now] 代理池推送失敗：%s' % str(_e)[:80],
+                      flush=True)
         except Exception:
             pass
     threading.Thread(target=_bg, daemon=True).start()
@@ -10746,6 +10767,28 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path != '/' and u.path.endswith('/'):
             u = u._replace(path=u.path.rstrip('/'))
+        if u.path == '/api/admin/pool':
+            # 2026-10-25 代理池熱同步：本機連 sync 推埋最新「生產驗證過」代理
+            # 俾雲端——雲端映像焗入嘅池係舊貨（10-24），手機爬得慢嘅元兇。
+            # Fetcher 睇 mtime 自動重載，落地即生效。
+            try:
+                if self.headers.get('X-Sync-Key') != SYNC_KEY:
+                    self._send(403, json.dumps({'ok': False, 'error': 'key'},
+                                               ensure_ascii=False))
+                    return
+                n = int(self.headers.get('Content-Length', 0))
+                pool = json.loads(self.rfile.read(n) or b'[]')
+                import crawler as _cr
+                with open(os.path.join(_cr.BASE_DIR, 'proxy_pool.json'),
+                          'w', encoding='utf-8') as _f:
+                    json.dump({'proxies': pool}, _f)
+                print('[pool] 代理池已更新：%d 個' % len(pool), flush=True)
+                self._send(200, json.dumps({'ok': True, 'n': len(pool)},
+                                           ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
         if u.path == '/api/admin/ingest':
             # 熱數據增量同步入口（sync_delta.py 每 30 分鐘推一次）
             # 收 gzipped sqlite，內含同 schema 嘅熱表，全部 INSERT OR REPLACE
