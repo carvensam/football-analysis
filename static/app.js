@@ -3336,11 +3336,17 @@ async function shareText(txt){
     checkToolBell(true);
     ScanLog.start();
     // 主頁／事後回查／過往紀錄自動刷新（完場狀態、新場次、新結算會自己更新，2026-09-29）
+    // 2026-10-25 加：工具頁（精選W/V1/V2/格）一齊自動刷新——watcher 重算後
+    // bust 快取係伺服器端即時，但使用者坐喺工具頁要等到轉頁先見新結果；
+    // 而家 60 秒內自動攞（輕量 loader，唔包括 iframe——免成分鐘閃爍重載）。
     setInterval(() => {
       if (document.hidden) return;
       if (curPage === 'home' && !_updBusy) loadHome();
       else if (curPage === 'review') loadReview();
       else if (curPage === 'featlog') loadFeatlog();
+      else if (['featw', 'v1', 'check', 'fw7', 'fw8', 'fw12', 'fw8s',
+                'picks', 'removed', 'oupred', 'feathourly', 'x8']
+               .indexOf(curPage) >= 0) refreshCurrentTool();
     }, 60000);
     // 賠率變舊自動重抓（>10 分鐘）
     setInterval(async () => {
