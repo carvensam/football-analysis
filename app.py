@@ -1382,6 +1382,8 @@ def _eval_all(conn, ctx, light=False):
         except Exception:
             pass
         _bust_tool_caches()
+        # 2026-10-25 即時推送：有新增/剔走即刻廣播（SSE client 1-3 秒內刷新）
+        _publish_event({'type': 'reval', 'mid': mid, 'acts': acts})
     # 2026-10-24 剔走專頁：『移出』動作連方向記錄落 removed_picks
     if _pre_rm and any('移出' in a for a in acts):
         try:
@@ -3296,6 +3298,64 @@ def api_repair():
     return {'ok': True, 'acts': acts}
 
 
+# ============ 2026-10-25 即時推送（SSE）============
+# 用戶規格：「唔係等動作唔知幾耐先反映——係即時！」輪詢制最細都要 60 秒；
+# 而家係 server-push：重算有實質變動（新增/剔走）→ 即刻推俾全部開緊嘅頁面，
+# 開到畫面嘅使用者 1-3 秒內見到新結果。SSE 行 ThreadingHTTPServer 冇問題，
+# Render proxy 靠 X-Accel-Buffering: no 防緩衝。
+_EVENT_SUBS = []
+_EVENT_LOCK = threading.Lock()
+
+
+def _publish_event(evt):
+    """廣播俾所有已連接嘅 SSE client（queue 滿/已斷嘅自動清）。"""
+    dead = []
+    with _EVENT_LOCK:
+        for q in _EVENT_SUBS:
+            try:
+                q.put_nowait(evt)
+            except Exception:
+                dead.append(q)
+        for q in dead:
+            try:
+                _EVENT_SUBS.remove(q)
+            except ValueError:
+                pass
+
+
+def api_events(handler):
+    """GET /api/events——SSE 長連線。20 秒 ping 一次防代理斷線。"""
+    import queue as _q
+    q = _q.Queue(maxsize=200)
+    with _EVENT_LOCK:
+        _EVENT_SUBS.append(q)
+    try:
+        handler.send_response(200)
+        handler.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+        handler.send_header('Cache-Control', 'no-cache')
+        handler.send_header('Connection', 'keep-alive')
+        handler.send_header('X-Accel-Buffering', 'no')
+        handler.end_headers()
+        handler.wfile.write(b': ok\n\n')
+        handler.wfile.flush()
+        while True:
+            try:
+                evt = q.get(timeout=20)
+                data = json.dumps(evt, ensure_ascii=False)
+                handler.wfile.write(b'data: ' + data.encode('utf-8') + b'\n\n')
+            except _q.Empty:
+                handler.wfile.write(b': ping\n\n')
+            handler.wfile.flush()
+    except (BrokenPipeError, ConnectionResetError, OSError):
+        pass
+    except Exception:
+        pass
+    finally:
+        with _EVENT_LOCK:
+            if q in _EVENT_SUBS:
+                _EVENT_SUBS.remove(q)
+
+
 def _bust_tool_caches():
     """有入選/剔走動作就即刻清相關顯示快取——用戶規格『剔走咗 100%
     唔會再喺篩選列表出現』：DB 已 DELETE，快取都唔准殘留（舊制 fw8s
@@ -3557,6 +3617,18 @@ def do_featured_refresh(mid):
             conn.execute('DELETE FROM featured_z WHERE match_id=?', (mid,))
             removed_z = True
         conn.commit()
+        # 2026-10-25 即時推送：單場重整有實質變動（加入/更新/剔走）都廣播
+        _acts = []
+        if d:
+            _acts.append('V2' + ('更新' if row else '新增'))
+        elif removed:
+            _acts.append('V2移出')
+        if dz:
+            _acts.append('V2Z' + ('更新' if rowz else '新增'))
+        elif removed_z:
+            _acts.append('V2Z移出')
+        if _acts:
+            _publish_event({'type': 'reval', 'mid': mid, 'acts': _acts})
     finally:
         conn.close()
     return {'ok': True, 'direction': d, 'direction_z': dz,
@@ -7754,6 +7826,9 @@ def _hb_log_pick(mid, lg, ou):
              time.strftime('%Y-%m-%d %H:%M:%S'), method,
              pick.get('rule_label')))
         conn.commit()
+        # 2026-10-25 即時推送：好波新入選/轉方向都廣播
+        _publish_event({'type': 'reval', 'mid': mid,
+                        'acts': ['好波' + str(side)]})
         # 2026-10-22 優化：每次記錄後順手更新 live 規則健康度（停腐化規則）
         try:
             _hb_rule_gate_update(conn)
@@ -10174,6 +10249,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == '/api/fetch-batch-status':
             self._send(200, json.dumps(fbatch_status(), ensure_ascii=False))
+            return
+        if u.path == '/api/events':
+            # 2026-10-25 即時推送（SSE）——長連線，行完先 return
+            try:
+                api_events(self)
+            except Exception:
+                pass
             return
         if u.path == '/api/scan-status':
             # 2026-10-22 通用掃描狀態（newjx／w88 背景作業真實進度）：
