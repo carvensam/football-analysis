@@ -826,8 +826,9 @@ $('#twinClose').onclick = () => Twin.close();
 $('#twinModal').addEventListener('click', ev => {
   if (ev.target.id === 'twinModal') Twin.close();
 });
-/* 主頁三欄（2026-10-16）：精選8／精選8s／好波大細。好波同好波頁徽章同口径
- * （精選＞共識＞最強單項≥52%），三個來源各自獨立——冇入選/冇快取就唔顯示。 */
+/* 主頁訊號帶（2026-10-16 三欄：精選8／精選8s／好波大細；2026-10-25 用戶
+ * 規格改兩欄——「波」好波大細徽章係非篩選結果殘留（同朝早清除嘅好波 chip
+ * 同一性質），唔再喺主頁展示。兩個來源各自獨立——冇入選/冇快取就唔顯示。 */
 function _pred3Badge(m){
   if (!m) return '';
   const st = 'display:inline-block;font-size:10px;line-height:16px;padding:0 4px;' +
@@ -841,13 +842,6 @@ function _pred3Badge(m){
     parts.push('<span style="' + st + 'background:rgba(80,140,255,.12);color:#7ea8ff;' +
                'border:1px solid rgba(80,140,255,.35)" title="精選8s（上盤公式入選方向）">8s·' +
                esc(m.f8s) + '</span>');
-  if (m.hb_ou){
-    const big = String(m.hb_ou).indexOf('大') >= 0;
-    parts.push('<span style="' + st + 'background:' +
-               (big ? 'rgba(220,80,80,.12);color:var(--up);border:1px solid rgba(220,80,80,.35)'
-                    : 'rgba(80,200,120,.10);color:var(--down);border:1px solid rgba(80,200,120,.35)') +
-               '" title="好波大小（同好波頁徽章同口径）">波·' + esc(String(m.hb_ou)) + '</span>');
-  }
   return parts.join('');
 }
 /* ---------- 同聯賽/杯賽命中率（2026-10-17 用戶）：六源速查 ----------

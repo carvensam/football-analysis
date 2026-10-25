@@ -3042,12 +3042,34 @@ def _act_tool_name(a):
     return None
 
 
+def _notify_window_ok(conn, mid):
+    """2026-10-25 用戶規格：彈出通知淨限主頁窗口（即時至未來7日）嘅未賽場次——
+    歷史 backlog 重檢／遠期（>7日）場次嘅入選/剔走唔再彈通知（用戶投訴更新時
+    彈出唔知邊日嘅賽事）。下界寬 1 小時：啱啱開賽未結束嘅場照通知；已完賽
+    （有比分）唔彈——完場後嘅資格變動冇推送意義。場次唔喺庫（理論上唔會，
+    異常情況）照彈——寧彈唔好漏。"""
+    try:
+        if conn.execute('SELECT 1 FROM matches WHERE id=?',
+                        (mid,)).fetchone() is None:
+            return True
+        return conn.execute(
+            "SELECT 1 FROM matches WHERE id=? AND home_score IS NULL "
+            "AND kickoff >= datetime('now','+8 hours','-1 hours') "
+            "AND kickoff <= datetime('now','+8 hours','+7 days')",
+            (mid,)).fetchone() is not None
+    except Exception:
+        return True   # 查唔到唔阻塞通知（寧彈唔好漏）
+
+
 def _notify_tool(conn, mid, acts):
     """將 _eval_all 嘅動作列表翻成推送（🆕入選／❌剔走）。best-effort：
     任何錯誤都唔影響掃描本體。同場同工具同類型 12 小時內去重。"""
     news = [a for a in acts if '新增' in a]
     rems = [a for a in acts if '移出' in a]
     if not news and not rems:
+        return
+    # 2026-10-25 用戶規格：窗口外（歷史/遠期）場次唔彈通知
+    if not _notify_window_ok(conn, mid):
         return
     try:
         info = conn.execute(
@@ -7509,7 +7531,7 @@ def _hb_requalify():
                     "SELECT 1 FROM alerts WHERE tool='好波' AND kind="
                     "'removed' AND match_id=? AND ts >= datetime('now',"
                     "'localtime','-12 hours') LIMIT 1", (mid,)).fetchone()
-                if info and not dup:
+                if info and not dup and _notify_window_ok(conn, mid):
                     conn.execute('''CREATE TABLE IF NOT EXISTS alerts(
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         tool TEXT, kind TEXT, match_id INTEGER, league TEXT,
@@ -7818,7 +7840,7 @@ def _hb_log_pick(mid, lg, ou):
                 "SELECT 1 FROM alerts WHERE tool='好波' AND kind='new' "
                 'AND match_id=? AND ts >= datetime(\'now\',\'localtime\','
                 "'-12 hours') LIMIT 1", (mid,)).fetchone()
-            if info and not dup:
+            if info and not dup and _notify_window_ok(conn0, mid):
                 conn0.execute('''CREATE TABLE IF NOT EXISTS alerts(
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     tool TEXT, kind TEXT, match_id INTEGER, league TEXT,
@@ -8819,14 +8841,13 @@ _FW8S_WARMING = {'on': False}
 
 
 def _attach_preds3(out):
-    """主頁三欄（2026-10-16 用戶）：精選8／精選8s／好波大細。
+    """主頁訊號帶（2026-10-16 三欄：精選8／精選8s／好波大細；2026-10-25 用戶
+    規格改兩欄，好波大細落架——佢係非篩選結果殘留，同朝早清除嘅好波 chip
+    同一性質；10-22 已廢嘅 lean/最強單項≥52% 共識仲殘留喺度當訊號顯示）。
     精選8 行 fw_grid_featured（格掃描寫入；雲端舊庫缺表當冇紀錄）。
     精選8s 兩源合併：fw8s_log（入選紀錄，direction 空預設 up——8s 專搵上盤）
     ＋ _FW8S_CACHE（8s 頁同款 scan_upcoming 快取）；快取舊過 600s 就背景
-    刷新一次（_FW8S_WARMING 防重疊，唔阻塞主頁）。
-    好波大細讀 _hb_pre 背景快取——同好波頁徽章完全同一優先次序
-    （精選＞共識＞最強單項≥52%），快取未命中唔顯示（precompute 會補），
-    唔阻塞主頁、唔加重即時計算。"""
+    刷新一次（_FW8S_WARMING 防重疊，唔阻塞主頁）。唔阻塞主頁、唔加重即時計算。"""
     ids = [r['id'] for r in out]
     if not ids:
         return
@@ -8880,23 +8901,6 @@ def _attach_preds3(out):
         if mid in f8s:
             rec['f8s'] = ('上' if f8s[mid] == 'up'
                           else ('下' if f8s[mid] == 'down' else f8s[mid]))
-        with _hb_pre_lock:
-            e = _hb_pre.get(mid)
-        ou = ((e or {}).get('data') or {}).get('ou') or {}
-        pick = ou.get('pick')
-        lean = ou.get('lean')
-        st = ou.get('strongest') or {}
-        lr = ou.get('lg_rule')
-        if lr:
-            rec['hb_ou'] = ('🎯規' + str(lr.get('side')) + ' '
-                            + str(lr.get('rate')) + '%')
-        elif pick:
-            rec['hb_ou'] = '⭐精選' + str(pick.get('side'))
-        elif lean in ('大', '細'):
-            rec['hb_ou'] = str(lean)
-        elif st.get('rate', 0) >= 0.52 and ou.get('line') is not None:
-            rec['hb_ou'] = (str(st.get('side')) + ' '
-                            + str(round(st['rate'] * 100)) + '%')
 
 
 def api_twin(mid):
@@ -11950,6 +11954,34 @@ if __name__ == '__main__':
                 traceback.print_exc(limit=2)
         threading.Thread(target=_removed_backfill_boot,
                          daemon=True).start()
+
+        # 2026-10-25 開機自愈（雲端冇 shell 渠道，順 boot 清一次；冇就秒過）：
+        # removed_picks 歷史重複（每 工具+場次+方向 留最新）＋窗口外 alerts 垃圾
+        # （舊制無窗口過濾嘅遺留——本機已人手清，雲端靠呢度對齊）。冇備份——
+        # 兩個清理都係刪「邏輯上唔應該存在」嘅行，留最新留窗口內，唔蝕資料。
+        def _db_selfheal_boot():
+            try:
+                conn = db()
+                try:
+                    cur = conn.execute('''DELETE FROM removed_picks WHERE id
+                        NOT IN (SELECT MAX(id) FROM removed_picks
+                        GROUP BY tool, match_id, side)''')
+                    n1 = cur.rowcount
+                    cur = conn.execute('''DELETE FROM alerts WHERE match_id IN
+                        (SELECT m.id FROM matches m WHERE m.kickoff <
+                        datetime('now','+8 hours','-1 hours') OR m.kickoff >
+                        datetime('now','+8 hours','+7 days') OR
+                        m.home_score IS NOT NULL)''')
+                    n2 = cur.rowcount
+                    conn.commit()
+                    if n1 or n2:
+                        print('[boot] DB 自愈：剔走重複 %d 行＋窗口外通知 %d 行'
+                              % (n1, n2), flush=True)
+                finally:
+                    conn.close()
+            except Exception:
+                pass
+        threading.Thread(target=_db_selfheal_boot, daemon=True).start()
         print('[boot] 熱數據同步循環已啟動（每 30 分鐘推送雲端）', flush=True)
     else:
         print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '
@@ -11960,6 +11992,22 @@ if __name__ == '__main__':
     threading.Thread(target=_unified_loop, daemon=True).start()
     print('[boot] 統一背景循環已啟動（每 20 分鐘變動掃描＋全表結算）',
           flush=True)
+
+    # 2026-10-25 效能修正（深層審計#42）：oupred 模型表冷啟動 rebuild 要幾分鐘
+    # （3 次全庫掃描），開機後第一擊主頁 v3/list 會卡喺 45 秒單飛閘後 429。
+    # 而家 warmup 完成後喺背景起表；起緊期間請求照行（冇表就跳過 oupred 欄），
+    # 用家永遠唔使等 rebuild——同 _oupred_tables 嘅「起樓期間食舊錶」設計夾埋。
+    def _oupred_preheat():
+        try:
+            t = 0.0
+            while not _pool_ready['done'] and t < 1800:
+                time.sleep(5)
+                t += 5
+            _oupred_tables(force=True)
+            print('[boot] oupred 模型表預熱完成', flush=True)
+        except Exception:
+            pass
+    threading.Thread(target=_oupred_preheat, daemon=True).start()
     # 2026-10-12 雲端爬蟲節點：ENABLE_CLOUD_CRAWL=1 時喺背景線程探測 titan007
     # 各主機並爬佢通到嘅市場（寫 /data/football.db；本機 IP 被硬封鎖，雲端
     # 出口 IP 直達唔使代理）。本機（冇呢個 env）永遠唔會行呢段。

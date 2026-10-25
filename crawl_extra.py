@@ -112,8 +112,7 @@ def parse_change_time(change_time, kickoff):
         if cand > kickoff:
             cand = dt.datetime(year - 1, mo, d, h, mi)
     except ValueError:
-        # 2-29 閏日邊界：前一年無 2-29 就退一日（同本機 engine/crawl_extra
-        # #34 孖生副本——雲端行到閏日資料一樣會炸）
+        # 2-29 閏日邊界：前一年無 2-29 就退一日（2026-10-25 crawl_mk 每開必崩嘅元兇）
         cand = dt.datetime(year - 1, mo, min(d, 28), h, mi)
     return cand
 
