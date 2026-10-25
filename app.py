@@ -161,6 +161,44 @@ _HEAVY_GET_SEM = threading.Semaphore(
     1 if _RAM_GB < 1.0 else (2 if _RAM_GB < 2.5 else 6))
 _HEAVY_GET_TIMEOUT = 45
 
+# 2026-10-26 重型 GET 回應快取（用戶「太慢」優化 #2）：30s TTL＋數據事件即清。
+# 白名單制——淨限冇副作用嘅列表 API；settle/入選/剔走/重算完會
+# _bump_data_epoch() 全部作廢，新鮮度同「完場即更新」規格冇衝突（事件驅動，
+# 唔係純 TTL）。NOTE：呢度取代咗「結算即物化」建議——因為報表類計算本身
+# 已經係快（13 工具全跑 ~3s），真正 heavy 係 v3/list 同 featured 頁嘅
+# 逐場推論；事件驅動快取達到同一效果但冇多一張表要同步。
+_GET_CACHE = {'epochs': {'tools': 0, 'report': 0}, 'data': {},
+              'lock': threading.Lock()}
+_GET_CACHE_TTL = 30.0
+_GET_CACHE_MAX = 300
+# 路由→標籤：'report'（league_report）只受結算影響——入選/剔走寫嘅係
+# result NULL 嘅 pending 列，報表淨計已結算，唔使跟住 bust；其餘工具頁
+# API 受入選/剔走/轉盤影響行 'tools'。
+_GET_CACHE_ROUTES = {
+    '/api/v3/list': 'tools', '/api/8x/list': 'tools',
+    '/api/v3/featured/full': 'tools', '/api/v1/featured/full': 'tools',
+    '/api/fwgrid/full': 'tools', '/api/league_report': 'report',
+}
+
+
+def _bump_data_epoch(tag=None):
+    """數據有實質變動——作廢指定標籤（None＝兩個都）。settle 用 None，
+    入選/剔走/轉盤用 'tools'（report 唔受影響，快取先有用——2026-10-26
+    首版單一 epoch，繁忙期每幾秒 bust 一次，快取形同虛設實測捉到）。"""
+    try:
+        with _GET_CACHE['lock']:
+            if tag is None:
+                for k in _GET_CACHE['epochs']:
+                    _GET_CACHE['epochs'][k] += 1
+            else:
+                _GET_CACHE['epochs'][tag] =                     _GET_CACHE['epochs'].get(tag, 0) + 1
+            # 唔好 clear data——命中檢查用 epoch 比對自動作廢舊條目；
+            # 舊制 bump 就清晒，繁忙期 tools bump 每幾秒一次，report
+            # 快取連環被誤殺（2026-10-26 實測 3/3 miss 捉到）。條目
+            # 靠 TTL 檢查＋MAX 上限自然淘汰。
+    except Exception:
+        pass
+
 
 def _rss_mb():
     """目前進程 RSS（MB）；Linux 讀 /proc/self/status，其他平台返 0（閘唔生效）。"""
@@ -1157,7 +1195,11 @@ def _eval_all(conn, ctx, light=False):
     if _ko:
         try:
             from datetime import datetime, timedelta, timezone
-            _hk_now = datetime.now(timezone.utc) + timedelta(hours=8)
+            # 兩邊都用 naive 比較（kickoff 係本地時間字串）——舊制一边
+            # aware（utcnow+8 tz-aware）一边 naive，全量掃描一觸即炸
+            # TypeError（2026-10-26 實彈捉到），而且 except ValueError 接唔到。
+            _hk_now = (datetime.now(timezone.utc)
+                       + timedelta(hours=8)).replace(tzinfo=None)
             if datetime.strptime(str(_ko)[:16], '%Y-%m-%d %H:%M') \
                     < _hk_now - timedelta(minutes=10):
                 return acts
@@ -1737,17 +1779,27 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
                         time.sleep(4)
                 if acts is None:
                     continue
-                _scanlog_match(conn, mid, acts)
-                conn.commit()   # 逐場 commit：寫鎖秒級釋放（舊制 20 場一鎖）
+                for _att in range(4):
+                    try:
+                        _scanlog_match(conn, mid, acts)
+                        conn.commit()   # 逐場 commit：寫鎖秒級釋放（舊制 20 場一鎖）
+                        break
+                    except sqlite3.OperationalError:
+                        time.sleep(4)   # 爬蟲/頁面寫撞鎖——等 4 秒重試
                 _s = sigs.get(mid)
                 if _s:
-                    conn.execute(
-                        'INSERT INTO _unified_snap(match_id,sig,ts) '
-                        'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
-                        'sig=excluded.sig, ts=excluded.ts',
-                        (mid, _s,
-                         time.strftime('%Y-%m-%d %H:%M:%S')))
-                    conn.commit()
+                    for _att in range(4):
+                        try:
+                            conn.execute(
+                                'INSERT INTO _unified_snap(match_id,sig,ts) '
+                                'VALUES(?,?,?) ON CONFLICT(match_id) DO UPDATE SET '
+                                'sig=excluded.sig, ts=excluded.ts',
+                                (mid, _s,
+                                 time.strftime('%Y-%m-%d %H:%M:%S')))
+                            conn.commit()
+                            break
+                        except sqlite3.OperationalError:
+                            time.sleep(4)   # 2026-10-26：無重試會成個 pass 炸冧
                 for a in acts:
                     if '移出' in a:
                         st['removed'] += 1
@@ -1787,6 +1839,7 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
             st['passes'] += 1
             st['error'] = None
             _save_unified_state()
+            _bump_data_epoch('tools')   # 2026-10-26：重算完，工具頁快取作廢
             _feat_scan.update(running=False, added=cnt.get('feat', 0),
                               added_z=cnt.get('featz', 0), error=None)
             _v1_scan.update(running=False, added=cnt.get('v1', 0),
@@ -1870,6 +1923,9 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
     return True
 
 
+_LAST_FULL_DATE = [None]   # 2026-10-26：全量掃描每晚一次（凌晨窗）
+
+
 def _unified_loop():
     """每 20 分鐘統一掃描（變動跳過）；每 18 次（約 6 小時）做一次全量，
     兜實排名變化等冇盤口訊號嘅資格變動。雲端（DISABLE_UPDATE）永久行
@@ -1878,9 +1934,21 @@ def _unified_loop():
     while True:
         try:
             # 2026-10-25：2GB/1C 付費版——雲端統一掃描行 full（512MB 限制已過時）
+            # 2026-10-26 效能（用戶「太慢」優化 #3）：全量限定凌晨 03:00–06:00
+            # （HKT）一晚一次——日間全量同爬取/頁面請求搶 1C CPU；日間變動
+            # 由簽名跳過＋20 秒轉盤 watcher 兜住。
             light = False
-            full = (not light and _unified_scan['passes'] > 0
-                    and _unified_scan['passes'] % 18 == 0)
+            full = False
+            try:
+                from datetime import datetime as _dt, timedelta as _td,                     timezone as _tz
+                _hk = _dt.now(_tz.utc) + _td(hours=8)
+                if _hk.hour in (3, 4, 5):
+                    _d = _hk.strftime('%Y-%m-%d')
+                    if _LAST_FULL_DATE[0] != _d:
+                        full = True
+                        _LAST_FULL_DATE[0] = _d
+            except Exception:
+                pass
             _unified_scan_job(full=full, light=light, tool='5分鐘定時循環')
         except Exception:
             traceback.print_exc(limit=3)
@@ -2121,6 +2189,7 @@ def _settle_finished_tools_bg():
                 if r:
                     print('[settle-all] ' + ', '.join(
                         '%s %d' % kv for kv in r.items()), flush=True)
+                _bump_data_epoch()   # 2026-10-26：結算完，全部快取作廢
                 return
             except sqlite3.OperationalError:
                 time.sleep(5)
@@ -3537,6 +3606,7 @@ def _bust_tool_caches():
         # 2026-10-25：45 項分析快取同步清——入選/剔走後分析結果即刻跟新線
         # （舊制 10 分鐘 TTL 會顯示過期推論，影響精確度）
         _v3_item_cache.clear()
+        _bump_data_epoch('tools')   # 2026-10-26：工具頁快取作廢（report 唔使）
     except Exception:
         pass
 
@@ -10079,6 +10149,7 @@ def _result_settle_loop():
             pass
         try:
             _settle_finished_tools_bg()
+            _bump_data_epoch()   # 2026-10-26：本輪結算完，全部快取作廢
         except Exception:
             pass
         time.sleep(900)
@@ -10166,6 +10237,9 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _send(self, code, body, ctype='application/json; charset=utf-8'):
+        # 2026-10-26：快取分派器用——捕獲首個回應（code+body），之後照常送出
+        if getattr(self, '_get_capture', None) is not None and                 isinstance(self._get_capture, list):
+            self._get_capture.append((code, body))
         data = body.encode('utf-8') if isinstance(body, str) else body
         self.send_response(code)
         self.send_header('Content-Type', ctype)
@@ -10204,6 +10278,39 @@ class Handler(BaseHTTPRequestHandler):
             self._do_GET(u)
 
     def _do_GET(self, u):
+        # 2026-10-26：白名單重型 GET 先查快取；miss 行真身並捕獲 200 回應
+        # （_send 攔截）寫入。非 200（例如 500）一律唔快取。
+        if u.path in _GET_CACHE_ROUTES:
+            key = u.path + '?' + u.query
+            _tag = _GET_CACHE_ROUTES[u.path]
+            ep = _GET_CACHE['epochs'].get(_tag, 0)
+            try:
+                with _GET_CACHE['lock']:
+                    ent = _GET_CACHE['data'].get(key)
+                if ent and ent[0] == _tag and ent[1] == ep and                         time.time() - ent[2] < _GET_CACHE_TTL:
+                    self._send(200, ent[3])
+                    return
+            except Exception:
+                ent = None
+            self._get_capture = None
+            try:
+                self._get_capture = []
+                self._do_GET_inner(u)
+            finally:
+                cap = self._get_capture
+                self._get_capture = None
+                if cap and cap[0][0] == 200:
+                    try:
+                        with _GET_CACHE['lock']:
+                            if len(_GET_CACHE['data']) >= _GET_CACHE_MAX:
+                                _GET_CACHE['data'].clear()
+                            _GET_CACHE['data'][key] = (_tag, ep, time.time(), cap[0][1])
+                    except Exception:
+                        pass
+            return
+        self._do_GET_inner(u)
+
+    def _do_GET_inner(self, u):
         if u.path == '/' or u.path == '/index.html':
             with open(os.path.join(STATIC_DIR, 'index.html'), 'rb') as f:
                 self._send(200, f.read(), 'text/html; charset=utf-8')
@@ -11200,7 +11307,15 @@ class Handler(BaseHTTPRequestHandler):
                     conn.commit()
                     conn.close()
                 # 2026-10-25：行緊都照樣 call——入面會排隊（舊制喺度靜默跳過）
-                _st = _start_unified_scan(tool=body.get('tool') or 'V2/精選W掃描掣')
+                # full=1（2026-10-26 用戶規格「真跑全跑」）：跳過變動簽名，
+                # 所有未賽場次逐場重評 12 系統。mids=[...]：指定場次清单
+                # （用戶規格：重跑資料庫所有賽事——已賽場次都逐場重評，純讀取
+                # 重算唔會改賽果；歷史紀錄 idempotent 補齊）。
+                _mids = body.get('mids')
+                _st = _start_unified_scan(
+                    full=bool(body.get('full')),
+                    mids=[int(x) for x in _mids] if _mids else None,
+                    tool=body.get('tool') or 'V2/精選W掃描掣')
                 _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps(
                     {'started': _st.get('started', False),

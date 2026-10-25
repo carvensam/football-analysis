@@ -79,7 +79,10 @@ def main():
     import crawl_extra as ce
     cfg = json.load(open(os.path.join(ROOT, 'config.json'), encoding='utf-8'))
     cfg['proxy_direct'] = True        # 本節點 IP 直達（繞過代理池邏輯）
-    cfg['crawl_threads'] = int(os.environ.get('CRAWL_THREADS', '8'))
+    # 2026-10-26 優化#6（用戶指示照做）：8→10 線——付費 2GB/1C 有底，
+    # 每輪限時 20 分鐘制照舊（唔會 24/7 霸資源）；CRAWL_THREADS env
+    # 仍然可以覆蓋。
+    cfg['crawl_threads'] = int(os.environ.get('CRAWL_THREADS', '10'))
     # 10-16：每輪限時（預設 20 分鐘，CRAWL_ROUND_MINUTES=0 閂限時=舊行為）。
     # 舊版一輪 = 「ce.run 掃到隊列清晒為止」——雲端積壓以萬計，2 線爬變相
     # 24/7 霸住 web 進程嘅 RAM/CPU（512MB 同 HTTP 服務擠逼、約每 90 分鐘
