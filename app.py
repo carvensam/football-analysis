@@ -1805,6 +1805,8 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
                     _conn.close()
                 if _mids:
                     _hb_refresh_mids(_mids)
+            # 2026-10-25 即時同步：重抓重算搞掂→即刻推上雲
+            _sync_push_now(force=True)
         except Exception:
             pass
         st['running'] = False
@@ -2384,6 +2386,9 @@ def _window_update_worker(win):
         conn.close()
         _win_state['running'] = False
         _win_state['phase'] = ''
+        # 2026-10-25 即時同步：窗口更新搞掂→冷卻制即推（5 分鐘內多次窗口
+        # 更新淨推一次）
+        _sync_push_now()
     # 注意：唔喺度重掃精選——快速掣只係更新指定窗口嘅盤口，掃精選係另一個掣嘅工作；
     # 否則撳「更新未來10分鐘」都會觸發全庫精選重掃（用戶投訴「都係全部掃」嘅根因）。
 
@@ -2563,6 +2568,8 @@ def _fetch_batch_worker(hours, ids=None):
             _hb_refresh_mids(changed_mids)
         except Exception:
             pass
+        # 2026-10-25 即時同步：用戶撳嘅批量搞掂→即刻推上雲（唔使等 30 分鐘）
+        _sync_push_now(force=True)
     except Exception:
         traceback.print_exc()
         _fbatch_state['error'] = traceback.format_exc(limit=3)
@@ -9797,6 +9804,8 @@ def _auto_odds_refresh_loop():
                             pass
                     _aod_log('自動重抓 %d/%d 場（24h 窗口，舊>30min）'
                              % (n, len(rows)))
+                    if n:
+                        _sync_push_now()   # 有實際更新→冷卻制即推上雲
                 finally:
                     conn.close()
             else:
@@ -9808,6 +9817,34 @@ def _auto_odds_refresh_loop():
         except Exception:
             traceback.print_exc(limit=2)
         time.sleep(900)
+
+
+_SYNC_PUSH_LAST = [0.0]
+
+
+def _sync_push_now(force=False, cooldown=300):
+    """2026-10-25 事件驅動同步：批量/regrab/窗口更新搞掂後**即刻推上雲**——
+    舊制要等 30 分鐘循環，「更新完手機要等半粒鐘」正係呢個制嘅缺陷。force
+    （用戶撳嘅批量/regrab）無視冷卻；自動觸發（窗口/auto-odds）5 分鐘冷卻
+    防連環推送。雲端唔推（佢係接收方）。"""
+    if DISABLE_UPDATE:
+        return
+    now = time.time()
+    if not force and now - _SYNC_PUSH_LAST[0] < cooldown:
+        return
+    _SYNC_PUSH_LAST[0] = now
+
+    def _bg():
+        try:
+            import subprocess
+            subprocess.run(
+                [sys.executable,
+                 os.path.join(PARENT_DIR, 'sync_delta.py'), '--push'],
+                timeout=600, capture_output=True)
+            print('[sync-now] 事件驅動推送完成', flush=True)
+        except Exception:
+            pass
+    threading.Thread(target=_bg, daemon=True).start()
 
 
 def _sync_delta_loop():
