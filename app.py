@@ -9708,6 +9708,11 @@ def _auto_odds_refresh_loop():
                           % (n, len(rows)), flush=True)
                 finally:
                     conn.close()
+            else:
+                # 2026-10-25 第五輪審計：每輪都留心跳（連 0 場都記）——冇 log
+                # 分唔出「健康冇嘢做」定「循環死咗」，哨兵要有聲
+                print('[auto-odds] 心跳：本輪 0 場需重抓（24h 窗全部新鮮）',
+                      flush=True)
         except Exception:
             traceback.print_exc(limit=2)
         time.sleep(900)
