@@ -9655,6 +9655,62 @@ def _line_move_watch_loop():
             pass
 
 
+def _auto_odds_refresh_loop():
+    """2026-10-25 補上自動化最後缺口：即將開賽場次嘅讓球賠率**週期自動重抓**。
+    舊制重抓幾乎全靠人手撳掣——撳完之後賠率擺到舊，5 分鐘統一掃描只能
+    用舊線重評（變動跳過＝全部略過），「盤轉咗但冇人撳掣＝永遠唔重算唔
+    出預測」嘅風險實際存在（用戶一語道中）。而家每 15 分鐘一輪：未來 24
+    小時內、讓球賠率舊過 30 分鐘（或從未抓到）嘅場，順開賽序重抓最多 40
+    場——crawl_odds_for_match 成功即 notify_line_move → watcher 20 秒內
+    重算 12 工具＋好波。本機＋雲端都開（雲端行代理池，單場順序輕量）。
+    連首飾都唔使撳：開賽前一日開始自動新鮮，資格自動浮現。"""
+    time.sleep(300)
+    import crawler as _cr
+    while True:
+        try:
+            conn = db()
+            try:
+                rows = conn.execute(
+                    "SELECT m.id, m.kickoff FROM matches m "
+                    "WHERE m.home_score IS NULL "
+                    "AND m.kickoff >= datetime('now','+8 hours','+20 minutes') "
+                    "AND m.kickoff <= datetime('now','+8 hours','+24 hours') "
+                    "AND COALESCE((SELECT MAX(a.fetched_at) FROM odds_asian a "
+                    "  WHERE a.match_id=m.id AND a.company_id=12), '2000-01-01') "
+                    "  < datetime('now','-30 minutes') "
+                    'ORDER BY m.kickoff LIMIT 40').fetchall()
+            finally:
+                conn.close()
+            if rows:
+                with open(os.path.join(_cr.BASE_DIR, 'config.json'),
+                          encoding='utf-8') as _f:
+                    cfg = json.load(_f)
+                cfg['blocked_retry_times'] = 1   # 自動輪快閃失敗，下輪再補
+                conn = sqlite3.connect(DB_PATH, timeout=180)
+                try:
+                    fetcher = _cr.Fetcher(conn, cfg)
+                    n = 0
+                    for mid, ko in rows:
+                        try:
+                            if _cr.crawl_odds_for_match(conn, fetcher, mid,
+                                                        ko, 12):
+                                n += 1
+                            elif not conn.execute(
+                                    'SELECT 1 FROM odds_asian WHERE match_id=? '
+                                    'AND company_id=12', (mid,)).fetchone():
+                                _cr.crawl_odds_for_match(conn, fetcher, mid,
+                                                         ko, 3)
+                        except Exception:
+                            pass
+                    print('[auto-odds] 自動重抓 %d/%d 場（24h 窗口，舊>30min）'
+                          % (n, len(rows)), flush=True)
+                finally:
+                    conn.close()
+        except Exception:
+            traceback.print_exc(limit=2)
+        time.sleep(900)
+
+
 def _sync_delta_loop():
     """2026-10-24：熱數據增量同步（PC→雲端）改由 APP 自己每 30 分鐘推——
     原本靠 Windows 計劃任務 FA_SyncDelta30m，但佢間歇性失敗（LastTaskResult
@@ -11636,6 +11692,8 @@ if __name__ == '__main__':
     # 循環或者本機 sync。雲端 RAM 安全：_pick_revalidate 喺 DISABLE_UPDATE
     # 自動行 light 模式（05ad3a8 實證 RAM 接近零），共用池 max_workers=1。
     threading.Thread(target=_line_move_watch_loop, daemon=True).start()
+    # 2026-10-25：即將開賽賠率週期自動重抓（兩邊都開——雲端代理池行得通）
+    threading.Thread(target=_auto_odds_refresh_loop, daemon=True).start()
     if not DISABLE_UPDATE:
         def _removed_backfill_boot():
             time.sleep(150)
