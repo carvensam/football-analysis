@@ -1652,7 +1652,7 @@ def _worker(cfg, only, only_key, wid, main_lane, t_start, n_start,
             last_reap = time.time()
             _exec_retry(conn,
                         "UPDATE extra_tasks SET status=0 WHERE status=9 "
-                        "AND updated_at < datetime('now', '-45 minutes')")
+                        "AND updated_at < datetime('now', '+8 hours', '-45 minutes')")
             # WAL 只增唔截（多進程長開 reader 擋 auto-checkpoint）會脹到
             # GB 級引發 disk I/O error——每 10 分鐘順手 PASSIVE checkpoint
             try:
