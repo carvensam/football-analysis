@@ -3345,8 +3345,20 @@ async function shareText(txt){
       else if (curPage === 'review') loadReview();
       else if (curPage === 'featlog') loadFeatlog();
       else if (['featw', 'v1', 'check', 'fw7', 'fw8', 'fw12', 'fw8s',
-                'picks', 'removed', 'oupred', 'feathourly', 'x8']
+                'picks', 'removed', 'oupred', 'feathourly', 'x8',
+                // 2026-10-25 補齊「各版面即時」：iframe 工具頁一併自動刷新
+                // （好波/8s/88W/新精選——舊制驚閃爍剔走咗，但用戶原則係
+                // 精確度先：60 秒一次 reload 嘅閃爍係正確性應有嘅代價）
+                'haobao', 'fw8s', 'w88', 'newjx']
                .indexOf(curPage) >= 0) refreshCurrentTool();
+      else if (curPage === 'detail' && curMatch) {
+        // 詳情頁坐喺度：🧰工具預測卡＋入選徽章每 60 秒自動重撈（API 無快取，
+        // 重算後即刻反映）
+        loadMatchTools(curMatch.id);
+        if (curMatch.id) jget('/api/v3/target?id=' + curMatch.id)
+          .then(r => { if (r && r.target && !r.error) curMatch = r.target; })
+          .catch(() => {});
+      }
     }, 60000);
     // 賠率變舊自動重抓（>10 分鐘）
     setInterval(async () => {
