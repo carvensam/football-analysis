@@ -789,18 +789,15 @@ def _reval_pool():
 
 
 def _reval_submit(mid, tag='line-move'):
-    """排隊做單場資格重檢（600s/場節流由調用处負責）。
+    """排隊做單場資格重檢（冇任何節流/讓路——任何變動即時入隊）。
     2026-10-25 加埋好波：OU 線轉都屬「盤口轉/賠率轉」——12 工具重檢完順手
     重算好波（api_hb_predict 自帶賠率 signature 快取＋淨係規則命中先記低，
-    唔會污染 hb_pick_log；本機先做，雲端保持開頁先算嘅需求制，防 512MB 壓力）。"""
+    唔會污染 hb_pick_log；兩邊都做（雲端 2GB 夠行））。"""
     def _job():
-        # 統一掃描行緊就讓路（同 after_odds_update 一貫邏輯）：掃描本身會重評
-        # 變動場次，watcher 同佢鬥雙份 full eval 只會互相拖慢（實測掃描由
-        # 11s/場跌返 15s/場）。等掃描完（上限 30 分鐘）先補做。
-        _waited = 0.0
-        while _UNIFIED_RUNNING[0] and _waited < 1800:
-            time.sleep(10)
-            _waited += 10
+        # 2026-10-25 讓路邏輯全拆：舊制掃描行緊就排隊等（最多 30 分鐘）——
+        # 水位變動喺掃描期間會被拖後，違反「任何變動即時重算」。2 線池本身
+        # 就係並發調節器，同掃描短暫重疊係正確性應有嘅代價（舊制 53s/場係
+        # 每場一 thread 時代嘅問題，同池化後已唔存在）。
         for _att in range(3):
             try:
                 conn = db()
@@ -812,19 +809,21 @@ def _reval_submit(mid, tag='line-move'):
                 if acts:
                     print('[%s] 場次%s 轉盤→重算：%s'
                           % (tag, mid, ','.join(acts)), flush=True)
-                if not DISABLE_UPDATE:
+                # 2026-10-25：好波重算兩邊都做——HB 池僅 14MB（雲端 2GB
+                # 預熱本來就建），signature 快取令冇變嘅場微秒過；唔再做
+                # 本地限定（舊 512MB 思維）。
+                try:
+                    conn = db()
                     try:
-                        conn = db()
-                        try:
-                            has_ou = conn.execute(
-                                "SELECT 1 FROM odds_ou WHERE match_id=? "
-                                "AND label='closing' LIMIT 1", (mid,)).fetchone()
-                        finally:
-                            conn.close()
-                        if has_ou:
-                            api_hb_predict(mid)   # 快取命中＝微秒；miss 先計
-                    except Exception:
-                        pass
+                        has_ou = conn.execute(
+                            "SELECT 1 FROM odds_ou WHERE match_id=? "
+                            "AND label='closing' LIMIT 1", (mid,)).fetchone()
+                    finally:
+                        conn.close()
+                    if has_ou:
+                        api_hb_predict(mid)   # 快取命中＝微秒；miss 先計
+                except Exception:
+                    pass
                 return
             except sqlite3.OperationalError:
                 time.sleep(4)
