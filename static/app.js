@@ -1404,6 +1404,42 @@ async function pollUpdateLoop(){
   if (/^fw\d+$/.test(curPage)) loadFwGrid(curPage.slice(2));
 }
 
+/* 2026-10-25 即時推送（SSE）：伺服器一重算完（有新增/剔走）即刻推過嚟，
+ * 開到嘅頁面 1-3 秒內自動刷新——唔使等 60 秒輪詢。3 秒合流防批量連環刷爆。
+ * EventSource 內建斷線重連；Render proxy 靠 X-Accel-Buffering 直通。 */
+let _es = null, _esLastFire = 0;
+function startEvents(){
+  if (_es || typeof EventSource === 'undefined') return;
+  try { _es = new EventSource('/api/events'); } catch (e) { return; }
+  _es.onmessage = function(ev){
+    let d;
+    try { d = JSON.parse(ev.data); } catch (e) { return; }
+    if (!d || d.type !== 'reval') return;
+    const now = Date.now();
+    if (now - _esLastFire < 3000) return;
+    _esLastFire = now;
+    if (document.hidden) return;
+    if (curPage === 'home' && !_updBusy) loadHome();
+    else if (curPage === 'review') loadReview();
+    else if (curPage === 'featlog') loadFeatlog();
+    else if (curPage === 'detail' && curMatch && d.mid === curMatch.id) {
+      loadMatchTools(d.mid);
+      openDetailRefreshLight(d.mid);
+    } else refreshCurrentTool();
+    toast('🔄 即時更新：' + (d.acts || []).slice(0, 3).join('、'));
+  };
+}
+/* 詳情頁輕量刷新：淨重撈會變嘅區塊（工具卡＋徽章來源）唔成張重繪 */
+function openDetailRefreshLight(mid){
+  try {
+    jget('/api/v3/target?id=' + mid).then(r => {
+      if (!r || r.error || !r.target) return;
+      curMatch = r.target;
+    }).catch(() => {});
+  } catch (e) {}
+}
+startEvents();
+
 /* 2026-10-25 統一載入狀態列（用戶規格：所有載入中都要話你知載入緊咩、
  * 進度%、尚餘時間）。兩種模式：有總數→「項目 done/total（%）｜尚餘 Xs」；
  * 冇總數（單一請求）→「項目…（已用 Ns）」——冇速率就唔顯示時間，唔呃人。 */
