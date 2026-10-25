@@ -203,7 +203,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.4.0'
+SERVER_VERSION = '5.6.2'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -1111,6 +1111,26 @@ def _rec_removed_acts(conn, mid, acts, pre):
             pass
 
 
+def _del_removed_on_add(conn, mid, acts):
+    """2026-10-25 用戶規格：重新入選（新增）→ 剔走頁要刪除該場次該工具嘅
+    舊剔走記錄——唔係咁嘅話，一場 合資格→不合→合→不合 會喺剔走頁出現
+    兩次（detail 變咗 INSERT OR IGNORE 擋唔到）。88W 同一場多個市場係
+    同一次剔走一齊記，唔受影響。"""
+    tools = set()
+    for a in acts:
+        if '新增' in a:
+            t = _act_tool_name(a)
+            if t:
+                tools.add(t)
+    if not tools:
+        return
+    _migrate_removed(conn)
+    for t in tools:
+        conn.execute('DELETE FROM removed_picks WHERE match_id=? AND tool=?',
+                     (mid, t))
+    conn.commit()
+
+
 def _eval_all(conn, ctx, light=False):
     """單場全系統評估＋寫表（12 張）：精選W、V1、V1Z、V2(letters 共用）、
     V2Z、格7/8/12/8s、8s紀錄、8X、88W、新精選。寫法＝upsert 合格／DELETE
@@ -1384,6 +1404,14 @@ def _eval_all(conn, ctx, light=False):
         _bust_tool_caches()
         # 2026-10-25 即時推送：有新增/剔走即刻廣播（SSE client 1-3 秒內刷新）
         _publish_event({'type': 'reval', 'mid': mid, 'acts': acts})
+    # 2026-10-25 用戶規格：重新入選（新增）→ 剔走頁刪除該場次該工具嘅舊記錄，
+    # 保證同一場次只出現一次。放喺記錄剔走之前——同一 pass 又有新增又有移出
+    # 時，最後留下嘅係最新嗰條剔走記錄。
+    if any('新增' in a for a in acts):
+        try:
+            _del_removed_on_add(conn, mid, acts)
+        except Exception:
+            pass
     # 2026-10-24 剔走專頁：『移出』動作連方向記錄落 removed_picks
     if _pre_rm and any('移出' in a for a in acts):
         try:
@@ -7833,6 +7861,16 @@ def _hb_log_pick(mid, lg, ou):
              time.strftime('%Y-%m-%d %H:%M:%S'), method,
              pick.get('rule_label')))
         conn.commit()
+        # 2026-10-25 用戶規格：好波重新入選 → 剔走頁刪返該場次舊剔走記錄
+        # （同一場次喺剔走頁只出現一次）。
+        try:
+            _migrate_removed(conn)
+            conn.execute(
+                "DELETE FROM removed_picks WHERE match_id=? AND tool='好波'",
+                (mid,))
+            conn.commit()
+        except Exception:
+            pass
         # 2026-10-25 即時推送：好波新入選/轉方向都廣播
         _publish_event({'type': 'reval', 'mid': mid,
                         'acts': ['好波' + str(side)]})
@@ -9684,27 +9722,31 @@ def _feat_hourly_tick():
 
 def _line_move_watch_loop():
     """2026-10-24 盤口變動即時重算（用戶：『加快到即時更新！點解要 5 分鐘』）：
-    爬蟲一寫新盤（無論 APP 定 fleet 通道）就 append 場次去
-    engine/_line_moves.txt；呢度每 20 秒讀一次，對每場即刻跑
-    _pick_revalidate（同 after_odds_update 同一套重檢：12 表資格
-    剔走/新增＋推送＋快取清除＋600s/場節流）。工具表滯後由
-    『最遲 20 分鐘（後備 5 分鐘）』→『≤20 秒』。5 分鐘統一循環
-    降返做後備（漏網/排名變化兜底的）。"""
+    爬蟲一寫新盤（無論 APP 定 fleet 通道）就 append 場次去 _line_moves.txt；
+    呢度每 20 秒讀一次，對每場即刻 _reval_submit（同 after_odds_update 同一套
+    重檢：12 表資格剔走/新增＋推送＋快取清除）。工具表滯後由『最遲 20 分鐘
+    （後備 5 分鐘）』→『≤20 秒』。5 分鐘統一循環降後備（漏網/排名變化兜底）。
+    2026-10-25：600s/場節流已廢（用戶指示 100% 重算），此 docstring 同步更
+    正；路徑根治見下方註釋。"""
     time.sleep(120)   # 等開機
     import os as _os
-    # 2026-10-24 路徑修正：兩邊佈局唔同——本機 app.py 喺 screen_app/（engine
-    # 喺 PARENT_DIR/engine），雲端 app.py 喺 /app（PARENT_DIR=/ ，engine 喺
-    # BASE_DIR/engine）。舊制硬用 PARENT_DIR，雲端會變成讀 /engine/
-    # _line_moves.txt，同 crawler 寫嘅 /app/engine/_line_moves.txt 永遠打唔到
-    # （雲端 20 秒即時重算因此一直冇觸發過）。而家揀存在嗰個 engine/。
-    _eng = None
-    for _cand in (_os.path.join(PARENT_DIR, 'engine'),
-                  _os.path.join(BASE_DIR, 'engine')):
-        if _os.path.isdir(_cand):
-            _eng = _cand
+    # 2026-10-25 路徑根治（吹水審計第十輪捉到嘅假承諾管道）：crawler 嘅
+    # notify_line_move 用 __file__ 相對路徑寫——邊份 crawler.py copy 被
+    # import 就寫去邊（本機正本=倉庫根；雲端=/app）。舊制 watcher 淨讀
+    # engine/_line_moves.txt，寫入同讀取永遠打唔到：root 檔積壓過百場，
+    # APP 自動重抓/shenbo/crawl_mk 觸發嘅轉盤通知全部冇 20 秒重算，得 5
+    # 分鐘後備兜住（對用戶「任何變動 100% 重算」承諾係假嘅）。而家全部
+    # 可能寫入點行匀，邊個有貨讀邊個；冇貨先 fallback 舊 engine 路徑。
+    fpath = None
+    for _cand in (_os.path.join(PARENT_DIR, '_line_moves.txt'),
+                  _os.path.join(BASE_DIR, '_line_moves.txt'),
+                  _os.path.join(PARENT_DIR, 'engine', '_line_moves.txt'),
+                  _os.path.join(BASE_DIR, 'engine', '_line_moves.txt')):
+        if _os.path.exists(_cand):
+            fpath = _cand
             break
-    fpath = _os.path.join(_eng or _os.path.join(PARENT_DIR, 'engine'),
-                          '_line_moves.txt')
+    if fpath is None:
+        fpath = _os.path.join(PARENT_DIR, '_line_moves.txt')
     while True:
         time.sleep(20)
         try:
