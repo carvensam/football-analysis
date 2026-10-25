@@ -753,7 +753,8 @@ def do_fetch(mid, force=False):
         # 下次撳掣即刻重試，唔會俾 120 秒快取擋住
         if ok:
             _last_fetch[mid] = time.time()
-            after_odds_update(mid, before)   # 2026-10-20：尾盤變動→重檢資格
+            # 2026-10-25：after_odds_update 已刪除——0.15 門檻後備路徑淨係會
+            # skip；watcher（notify→20s）已無條件覆蓋每次成功爬取，冇存在價值。
             return {'ok': True}
         err = (getattr(fetcher, 'last_error', None)
                or 'titan007 無回應（數據伺服器可能暫時中斷，已排定自動重試）')
@@ -767,13 +768,13 @@ def do_fetch(mid, force=False):
 # 新盤口之後，若尾盤有重大變動（讓球±0.25／讓球方轉向／水位±0.15），背景線程
 # 用新線重算該場所有未結算精選資格：仍合 → 更新 detail＋快照；唔合 → 移出。
 _LINE_MOVE_H = 0.25   # 讓球變動門檻（淺/深一檔）
-_LINE_MOVE_W = 0.15   # 水位變動門檻
-_last_reval = {}
+_LINE_MOVE_W = 0.15   # 水位變動門檻（2026-10-25 起只用喺批量「變盤場次」
+                      # 統計；重算本身已改為無條件）
 
 
 # 2026-10-25 有限並發重檢池：line-move watcher 舊制每場開一條線程（一批
 # 40 場＝40 條 full eval 同時搶 RAM/數據池，部機即刻窒息，掃描亦被拖慢）；
-# after_odds_update 都係每場一 thread。而家共用細池排隊：本機 2 線、雲端 1。
+# 舊制 watcher/批量通道每場開一條線程。而家共用細池排隊：本機 2 線、雲端 1。
 _REVAL_POOL = None
 
 
@@ -1395,35 +1396,13 @@ def _pick_revalidate(conn, mid):
     """單場精選資格重檢（評估-only：唔重抓、唔清歷史池——歷史場次尾盤
     永不變，變嘅只有目標場自己）。回傳動作列表。
     2026-10-24：雲端（DISABLE_UPDATE）自動行 light 模式——掣嘅 sweep
-    同 after_odds_update 都經呢度，重模式會載 300MB 數據池搞到 512MB
+    所有重檢通道（watcher/批量/掃描 sweep）都經呢度；重模式會載 300MB 數據池
     容器 OOM（用戶問『手機係咪一樣得』先發現嘅漏洞）。雲端 light 淨做
     純 SQL 系統；W/V1/V2/格 呢啲由本機 30 分鐘 delta 同步補返。"""
     # 2026-10-25：用戶確認 Render 係 2GB/1C 付費實例——512MB OOM 迴避（05ad3a8）
     # 已過時：池本來就喺雲端預熱（v3 API 要用），light 慳唔到 RAM。
     # 兩邊行 full：雲端 W/V1/V2/格資格唔使再等本機 sync。
     return _eval_all(conn, _EvalCtx(conn, mid), light=False)
-
-
-def after_odds_update(mid, before):
-    """任何渠道寫入盤口後call：尾盤有重大變動 → 600 秒節流下背景重檢資格。
-    2026-10-22：統一掃描進行中直接讓路——掃描本身會重評全部候選場，
-    唔使再開逐場重檢線程同佢鬥（53 秒/場事件嘅第二元兇）。"""
-    if _UNIFIED_RUNNING[0]:
-        return
-    try:
-        conn = db()
-        try:
-            after = _closing_now(conn, mid)
-        finally:
-            conn.close()
-        if not _line_changed(before, after):
-            return
-        if time.time() - _last_reval.get(mid, 0) < 600:
-            return
-        _last_reval[mid] = time.time()
-        _reval_submit(mid, tag='reval')   # 2026-10-25：共用細池，唔再每場一線程
-    except Exception:
-        pass
 
 
 def _requalify_sweep(mids, cap=300):
@@ -1454,8 +1433,6 @@ def _requalify_sweep(mids, cap=300):
                         summary['added'] += 1
                     else:
                         summary['kept'] += 1
-                # 同 after_odds_update 嘅 600 秒節流共享——背景線程先唔會重做
-                _last_reval[mid] = time.time()
                 break
             except sqlite3.OperationalError:
                 time.sleep(4)
@@ -2508,7 +2485,8 @@ def _fetch_batch_worker(hours, ids=None):
                 _fbatch_state['ok'] += 1
                 ok_mids.append(mid)
                 fail_streak = 0
-                after_odds_update(mid, before)   # 2026-10-20 尾盤變動→重檢
+                # （2026-10-25 after_odds_update 已刪除：門檻後備路徑零價值；
+                #  watcher 無條件覆蓋每次成功爬取）
                 # 2026-10-24 用戶規格「更新所有盤口」：讓球搞掂→順手重抓
                 # 大小+歐盤（同一 changeDetail 家族頁、同一 Fetcher；失敗
                 # 唔影響讓球結果，唔計入 fail——兩個市場獨立計數顯示）
@@ -9637,10 +9615,11 @@ def _line_move_watch_loop():
                 if mid in seen:
                     continue
                 seen.add(mid)
-                if time.time() - _last_reval.get(mid, 0) < 600:
-                    continue
-                _last_reval[mid] = time.time()
-                _reval_submit(mid)   # 2026-10-25：共用 2 線池排隊（舊制每場一 thread）
+                # 2026-10-25 用戶指示：**任何水位/盤口變動 100% 重算，冇節流**——
+                # 10 分鐘內第二次變動代表賽事真係郁緊，係更精確嘅資訊，跳過係傻。
+                # （舊制 600s/場節流同 after_odds_update 一併廢除；2 線池本身
+                #  已經係並發上限，RAM 有底。）
+                _reval_submit(mid)
         except Exception:
             pass
 
