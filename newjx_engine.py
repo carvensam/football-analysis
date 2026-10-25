@@ -153,6 +153,17 @@ def eval_match(conn, mid, lg=None):
     rule = load_rules().get(lg) if lg else None
     if not rule:
         return None
+    # 2026-10-25 live 腐化門禁（同 fw8x/hb 一脈）：方法 live n≥6 且 <60%
+    # 自動停產——礦工公式嘅長生保養，防止失效公式繼續出錯預測。
+    try:
+        _lv = conn.execute(
+            "SELECT COUNT(*), SUM(result='W'), SUM(result='L'), SUM(result='P') "
+            "FROM newjx_log WHERE result IS NOT NULL").fetchone()
+        if _lv[0] >= 6 and \
+                ((_lv[1] or 0) + 0.5 * (_lv[3] or 0)) / _lv[0] < 0.60:
+            return None
+    except Exception:
+        pass
     got = _odds_feats(conn, mid)
     if not got:
         return None

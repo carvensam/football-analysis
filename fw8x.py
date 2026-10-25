@@ -552,11 +552,24 @@ def eval_match(conn, mid, lg=None):
     if not info:
         return None
     # 2026-10-25 深盤守衛（蘇超流浪 4-0 聖莊士東事件）：down 公式喺深盤
-    # （|尾盤|≥1.5）停用——班霸對弱旅臨場升盤係市場確認實力差距（1.75→2.0），
-    # 誘盤邏輯失效，照推下盤係送人。up 公式唔受影響。2026 全庫回測驗證：
-    # 守衛前 370 注 78.7%；低過/唔變先會留低（見 fw8x_bt2026 重建）。
-    if f.get('dir') == 'down' and info.get('hc') is not None             and abs(info['hc']) >= 1.5:
+    # （|尾盤|≥1.75——三方案回測實證 1.75 最佳：基準 370 注 78.7%｜≥1.5→78.9%｜
+    # ≥1.75→358 注 79.1%✓｜升盤收窄→78.6% 棄）——班霸對弱旅臨場升盤係市場
+    # 確認實力差距（1.75→2.0），誘盤邏輯失效，照推下盤係送人。up 唔受影響。
+    if f.get('dir') == 'down' and info.get('hc') is not None \
+            and abs(info['hc']) >= 1.75:
         return None
+    # 2026-10-25 live 腐化門禁（同好波門禁一脈）：公式掘礦期靚唔代表長生——
+    # 該聯賽公式 live 結算 n≥8 且命中率 <60% 即自動停產（流浪事件嘅泛化：
+    # 小樣本公式遇情境失效要有自動斷路器）。動態查 fw8x_log，零檔案自維護。
+    try:
+        _lv = conn.execute(
+            "SELECT COUNT(*), SUM(result='W'), SUM(result='L'), SUM(result='P') "
+            "FROM fw8x_log WHERE league=? AND result IS NOT NULL", (lg,)).fetchone()
+        if _lv[0] >= 8 and \
+                ((_lv[1] or 0) + 0.5 * (_lv[3] or 0)) / _lv[0] < 0.60:
+            return None
+    except Exception:
+        pass
     if all(pred_match(info['feat'], p) for p in f['preds']):
         return info, f
     return None

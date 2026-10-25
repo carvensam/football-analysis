@@ -5675,19 +5675,23 @@ def api_match_tools(mid):
                     g[0 if res == 'W' else (1 if res == 'L' else 2)] += 1
             return _hit(a), _hit(g)
 
-        def _side(dirn):
-            # up＝上盤＝讓球方；down＝下盤＝受讓方
+        def _side(dirn, gv=None):
+            # up＝上盤＝讓球方；down＝下盤＝受讓方。
+            # 2026-10-25 修正：優先用 pick 本身 stored 嘅 giver（落注時盤）——
+            # 尾盤事後轉向嘅場，用而家尾盤 giver 會砌錯預測隊。
+            g = gv if gv in ('home', 'away') else giver
             if dirn == 'up':
-                return away if giver == 'away' else home
+                return away if g == 'away' else home
             if dirn == 'down':
-                return home if giver == 'away' else away
+                return home if g == 'away' else away
             return ''
 
         tools = []
 
-        def add(key, name, is_z, pick, methods_all, methods_lg):
+        def add(key, name, is_z, pick, methods_all, methods_lg, gv=None):
             """pick=(dir欄值, added_at, result, payload)；methods_*={法:hit}。
-            本場 pick 用咗嘅篩選法先至列出（冇法嘅工具＝齋工具命中率）。"""
+            本場 pick 用咗嘅篩選法先至列出；gv=pick 嘅 stored giver
+            （冇就用而家尾盤——2026-10-25 顯示準確性修正）。"""
             dirn, added_at, result, payload = pick
             used = []
             try:
@@ -5706,7 +5710,7 @@ def api_match_tools(mid):
                 mrows.append({'name': mname, 'all': ma, 'league': ml})
             tools.append({
                 'key': key, 'name': name, 'z': bool(is_z),
-                'dir': dirn, 'team': _side(dirn),
+                'dir': dirn, 'team': _side(dirn, gv),
                 'line': line, 'odds': odds,
                 'added_at': added_at, 'result': result,
                 'all': None, 'league': None,   # 下填工具級
@@ -5719,15 +5723,15 @@ def api_match_tools(mid):
 
         # ---- 精選W（條件喺 detail JSON conds[].note）----
         row = conn.execute(
-            'SELECT direction, added_at, result, detail FROM v3_featured '
-            'WHERE match_id=?', (mid,)).fetchone()
+            'SELECT direction, added_at, result, detail, giver '
+            'FROM v3_featured WHERE match_id=?', (mid,)).fetchone()
         if row:
             def _methods(payload):
                 d = json.loads(payload or '{}')
                 return [c.get('note') or c.get('name') or ''
                         for c in (d.get('conds') or [])]
             ma, ml = _tally('detail', 'v3_featured')
-            add('W', '精選W', False, row, ma, ml)
+            add('W', '精選W', False, row[:4], ma, ml, gv=row[4])
             tool_rate_fill(len(tools) - 1, 'v3_featured')
 
         # ---- 字頭工具 V1/V2（＋Z 槽）：篩選法＝合格字頭 ----
@@ -5741,19 +5745,19 @@ def api_match_tools(mid):
                 ('V2', '精V2', 'featured', False),
                 ('V2Z', '精V2Z', 'featured_z', True)):
             row = conn.execute(
-                f'SELECT direction, added_at, result, letters FROM {tbl} '
+                f'SELECT direction, added_at, result, letters, giver FROM {tbl} '
                 'WHERE match_id=?', (mid,)).fetchone()
             if not row:
                 continue
             _methods = _letters_methods
             ma, ml = _tally('letters', tbl)
-            add(key, name, is_z, row, ma, ml)
+            add(key, name, is_z, row[:4], ma, ml, gv=row[4])
             tool_rate_fill(len(tools) - 1, tbl)
         for key, name, tbl, is_z, letters_tbl in (
                 ('V1', '精V1', 'v1_featured', False, 'featured'),
                 ('V1Z', '精V1Z', 'v1_featured_z', True, 'featured_z')):
             row = conn.execute(
-                f'SELECT direction, added_at, result FROM {tbl} '
+                f'SELECT direction, added_at, result, giver FROM {tbl} '
                 'WHERE match_id=?', (mid,)).fetchone()
             if not row:
                 continue
@@ -5764,7 +5768,7 @@ def api_match_tools(mid):
             ma, ml = _tally('letters', letters_tbl)
             add(key, name, is_z,
                 (row[0], row[1], row[2], lt_row[0] if lt_row else None),
-                ma, ml)
+                ma, ml, gv=row[3])
             tool_rate_fill(len(tools) - 1, tbl)
 
         # ---- 格工具 7/8/12/8s：篩選法＝入選格（detail cells[].name）----
@@ -5775,14 +5779,14 @@ def api_match_tools(mid):
         for g, label in (('7', '精選7'), ('8', '精選8'),
                          ('12', '精選12'), ('8s', '格8s')):
             row = conn.execute(
-                "SELECT direction, added_at, result, detail FROM fw_grid_featured "
-                "WHERE grid=? AND match_id=?", (g, mid)).fetchone()
+                "SELECT direction, added_at, result, detail, giver "
+                "FROM fw_grid_featured WHERE grid=? AND match_id=?", (g, mid)).fetchone()
             if not row:
                 continue
             _methods = _cells_methods
             ma, ml = _tally('detail', 'fw_grid_featured',
                             "AND t.grid=?", (g,))
-            add('F' + g, label, False, row, ma, ml)
+            add('F' + g, label, False, row[:4], ma, ml, gv=row[4])
             tool_rate_fill(len(tools) - 1, 'fw_grid_featured',
                            'AND t.grid=?', (g,))
 
@@ -5801,11 +5805,11 @@ def api_match_tools(mid):
         # ---- 8X：篩選法＝每條因子 preds ----
         row = conn.execute(
             "SELECT direction, datetime(created_ts, 'unixepoch', '+8 hours'), "
-            "result, preds FROM fw8x_log WHERE match_id=?", (mid,)).fetchone()
+            "result, preds, giver FROM fw8x_log WHERE match_id=?", (mid,)).fetchone()
         if row:
             _methods = _arr_methods
             ma, ml = _tally('preds', 'fw8x_log')
-            add('X8', '8X', False, row, ma, ml)
+            add('X8', '8X', False, row[:4], ma, ml, gv=row[4])
             tool_rate_fill(len(tools) - 1, 'fw8x_log')
 
         # ---- 88W：一場可以中多個 market+conds 組合——每個組合一條（篩選法）----
@@ -5851,7 +5855,7 @@ def api_match_tools(mid):
                 '＋'.join(str(x) for x in json.loads(payload or '[]'))]
             ma, ml = _tally('conds', 'newjx_log')
             add('JX', '新精選', False,
-                (dirn, added_at, result, conds), ma, ml)
+                (dirn, added_at, result, conds), ma, ml, gv=row[4])
             tool_rate_fill(len(tools) - 1, 'newjx_log')
 
         # ---- 好波（大小球）：預測＝大/細；篩選法＝規則 rule ----
