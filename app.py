@@ -9692,7 +9692,10 @@ def _auto_odds_refresh_loop():
                     "AND m.kickoff <= datetime('now','+8 hours','+24 hours') "
                     "AND COALESCE((SELECT MAX(a.fetched_at) FROM odds_asian a "
                     "  WHERE a.match_id=m.id AND a.company_id=12), '2000-01-01') "
-                    "  < datetime('now','-30 minutes') "
+                    # 2026-10-25 第七輪實彈捉 bug：fetched_at 存香港時間，必須
+                    # '+8 hours' 先同庫內 UTC 比較——舊制差 8 個鐘，全部場永遠
+                    # 「新鮮」，循環出世以嚟零爬行（心跳 0 場嘅真兇）
+                    "  < datetime('now','+8 hours','-30 minutes') "
                     'ORDER BY m.kickoff LIMIT 40').fetchall()
             finally:
                 conn.close()
