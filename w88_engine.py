@@ -217,6 +217,70 @@ def _ps_feats(feat):
     return f
 
 
+# 2026-10-25 對立方向裁決（用戶實證：10-25 格拉茨 vs 列特同場出
+# K3下盤＋K3主勝）。規則挖掘係逐市場獨立做，冇保證方向一致，
+# 所以掃描時同一場可以同時命中相反方向嘅方法——對用戶係矛盾預測。
+# 方向歸屬（邊個方向嘅波你先會贏）：
+#   home_win／giver=home 嘅 ah_up／giver=away 嘅 ah_down → 'home'
+#   away_win／giver=away 嘅 ah_up／giver=home 嘅 ah_down → 'away'
+#   draw → 'draw'；over/under → 各自；even → 中立唔參與裁決。
+# 勝負 family（home/away/draw）同大小 family（over/under）各自
+# 只留一個方向：以規則質素 (test_hit, all_hit, all_n) 最高者
+# 所在方向為準，同方向嘅其他命中保留（互相加強唔係矛盾）。
+def _side(market, giver):
+    if market == 'home_win':
+        return 'home'
+    if market == 'away_win':
+        return 'away'
+    if market == 'ah_up':
+        return 'away' if giver == 'away' else 'home'
+    if market == 'ah_down':
+        return 'home' if giver == 'away' else 'away'
+    return market  # draw / over / under / even
+
+
+def _family(side):
+    if side in ('home', 'away', 'draw'):
+        return 'result'
+    if side in ('over', 'under'):
+        return 'totals'
+    return None  # even：中立
+
+
+def _quality(rule):
+    return (rule.get('test_hit') or -1, rule.get('all_hit') or -1,
+            rule.get('all_n') or 0)
+
+
+def _arbitrate(tagged):
+    """tagged: [(key, vals, rule)]；剔除對立方向中質素較差嗰邊，
+    回傳保留嘅 [(key, vals)]。"""
+    best = {}   # fam -> side -> (quality, market)
+    for key, vals, rule in tagged:
+        side = _side(vals[1], vals[7])   # market, giver
+        fam = _family(side)
+        if fam is None:
+            continue
+        q = _quality(rule)
+        cur = best.setdefault(fam, {})
+        if side not in cur or q > cur[side][0]:
+            cur[side] = (q, vals[1])
+    win = {}    # fam -> winning side
+    for fam, sides in best.items():
+        if len(sides) > 1:
+            win[fam] = max(sides, key=lambda s: sides[s][0])
+    out = []
+    for key, vals, rule in tagged:
+        side = _side(vals[1], vals[7])
+        fam = _family(side)
+        if fam in win and side != win[fam]:
+            print('[88w] conflict mid=%s drop %s（%s 方向輸咗俾 %s）'
+                  % (vals[0], vals[1], side, win[fam]), flush=True)
+            continue
+        out.append((key, vals))
+    return out
+
+
 def eval_match(conn, mid, lg=None):
     """單場評估（2026-10-22 資格重檢 sweep 用）：條件全中嘅方法 hit 列表
     [(market, conds_key, insert_vals), ...]；冇中／冇方法庫 → 空 list。
@@ -269,8 +333,65 @@ def eval_match(conn, mid, lg=None):
         hits.append((key, (mid, rule['market'], key[2], lg,
                            rule.get('label'),
                            ou['total_line'] if ou else None,
-                           ah.get('handicap'), ah.get('giver'), now)))
-    return hits
+                           ah.get('handicap'), ah.get('giver'), now),
+                     rule))
+    return _arbitrate(hits)
+
+
+def resolve_pending_conflicts(conn):
+    """清理遺留：w88_log 待定行同場對立方向（INSERT OR IGNORE 唔會
+    覆寫舊行，所以裁決前入咗庫嘅對立行要事後刪）。按規則質素
+    (test_hit, all_hit, all_n) 留一個方向；搵唔返規則嘅行質素
+    當最低。已結算行係統計記錄，唔郁。回傳刪除行數。"""
+    migrate(conn)
+    rows = conn.execute(
+        'SELECT match_id, market, conds, league, giver '
+        'FROM w88_log WHERE result IS NULL').fetchall()
+    if not rows:
+        return 0
+    qmap = {}
+    for src in (load_rules(), load_draw_rules()):
+        for lg, rl in src.items():
+            for r in rl:
+                qmap[(lg, r['market'], tuple(r.get('conds') or []))] = r
+    by_mid = {}
+    for r in rows:
+        by_mid.setdefault(r[0], []).append(r)
+    dels = []
+    for mid, rs in by_mid.items():
+        fams = {}
+        for _mid, mkt, conds, lg, giver in rs:
+            side = _side(mkt, giver)
+            fam = _family(side)
+            if fam is None:
+                continue
+            try:
+                ct = tuple(json.loads(conds) if conds else [])
+            except Exception:
+                ct = ()
+            rule = qmap.get((lg, mkt, ct))
+            q = _quality(rule) if rule else (-1, -1, 0)
+            fams.setdefault(fam, {}).setdefault(side, []).append(
+                (q, mkt, conds))
+        for fam, sides in fams.items():
+            if len(sides) <= 1:
+                continue
+            win = max(sides,
+                      key=lambda s: max(x[0] for x in sides[s]))
+            for s, items in sides.items():
+                if s == win:
+                    continue
+                for q, mkt, conds in items:
+                    dels.append((mid, mkt, conds, s, win))
+    for mid, mkt, conds, side, win in dels:
+        conn.execute(
+            'DELETE FROM w88_log WHERE match_id=? AND market=? '
+            'AND conds=? AND result IS NULL', (mid, mkt, conds))
+        print('[88w] drop pending conflict mid=%s market=%s'
+              '（%s 方向輸咗俾 %s）' % (mid, mkt, side, win), flush=True)
+    if dels:
+        conn.commit()
+    return len(dels)
 
 
 def scan(conn, hours=168, grace_min=10):
@@ -296,8 +417,6 @@ def scan(conn, hours=168, grace_min=10):
             hits.extend(eval_match(conn, mid, lg))
         except Exception:
             traceback.print_exc()
-    if not hits:
-        return 0
     added = 0
     for key, vals in hits:
         cur = conn.execute(
@@ -305,7 +424,10 @@ def scan(conn, hours=168, grace_min=10):
             '(match_id, market, conds, league, label, ou_line, hc, '
             ' giver, added_at) VALUES(?,?,?,?,?,?,?,?,?)', vals)
         added += cur.rowcount
-    conn.commit()
+    if added:
+        conn.commit()
+    # 2026-10-25：裁決前入咗庫嘅待定對立行都要清（冇新命中都要跑）
+    resolve_pending_conflicts(conn)
     return added
 
 
