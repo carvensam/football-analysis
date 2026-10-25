@@ -9657,6 +9657,19 @@ def _line_move_watch_loop():
             pass
 
 
+_AOD_LOG = os.path.join(PARENT_DIR, 'logs', 'auto_odds.log')
+
+
+def _aod_log(msg):
+    line = '[%s] %s' % (time.strftime('%Y-%m-%d %H:%M:%S'), msg)
+    print(line, flush=True)
+    try:
+        with open(_AOD_LOG, 'a', encoding='utf-8') as _f:
+            _f.write(line + '\n')
+    except OSError:
+        pass
+
+
 def _auto_odds_refresh_loop():
     """2026-10-25 補上自動化最後缺口：即將開賽場次嘅讓球賠率**週期自動重抓**。
     舊制重抓幾乎全靠人手撳掣——撳完之後賠率擺到舊，5 分鐘統一掃描只能
@@ -9704,15 +9717,16 @@ def _auto_odds_refresh_loop():
                                                          ko, 3)
                         except Exception:
                             pass
-                    print('[auto-odds] 自動重抓 %d/%d 場（24h 窗口，舊>30min）'
-                          % (n, len(rows)), flush=True)
+                    _aod_log('自動重抓 %d/%d 場（24h 窗口，舊>30min）'
+                             % (n, len(rows)))
                 finally:
                     conn.close()
             else:
                 # 2026-10-25 第五輪審計：每輪都留心跳（連 0 場都記）——冇 log
-                # 分唔出「健康冇嘢做」定「循環死咗」，哨兵要有聲
-                print('[auto-odds] 心跳：本輪 0 場需重抓（24h 窗全部新鮮）',
-                      flush=True)
+                # 分唔出「健康冇嘢做」定「循環死咗」，哨兵要有聲。
+                # 第六輪修正：寫檔案（logs/auto_odds.log）——pythonw 冇 stdout，
+                # print 心跳會好似 crawl_mk 咁「靜靜哋死咗都冇人知」。
+                _aod_log('心跳：本輪 0 場需重抓（24h 窗全部新鮮）')
         except Exception:
             traceback.print_exc(limit=2)
         time.sleep(900)
