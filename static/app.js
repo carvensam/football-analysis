@@ -2267,6 +2267,7 @@ async function loadFeaturedW(){
     <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>
     <div class="note">入選準則（六條件全部同方向≥50%）：①1A 同初盤&水位＋同尾盤（淨主淨客・全庫）②1I 同上但計埋主客互換 ③19 上賽完全相同（只計同主、同客）④19＋互換 ⑤31 主主場排名−客客場排名差距淨值（±1）⑥35 主主場入失球 及 客客場（各±3）。每條件展示盤口%＋同水位區%。合格後展示方向＋30 項淺深分析。已完場場次永久保留（事後回查頁）。Any 5／Any 4 近合格場附「相同情況」四口子回查（綜合＋各水位區域）。</div>` +
     _fwLegendHTML();
+  League7.mount('w', $('#fwStats'));
   const scan = d.scan || {};
   $('#fwScanInfo').textContent = scan.running
     ? `掃描中 ${scan.done}/${scan.total}…`
@@ -2439,6 +2440,7 @@ async function loadFwGrid(g){
     <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>
     <div class="note">入選準則：格組合 ${FW_GRID_DEFS[g].cells.join('、')}（${FW_GRID_DEFS[g].note}）。必填格 7/19/21/25 先有共識，其餘格全部同方向先入選；黃框＝該格組合用到嘅格。已完場場次永久保留。</div>` +
     _fwgLegendHTML(FW_GRID_DEFS[g].cells);
+  League7.mount('g' + g, $('#fw' + g + 'Stats'));
   const scan = d.scan || {};
   $('#fw' + g + 'ScanInfo').textContent = scan.running
     ? `掃描中 ${scan.done}/${scan.total}…`
@@ -3156,6 +3158,8 @@ async function loadV1(){
     : (scan.last ? `上次掃描：${scan.last}｜新增 ${scan.added || 0}（Z ${scan.added_z || 0}）` : '');
   $('#v1Stats').innerHTML = _v1StatsBar(d.stats, false, 'V1精選') + V1_MAP_NOTE;
   $('#v1zStats').innerHTML = _v1StatsBar(dz.stats, true, 'V1精選Z');
+  League7.mount('v1', $('#v1Stats'));
+  League7.mount('v1z', $('#v1zStats'));
   const render = (dd, el, z, tag, refreshUrl) => {
     let h = '';
     if (dd.pending.length) h += `<div class="day-h">🔜 ${tag}${z ? '精選Z' : '精選'}・未開賽（${dd.pending.length} 場・順開賽時間）</div>` + dd.pending.map(p => _v1Card(p, z, tag)).join('');
@@ -3189,6 +3193,10 @@ async function loadV1(){
       $('#v2Stats').innerHTML = `<div class="day-h" style="margin-top:14px">🆕 V2 精選（十六字頭規則引擎——用戶 2026-09-29 要求加入；卡片標籤「字頭 X X…」＝入選時合格字頭 A–P ＋31 深淺狀態）</div>` +
         _v1StatsBar(d2.stats, false, 'V2精選');
       $('#v2zStats').innerHTML = _v1StatsBar(d2z.stats, true, 'V2精選Z');
+      League7.mount('v1', $('#v1Stats'));
+      League7.mount('v1z', $('#v1zStats'));
+      League7.mount('v2', $('#v2Stats'));
+      League7.mount('v2z', $('#v2zStats'));
       render(d2, v2El, false, 'V2', '/api/featured/refresh');
       render(d2z, v2zEl, true, 'V2', '/api/featured/refresh');
     })
@@ -3549,6 +3557,61 @@ async function loadFeatHourly(){
   }
 }
 
+/* ---------- 2026-10-25 分聯賽/杯賽實測報表（用戶規格：全部工具頁頂部） ----------
+ * 後端 /api/league_report?tool=X 即時 SQL（賽事一結算，下次請求即反映——冇快取
+ * staleness 問題）。每張表：2026 總成績（場/贏/輸/走/勝率）＋最近七日同口徑；
+ * 聯賽以近7日勝率最佳排先；2026<60% 且 近7日<60% → 淺暗紅底 highlight。 */
+const League7 = {
+  _c: {},
+  async get(tool){
+    if (this._c[tool] && Date.now() - this._c[tool].ts < 30000)
+      return this._c[tool].data;
+    const d = await jget('/api/league_report?tool=' + tool);
+    this._c[tool] = {ts: Date.now(), data: d};
+    return d;
+  },
+  rowHtml(r){
+    const hit = r.hit != null ? r.hit.toFixed(1) + '%' : '—';
+    const hit7 = r.hit7 != null ? r.hit7.toFixed(1) + '%' : '—';
+    const c7 = r.hit7 != null ? (r.hit7 >= 50 ? '#3fb950' : '#f85149') : 'var(--dim)';
+    return `<div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:13px;${r.warn ? 'background:rgba(139,0,0,.16)' : ''}">` +
+      `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.league)}</span>` +
+      `<span style="color:var(--dim);white-space:nowrap">${r.n}場｜<b style="color:#3fb950">贏${r.w}</b>｜<b style="color:#f85149">輸${r.l}</b>${r.p ? '｜<span style="color:var(--dim)">走' + r.p + '</span>' : ''}</span>` +
+      `<b class="num" style="white-space:nowrap;min-width:52px;text-align:right;color:${r.hit != null && r.hit >= 50 ? '#3fb950' : '#f85149'}">${hit}</b>` +
+      `<span style="color:var(--dim);white-space:nowrap">${r.n7 != null ? r.n7 + '場｜<b style="color:#3fb950">贏' + (r.w7 || 0) + '</b>｜<b style="color:#f85149">輸' + (r.l7 || 0) + '</b>' + (r.p7 ? '｜<span style="color:var(--dim)">走' + r.p7 + '</span>' : '') : '—'}</span>` +
+      `<b class="num" style="white-space:nowrap;min-width:52px;text-align:right;color:${c7}">${hit7}</b></div>`;
+  },
+  async renderInto(tool, el){
+    try {
+      const d = await this.get(tool);
+      el.innerHTML = (d.rows && d.rows.length)
+        ? d.rows.map(r => this.rowHtml(r)).join('')
+        : '<div class="note">暫無 2026 已結算紀錄。</div>';
+    } catch (e) {
+      el.innerHTML = '<div class="err">報表載入失敗：' + esc(String(e)) + '</div>';
+    }
+  },
+  /* 喺容器頂部掛報表卡。注意：容器 innerHTML 全部 set 完之後先 call——
+   * mount 會 prepend，下次 reload 會重建，唔會疊。 */
+  mount(tool, container){
+    if (!container) return;
+    let card = container.querySelector(':scope > .lg7card');
+    if (!card){
+      card = document.createElement('div');
+      card.className = 'fcard lg7card';
+      card.style.margin = '8px 0';
+      card.innerHTML = '<div class="f-top" style="flex-wrap:wrap;gap:8px"><b>🏆 分聯賽/杯賽實測</b>' +
+        '<span style="color:var(--dim);font-size:12px">2026 總成績｜最近七日（結算即更新；近7日勝率排先；雙低於60%<span style="background:rgba(139,0,0,.16)">淺暗紅</span>）</span></div>' +
+        '<div style="display:flex;gap:8px;padding:4px 0;font-size:11px;color:var(--dim)">' +
+        '<span style="flex:1"></span><span style="white-space:nowrap">2026 總成績</span><span style="white-space:nowrap;min-width:52px;text-align:right">勝率</span>' +
+        '<span style="white-space:nowrap">最近七日</span><span style="white-space:nowrap;min-width:52px;text-align:right">勝率</span></div>' +
+        '<div class="lg7body"><div class="note">⏳ 載入緊…</div></div>';
+      container.prepend(card);
+    }
+    this.renderInto(tool, card.querySelector('.lg7body'));
+  }
+};
+
 /* ---------- 🧪 8X：66 條優化公式賽前記錄＋賽後自動結算 ---------- */
 let _x8Badge = 0;
 function x8UpDown(r){
@@ -3565,6 +3628,7 @@ function x8UpDown(r){
 async function loadX8(){
   try {
     const d = await jget('/api/8x/list');
+    try { window._lg7x = await League7.get('8x'); } catch (e) { window._lg7x = null; }
     await loadCondHr();
     const decided = d.w + d.l;
     const hr = decided ? d.w / decided : null;
@@ -3589,17 +3653,34 @@ async function loadX8(){
         <span>命中率 <b style="color:${bHr != null && bHr >= 0.5 ? '#3fb950' : '#f85149'};font-size:1.2em">${bHr == null ? '—' : (bHr * 100).toFixed(1) + '%'}</b>${bDec ? `（${B.w}/${bDec}）` : ''}</span>
         <span style="color:var(--dim);font-size:12px">更新於 ${esc(B.updated_at || '')}</span></div>
         ${B.excl && B.excl.total ? `<div class="sub" style="margin-top:2px;color:var(--dim)">🚫 已剔除命中率&lt;50%：${B.excl.leagues.map(e => esc(e.league) + ' ' + e.hit_rate + '%').join('、')} → 餘下 <b>${B.excl.total}</b> 場，命中率 <b style="color:#3fb950;font-size:1.1em">${B.excl.hit_rate}%</b></div>` : ''}
-        ${(B.by_league || []).length ? `<div style="margin-top:6px">${B.by_league.slice().sort((a, b) => {
-          const ra = (a.w + a.l) ? a.w / (a.w + a.l) : -1;
-          const rb = (b.w + b.l) ? b.w / (b.w + b.l) : -1;
-          return rb - ra;
-        }).map(L => {
-          const dec = L.w + L.l, r2 = dec ? L.w / dec : null;
-          return `<div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:13px">
-            <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(L.league)}</span>
-            <span style="color:var(--dim);white-space:nowrap">${L.n}場｜<b style="color:#3fb950">贏${L.w}</b>｜<b style="color:#f85149">輸${L.l}</b>${L.p ? '｜<span style="color:var(--dim)">走' + L.p + '</span>' : ''}</span>
-            <b class="num" style="white-space:nowrap;min-width:56px;text-align:right;color:${r2 != null && r2 >= 0.5 ? '#3fb950' : '#f85149'}">${r2 == null ? '—' : (r2 * 100).toFixed(1) + '%'}</b></div>`;
-        }).join('')}</div>` : ''}
+        ${(B.by_league || []).length ? (() => {
+          /* 2026-10-25 用戶規格：同一表內加最近七日戰果（實測 fw8x_log 結算），
+           * 聯賽以近7日勝率最佳排先；2026<60% 且 近7日<60% 淺暗紅 highlight。 */
+          const r7map = {};
+          if (window._lg7x && window._lg7x.rows)
+            for (const r of window._lg7x.rows) r7map[r.league] = r;
+          const merged = B.by_league.map(L => ({L, r7: r7map[L.league] || null}));
+          merged.sort((a, b) => {
+            const h7a = a.r7 && a.r7.hit7 != null ? a.r7.hit7 : -1;
+            const h7b = b.r7 && b.r7.hit7 != null ? b.r7.hit7 : -1;
+            if (h7b !== h7a) return h7b - h7a;
+            const ra = (a.L.w + a.L.l) ? a.L.w / (a.L.w + a.L.l) : -1;
+            const rb = (b.L.w + b.L.l) ? b.L.w / (b.L.w + b.L.l) : -1;
+            return rb - ra;
+          });
+          return `<div style="margin-top:6px">${merged.map(({L, r7}) => {
+            const dec = L.w + L.l, r2 = dec ? L.w / dec : null;
+            const warn = r7 && r7.warn;
+            const hit7t = r7 ? (r7.hit7 != null ? r7.hit7.toFixed(1) + '%' : '—') : '—';
+            const d7t = r7 ? (r7.n7 != null ? `${r7.n7}場｜<b style="color:#3fb950">贏${r7.w7 || 0}</b>｜<b style="color:#f85149">輸${r7.l7 || 0}</b>${r7.p7 ? '｜<span style="color:var(--dim)">走' + r7.p7 + '</span>' : ''}` : '—') : '—';
+            return `<div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:13px;${warn ? 'background:rgba(139,0,0,.16)' : ''}">
+              <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(L.league)}</span>
+              <span style="color:var(--dim);white-space:nowrap">${L.n}場｜<b style="color:#3fb950">贏${L.w}</b>｜<b style="color:#f85149">輸${L.l}</b>${L.p ? '｜<span style="color:var(--dim)">走' + L.p + '</span>' : ''}</span>
+              <b class="num" style="white-space:nowrap;min-width:52px;text-align:right;color:${r2 != null && r2 >= 0.5 ? '#3fb950' : '#f85149'}">${r2 == null ? '—' : (r2 * 100).toFixed(1) + '%'}</b>
+              <span style="color:var(--dim);white-space:nowrap">${d7t}</span>
+              <b class="num" style="white-space:nowrap;min-width:52px;text-align:right;color:${r7 && r7.hit7 != null ? (r7.hit7 >= 50 ? '#3fb950' : '#f85149') : 'var(--dim)'}">${hit7t}</b></div>`;
+          }).join('')}</div>`;
+        })() : ''}
         ${B.note ? `<div class="sub" style="margin-top:4px;color:var(--dim);font-size:12px">⚠️ ${esc(B.note)}</div>` : ''}
       </div>`;
     }

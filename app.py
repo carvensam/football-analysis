@@ -3117,6 +3117,98 @@ def _notify_tool(conn, mid, acts):
         pass
 
 
+# ============ 2026-10-25 分聯賽/杯賽實測報表（用戶規格：全部工具頁頂部） ============
+# 每個工具一張表：2026 總成績（場/贏/輸/走/勝率）＋最近七日同口徑；聯賽以
+# 最近七日勝率最佳排先；2026<60% 且 近7日<60% 由前端 highlight（warn 旗標）。
+# 數據源＝各工具實測記錄表（結算 result 列），即時 SQL——賽事一結算下次
+# 請求即反映（冇快取＝冇 staleness 問題）。七日系 settled_at（結算時間）。
+_LG_REPORT = {
+    # tool:      (table,            extra_where,      settle_col, league_direct)
+    'w':   ('v3_featured',     None,              'settled_at', False),
+    'v1':  ('v1_featured',     None,              'settled_at', False),
+    'v1z': ('v1_featured_z',   None,              'settled_at', False),
+    'v2':  ('featured',        None,              'settled_at', False),
+    'v2z': ('featured_z',      None,              'settled_at', False),
+    'g7':  ('fw_grid_featured', "grid='7'",       'settled_at', False),
+    'g8':  ('fw_grid_featured', "grid='8'",       'settled_at', False),
+    'g12': ('fw_grid_featured', "grid='12'",      'settled_at', False),
+    '8s':  ('fw8s_log',        None,              'settled_at', True),
+    # fw8x_log 有 kickoff 欄；settled 好多行係 NULL（結算行 result 有值但
+    # settled 未填），2026/七日窗口行 kickoff（完場日≈結算日，語義一致）
+    '8x':  ('fw8x_log',        None,              'settled',    True),
+    '88w': ('w88_log',         None,              'settled_at', True),
+    'jx':  ('newjx_log',       None,              'settled_at', True),
+    'hb':  ('hb_pick_log',     None,              'settled_at', True),
+}
+
+
+def api_league_report(tool):
+    """分聯賽實測報表：2026 總成績＋最近七日（結算口徑：勝率=贏÷(贏+輸)，走唔計）。
+    冇自己 league 欄嘅表（精選W/V1/V2/格）join matches→seasons→competitions
+    攞 req_name（同全庫歸組口徑一致）。"""
+    spec = _LG_REPORT.get(tool)
+    if not spec:
+        return {'error': 'unknown tool', 'tools': sorted(_LG_REPORT)}
+    table, extra, scol, direct = spec
+    conn = db()
+    try:
+        tabs = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if table not in tabs:
+            return {'ok': True, 'tool': tool, 'rows': []}
+        where = [("t.result IS NOT NULL"),
+                 ("t.kickoff >= '2026-01-01'" if table == 'fw8x_log'
+                  else "t.%s >= '2026-01-01'" % scol)]
+        if extra:
+            where.append(extra)
+        wsql = ' AND '.join(where)
+        if direct:
+            lgsel = 't.league'
+        else:
+            lgsel = ("COALESCE(c.req_name, t.match_id || '')")
+        base = ("FROM %s t " % table) + ('' if direct else
+               "JOIN matches m ON m.id=t.match_id "
+               "JOIN seasons s ON s.id=m.season_id "
+               "JOIN competitions c ON c.titan_id=s.titan_id ")
+        dcol = 'kickoff' if table == 'fw8x_log' else scol
+        y = conn.execute(
+            "SELECT %s, COUNT(*), SUM(t.result='W'), SUM(t.result='L'), "
+            "SUM(t.result='P') %s WHERE %s GROUP BY 1" %
+            (lgsel, base, wsql)).fetchall()
+        d7 = conn.execute(
+            "SELECT %s, COUNT(*), SUM(t.result='W'), SUM(t.result='L'), "
+            "SUM(t.result='P') %s WHERE %s AND t.%s >= "
+            "datetime('now','-7 days') GROUP BY 1" %
+            (lgsel, base, wsql, dcol)).fetchall()
+    finally:
+        conn.close()
+    y7 = {r[0]: r[1:] for r in d7}
+    rows = []
+    for lg, n, w, l, p in y:
+        n = n or 0
+        w = w or 0
+        l = l or 0
+        p = p or 0
+        dec = w + l
+        hit = round(w / dec * 100, 1) if dec else None
+        r7 = y7.get(lg)
+        n7 = w7 = l7 = p7 = hit7 = None
+        if r7:
+            n7, w7, l7, p7 = (r7[0] or 0), (r7[1] or 0), (r7[2] or 0), (r7[3] or 0)
+            dec7 = w7 + l7
+            hit7 = round(w7 / dec7 * 100, 1) if dec7 else None
+        rows.append({'league': lg or '（未知）', 'n': n, 'w': w, 'l': l, 'p': p,
+                     'hit': hit, 'n7': n7, 'w7': w7, 'l7': l7, 'p7': p7,
+                     'hit7': hit7,
+                     'warn': bool(hit is not None and hit < 60.0
+                                   and hit7 is not None and hit7 < 60.0)})
+    # 排序：最近七日勝率最佳排先（無 7 日數據排最尾），同分按 2026 總勝率
+    rows.sort(key=lambda r: (r['hit7'] is None, -(r['hit7'] or 0),
+                             -(r['hit'] or 0), r['league']))
+    return {'ok': True, 'tool': tool, 'rows': rows,
+            'now': time.strftime('%Y-%m-%d %H:%M')}
+
+
 # ============ 2026-10-24 「剔走」專頁（用戶規格） ============
 # 工具剔走唔合資格場次時，同時記錄落 removed_picks：邊個工具預測、
 # 預測方向、完場後實際結果（驗證剔走邏輯嘅真實命中率）。頁面：
@@ -10310,6 +10402,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/lg_hit_rates':
             self._send(200, json.dumps(api_lg_hit_rates(), ensure_ascii=False))
             return
+        # 2026-10-25 分聯賽實測報表（全部工具頁頂部共用；即時 SQL 冇快取）
+        if u.path == '/api/league_report':
+            q = parse_qs(u.query)
+            self._send(200, json.dumps(
+                api_league_report(q.get('tool', [''])[0]), ensure_ascii=False))
+            return
         if u.path == '/api/upcoming':
             q = parse_qs(u.query)
             hours = int(q.get('hours', ['48'])[0])
@@ -11954,38 +12052,37 @@ if __name__ == '__main__':
                 traceback.print_exc(limit=2)
         threading.Thread(target=_removed_backfill_boot,
                          daemon=True).start()
-
-        # 2026-10-25 開機自愈（雲端冇 shell 渠道，順 boot 清一次；冇就秒過）：
-        # removed_picks 歷史重複（每 工具+場次+方向 留最新）＋窗口外 alerts 垃圾
-        # （舊制無窗口過濾嘅遺留——本機已人手清，雲端靠呢度對齊）。冇備份——
-        # 兩個清理都係刪「邏輯上唔應該存在」嘅行，留最新留窗口內，唔蝕資料。
-        def _db_selfheal_boot():
-            try:
-                conn = db()
-                try:
-                    cur = conn.execute('''DELETE FROM removed_picks WHERE id
-                        NOT IN (SELECT MAX(id) FROM removed_picks
-                        GROUP BY tool, match_id, side)''')
-                    n1 = cur.rowcount
-                    cur = conn.execute('''DELETE FROM alerts WHERE match_id IN
-                        (SELECT m.id FROM matches m WHERE m.kickoff <
-                        datetime('now','+8 hours','-1 hours') OR m.kickoff >
-                        datetime('now','+8 hours','+7 days') OR
-                        m.home_score IS NOT NULL)''')
-                    n2 = cur.rowcount
-                    conn.commit()
-                    if n1 or n2:
-                        print('[boot] DB 自愈：剔走重複 %d 行＋窗口外通知 %d 行'
-                              % (n1, n2), flush=True)
-                finally:
-                    conn.close()
-            except Exception:
-                pass
-        threading.Thread(target=_db_selfheal_boot, daemon=True).start()
         print('[boot] 熱數據同步循環已啟動（每 30 分鐘推送雲端）', flush=True)
     else:
         print('[boot] 雲端：每小時精選紀錄＋掃描唔開（0.5C 搶資源會 health check '
               'restart loop）；紀錄由本機每小時做、每日推送', flush=True)
+    # 2026-10-25 開機自愈（兩邊都行——首版誤放喺本機分支，雲端冇跑到，審計
+    # #42 驗證捉到）：removed_picks 歷史重複（每 工具+場次+方向 留最新）＋
+    # 窗口外 alerts 垃圾（舊制無窗口過濾嘅遺留）。冇備份——兩個清理都係刪
+    # 「邏輯上唔應該存在」嘅行，留最新留窗口內，唔蝕資料。
+    def _db_selfheal_boot():
+        try:
+            conn = db()
+            try:
+                cur = conn.execute('''DELETE FROM removed_picks WHERE id
+                    NOT IN (SELECT MAX(id) FROM removed_picks
+                    GROUP BY tool, match_id, side)''')
+                n1 = cur.rowcount
+                cur = conn.execute('''DELETE FROM alerts WHERE match_id IN
+                    (SELECT m.id FROM matches m WHERE m.kickoff <
+                    datetime('now','+8 hours','-1 hours') OR m.kickoff >
+                    datetime('now','+8 hours','+7 days') OR
+                    m.home_score IS NOT NULL)''')
+                n2 = cur.rowcount
+                conn.commit()
+                if n1 or n2:
+                    print('[boot] DB 自愈：剔走重複 %d 行＋窗口外通知 %d 行'
+                          % (n1, n2), flush=True)
+            finally:
+                conn.close()
+        except Exception:
+            pass
+    threading.Thread(target=_db_selfheal_boot, daemon=True).start()
     # 2026-10-22 統一循環（本機＋雲端都開）：取代 8X／88W／新精選三個各自
     # 獨立循環——一場一次過評全部系統（共享計算）＋變動跳過，約 6 小時一次
     # 全量。冇佢嘅話手機版 8X/88W/新精選永遠唔會自動有預測。
