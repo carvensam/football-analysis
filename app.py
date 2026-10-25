@@ -2397,8 +2397,10 @@ def do_update_window(win):
     if _update_state['running'] or _fbatch_state['running']:
         return {'ok': False, 'running': True,
                 'error': '另一個更新進行中，等佢完成先'}
+    # 2026-10-25 修正：重置停止旗標——舊制撳過「■停止」後 stop=True 殘留，
+    # 之後每次窗口更新喺 worker 開工即退，掣永久失效（app 重啟先復活）。
     _win_state.update(running=True, window=win, error=None,
-                      phase='準備中…', done=0, total=0)
+                      phase='準備中…', done=0, total=0, stop=False)
     _t = threading.Thread(target=_window_update_worker, daemon=True,
                           args=(win,))
     _JOB_THREADS['窗口更新'] = _t
