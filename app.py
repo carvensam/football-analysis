@@ -9858,11 +9858,26 @@ def _sync_push_now(force=False, cooldown=300):
                                  'Content-Type': 'application/json'},
                         method='POST')
                     _r = urllib.request.urlopen(_req, timeout=60)
-                    print('[sync-now] 代理池已推雲：%s' % _r.read()[:60],
-                          flush=True)
+                    _line = '[%s] 代理池已推雲：%s' % (
+                        time.strftime('%Y-%m-%d %H:%M:%S'),
+                        _r.read().decode()[:60])
+                    print(_line, flush=True)
+                    # pythonw 冇 stdout——寫檔案先係硬證據
+                    with open(os.path.join(PARENT_DIR, 'logs',
+                                           'sync_delta.log'), 'a',
+                              encoding='utf-8') as _lf:
+                        _lf.write(_line + '\n')
             except Exception as _e:
-                print('[sync-now] 代理池推送失敗：%s' % str(_e)[:80],
-                      flush=True)
+                _eline = '[%s] 代理池推送失敗：%s' % (
+                    time.strftime('%Y-%m-%d %H:%M:%S'), str(_e)[:80])
+                print(_eline, flush=True)
+                try:
+                    with open(os.path.join(PARENT_DIR, 'logs',
+                                           'sync_delta.log'), 'a',
+                              encoding='utf-8') as _lf:
+                        _lf.write(_eline + '\n')
+                except OSError:
+                    pass
         except Exception:
             pass
     threading.Thread(target=_bg, daemon=True).start()
