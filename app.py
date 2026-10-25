@@ -9845,6 +9845,7 @@ def _sync_push_now(force=False, cooldown=300):
             # 2026-10-25 代理池熱同步：最靚 400 個驗證代理推俾雲端（Fetcher
             # mtime 重載，手機爬行即提速）
             try:
+                import urllib.request
                 _gp = os.path.join(PARENT_DIR, 'logs', 'good_proxies.log')
                 _lines = [l.strip() for l in open(_gp, encoding='ascii',
                                                   errors='ignore')
