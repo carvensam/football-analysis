@@ -3307,6 +3307,9 @@ def _bust_tool_caches():
             for k in (False, True):
                 cache[k]['ts'] = 0.0
                 cache[k]['data'] = None
+        # 2026-10-25：45 項分析快取同步清——入選/剔走後分析結果即刻跟新線
+        # （舊制 10 分鐘 TTL 會顯示過期推論，影響精確度）
+        _v3_item_cache.clear()
     except Exception:
         pass
 
@@ -7540,9 +7543,29 @@ def api_hb_predict(mid):
             "SELECT total_line, over_odds, under_odds FROM odds_ou "
             "WHERE match_id=? AND company_id=12 AND label='closing'",
             (mid,)).fetchone()
+        # 2026-10-25 修正（signature 缺口）：hb 推論仲用 AH 尾盤/4h線/排名/
+        # 8X・新精選方向——呢啲變咗舊 sig 都當冇變，會出過期 pick。全部入 sig。
+        _ah = conn.execute(
+            "SELECT handicap, giver FROM odds_asian WHERE match_id=? "
+            "AND company_id=12 AND label='closing'", (mid,)).fetchone()
+        _o4 = conn.execute(
+            "SELECT total_line FROM odds_ou WHERE match_id=? AND company_id=12 "
+            "AND label='pre_4h'", (mid,)).fetchone()
+        _x8 = conn.execute(
+            "SELECT direction FROM fw8x_log WHERE match_id=?", (mid,)).fetchone()
+        _jx = conn.execute(
+            "SELECT dir FROM newjx_log WHERE match_id=?", (mid,)).fetchone()
+        _ps = conn.execute(
+            "SELECT home_total_rank, away_total_rank FROM match_prestandings "
+            "WHERE match_id=?", (mid,)).fetchone()
     finally:
         conn.close()
-    sig = tuple(row) if row else None
+    sig = ((tuple(row) if row else None),
+           (tuple(_ah) if _ah else None),
+           (_o4[0] if _o4 else None),
+           (_x8[0] if _x8 else None),
+           (_jx[0] if _jx else None),
+           (tuple(_ps) if _ps else None))
     gen = _hb_pre_gen[0]
     with _hb_pre_lock:
         e = _hb_pre.get(mid)
@@ -9608,10 +9631,19 @@ def _line_move_watch_loop():
                 mids = [int(x) for x in f.read().split() if x.strip().isdigit()]
             if not mids:
                 continue
-            with open(fpath, 'w', encoding='ascii'):
-                pass   # 清空（重算冇副作用，崩潰都只會重複評估）
+            # 2026-10-25 修正（用戶：搵晒阻止重算嘅物件）：舊制「讀完即刻清空
+            # + 淨做前 40」會將超額通知**靜默丟棄**——批量 149 場時逾百場永遠
+            # 冇重算！而家：全做；單 tick 超過 300 先將剩餘寫返落檔下輪做，
+            # 一個通知都唔准失。
+            overflow = []
+            if len(mids) > 300:
+                overflow = mids[300:]
+                mids = mids[:300]
+            with open(fpath, 'w', encoding='ascii') as f:
+                for _m in overflow:
+                    f.write('%d\n' % _m)
             seen = set()
-            for mid in mids[:40]:
+            for mid in mids:
                 if mid in seen:
                     continue
                 seen.add(mid)
