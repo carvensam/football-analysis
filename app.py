@@ -1779,15 +1779,21 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
                         time.sleep(4)
                 if acts is None:
                     continue
+                _committed = False
                 for _att in range(4):
                     try:
                         _scanlog_match(conn, mid, acts)
                         conn.commit()   # 逐場 commit：寫鎖秒級釋放（舊制 20 場一鎖）
+                        _committed = True
                         break
                     except sqlite3.OperationalError:
                         time.sleep(4)   # 爬蟲/頁面寫撞鎖——等 4 秒重試
+                if not _committed:
+                    print('[scan] ⚠️ 場次 %d commit 4 次重試後仍鎖死——'
+                          '簽名未寫，下輪會補評' % mid, flush=True)
                 _s = sigs.get(mid)
                 if _s:
+                    _snap_done = False
                     for _att in range(4):
                         try:
                             conn.execute(
@@ -1797,9 +1803,15 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
                                 (mid, _s,
                                  time.strftime('%Y-%m-%d %H:%M:%S')))
                             conn.commit()
+                            _snap_done = True
                             break
                         except sqlite3.OperationalError:
                             time.sleep(4)   # 2026-10-26：無重試會成個 pass 炸冧
+                    if not _snap_done:
+                        # 2026-10-26 實彈：2962699 簽名靜默漏寫——之後永遠
+                        # 被簽名跳過。必須留聲（下輪冇簽名=會補評，但要知道發生過）
+                        print('[scan] ⚠️ 場次 %d 簽名 4 次重試後仍鎖死' % mid,
+                              flush=True)
                 for a in acts:
                     if '移出' in a:
                         st['removed'] += 1
@@ -11081,24 +11093,85 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, json.dumps({'error': 'forbidden'},
                                                ensure_ascii=False))
                     return
+                # 2026-10-26 generation 計數（用戶批准）：防舊批次遲到覆蓋新
+                # 數據（本機重啟/雙通道競速嘅 ABA 問題）。注意：校驗一定要
+                # 喺讀完 request body 之後先至做——否則拒絕時 body 未讀完，
+                # server 提早回應會 cut 線（10053），客戶端收唔到 409。
+                _gen = None
+                _dup = False
+                _hash_hdr = self.headers.get('X-Sync-Hash') or ''
+                if self.headers.get('X-Sync-Gen') is not None:
+                    try:
+                        _gen = int(self.headers.get('X-Sync-Gen'))
+                    except (TypeError, ValueError):
+                        _gen = None
                 n = int(self.headers.get('Content-Length') or 0)
                 if n <= 0 or n > 100 * 1024 * 1024:
                     self._send(400, json.dumps({'error': 'bad size'},
                                                ensure_ascii=False))
                     return
                 import gzip as _gz
-                raw = _gz.decompress(self.rfile.read(n))
+                _body = self.rfile.read(n)
+                raw = _gz.decompress(_body)
+                # generation 校驗（body 讀完先驗——上面註釋講咗原因）
+                if _gen is not None:
+                    _mconn = db()
+                    try:
+                        _mconn.execute('CREATE TABLE IF NOT EXISTS sync_meta('
+                                       'k TEXT PRIMARY KEY, v TEXT)')
+                        _r1 = _mconn.execute(
+                            "SELECT v FROM sync_meta WHERE k='last_gen'"
+                        ).fetchone()
+                        _last = int(_r1[0]) if _r1 else 0
+                        _r2 = _mconn.execute(
+                            "SELECT v FROM sync_meta WHERE k='last_hash'"
+                        ).fetchone()
+                        _lhash = _r2[0] if _r2 else ''
+                    finally:
+                        _mconn.close()
+                    if _gen < _last or (_gen == _last
+                                        and _hash_hdr != _lhash):
+                        self._send(409, json.dumps(
+                            {'ok': False, 'stale': True,
+                             'last_gen': _last}, ensure_ascii=False))
+                        return
+                    _dup = (_gen == _last and _hash_hdr == _lhash)
                 tmp = os.path.join(PARENT_DIR, '_ingest_tmp.sqlite')
                 try:
                     with open(tmp, 'wb') as f:
                         f.write(raw)
                     rep = _apply_delta(tmp)
+                    # generation 計數：應用成功先至 commit 號碼（崩潰喺中間
+                    # 都安全——下一個更大 gen 照受理；冇上到香港嘅同 gen
+                    # 重試會行冪等分支）
+                    if _gen is not None and not _dup:
+                        _mconn = db()
+                        try:
+                            _mconn.execute('CREATE TABLE IF NOT EXISTS '
+                                           'sync_meta(k TEXT PRIMARY KEY, '
+                                           'v TEXT)')
+                            _mconn.execute(
+                                "INSERT OR REPLACE INTO sync_meta(k,v) VALUES"
+                                "('last_gen',?), ('last_hash',?)",
+                                (str(_gen), _hash_hdr))
+                            _mconn.commit()
+                        finally:
+                            _mconn.close()
                 finally:
                     try:
                         os.unlink(tmp)
                     except OSError:
                         pass
-                self._send(200, json.dumps(rep, ensure_ascii=False))
+                if _dup:
+                    self._send(200, json.dumps(
+                        {'ok': True, 'duplicate': True, 'gen': _gen},
+                        ensure_ascii=False))
+                else:
+                    try:
+                        rep['gen'] = _gen
+                    except Exception:
+                        pass
+                    self._send(200, json.dumps(rep, ensure_ascii=False))
             except Exception as e:
                 import traceback
                 traceback.print_exc()
