@@ -2825,8 +2825,12 @@ def _regrab_worker():
             logf.write('\n===== 重抓重算 %s =====\n' %
                        time.strftime('%Y-%m-%d %H:%M:%S'))
             logf.flush()
+            # 2026-10-26 三源輪換正式啟用（用戶規格：每100個requests轉下一個
+            # 來源，titan→7M→捷報順序輪換）——crawl16 行內嘅 SourceRotator 見
+            # 到 FA_ROTATE=1 先會介入 fetch（預設 off 唔影響其他啟動方式）。
+            env = dict(os.environ, FA_ROTATE='1')
             p = subprocess.Popen(cmd, cwd=cwd, stdout=logf,
-                                 stderr=subprocess.STDOUT)
+                                 stderr=subprocess.STDOUT, env=env)
             while p.poll() is None:
                 time.sleep(3)
             logf.close()
