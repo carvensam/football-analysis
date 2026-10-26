@@ -9,6 +9,9 @@
     'padding:12px 22px;border-radius:14px;border:2px solid #0009;' +
     'font-size:17px;font-weight:900;cursor:pointer;letter-spacing:.12em;' +
     'box-shadow:0 4px 12px #000c;font-family:inherit}' +
+    /* 2026-10-26：手機縮細——原本 17px×1.35 zoom 成一大塊紅色遮住內容（用戶：文字被遮） */
+    '@media (max-width:640px){#crawlStopBtn{right:8px;bottom:14px;' +
+    'padding:7px 12px;font-size:12px;border-radius:10px;letter-spacing:.04em}}' +
     '#crawlStopBtn.halt{background:#c0392b;color:#fff}' +
     '#crawlStopBtn.go{background:#1e9e52;color:#fff}' +
     '#crawlStopBtn:disabled{opacity:.6;cursor:wait}';

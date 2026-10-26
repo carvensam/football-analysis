@@ -3570,22 +3570,34 @@ const League7 = {
     this._c[tool] = {ts: Date.now(), data: d};
     return d;
   },
+  /* 2026-10-26 手機走哂位根因：呢個表 5 欄全部 nowrap，闊過熒幕時右邊兩欄被裁、
+   * 聯賽名被 ellipsis 食晒（用戶：大量文字缺失）。改做 display:table——欄位按內容
+   * 對齊、任何闊度都完整顯示，外層 .lg7scroll overflow-x:auto 手指橫掃。 */
   rowHtml(r){
     const hit = r.hit != null ? r.hit.toFixed(1) + '%' : '—';
     const hit7 = r.hit7 != null ? r.hit7.toFixed(1) + '%' : '—';
     const c7 = r.hit7 != null ? (r.hit7 >= 50 ? '#3fb950' : '#f85149') : 'var(--dim)';
-    return `<div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:13px;${r.warn ? 'background:rgba(139,0,0,.16)' : ''}">` +
-      `<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.league)}</span>` +
-      `<span style="color:var(--dim);white-space:nowrap">${r.n}場｜<b style="color:#3fb950">贏${r.w}</b>｜<b style="color:#f85149">輸${r.l}</b>${r.p ? '｜<span style="color:var(--dim)">走' + r.p + '</span>' : ''}</span>` +
-      `<b class="num" style="white-space:nowrap;min-width:52px;text-align:right;color:${r.hit != null && r.hit >= 50 ? '#3fb950' : '#f85149'}">${hit}</b>` +
-      `<span style="color:var(--dim);white-space:nowrap">${r.n7 != null ? r.n7 + '場｜<b style="color:#3fb950">贏' + (r.w7 || 0) + '</b>｜<b style="color:#f85149">輸' + (r.l7 || 0) + '</b>' + (r.p7 ? '｜<span style="color:var(--dim)">走' + r.p7 + '</span>' : '') : '—'}</span>` +
-      `<b class="num" style="white-space:nowrap;min-width:52px;text-align:right;color:${c7}">${hit7}</b></div>`;
+    return `<div style="display:table-row;${r.warn ? 'background:rgba(139,0,0,.16);' : ''}">` +
+      `<span style="display:table-cell;white-space:nowrap;padding:4px 12px 4px 0;font-size:13px">${esc(r.league)}</span>` +
+      `<span style="display:table-cell;white-space:nowrap;padding:4px 12px 4px 0;font-size:13px;color:var(--dim)">${r.n}場｜<b style="color:#3fb950">贏${r.w}</b>｜<b style="color:#f85149">輸${r.l}</b>${r.p ? '｜<span style="color:var(--dim)">走' + r.p + '</span>' : ''}</span>` +
+      `<b class="num" style="display:table-cell;white-space:nowrap;padding:4px 0 4px 12px;text-align:right;font-size:13px;color:${r.hit != null && r.hit >= 50 ? '#3fb950' : '#f85149'}">${hit}</b>` +
+      `<span style="display:table-cell;white-space:nowrap;padding:4px 12px;font-size:13px;color:var(--dim)">${r.n7 != null ? r.n7 + '場｜<b style="color:#3fb950">贏' + (r.w7 || 0) + '</b>｜<b style="color:#f85149">輸' + (r.l7 || 0) + '</b>' + (r.p7 ? '｜<span style="color:var(--dim)">走' + r.p7 + '</span>' : '') : '—'}</span>` +
+      `<b class="num" style="display:table-cell;white-space:nowrap;padding:4px 0 4px 12px;text-align:right;font-size:13px;color:${c7}">${hit7}</b></div>`;
+  },
+  headerHtml(){
+    const c = 'display:table-cell;white-space:nowrap;padding:4px 12px 4px 0;font-size:11px;color:var(--dim);font-weight:400';
+    return `<div style="display:table-row">` +
+      `<span style="${c}"></span>` +
+      `<span style="${c}">2026 總成績</span>` +
+      `<span style="${c};padding:4px 0 4px 12px;text-align:right">勝率</span>` +
+      `<span style="${c}">最近七日</span>` +
+      `<span style="${c};padding:4px 0 4px 12px;text-align:right">勝率</span></div>`;
   },
   async renderInto(tool, el){
     try {
       const d = await this.get(tool);
       el.innerHTML = (d.rows && d.rows.length)
-        ? d.rows.map(r => this.rowHtml(r)).join('')
+        ? this.headerHtml() + d.rows.map(r => this.rowHtml(r)).join('')
         : '<div class="note">暫無 2026 已結算紀錄。</div>';
     } catch (e) {
       el.innerHTML = '<div class="err">報表載入失敗：' + esc(String(e)) + '</div>';
@@ -3601,11 +3613,10 @@ const League7 = {
       card.className = 'fcard lg7card';
       card.style.margin = '8px 0';
       card.innerHTML = '<div class="f-top" style="flex-wrap:wrap;gap:8px"><b>🏆 分聯賽/杯賽實測</b>' +
-        '<span style="color:var(--dim);font-size:12px">2026 總成績｜最近七日（結算即更新；近7日勝率排先；雙低於60%<span style="background:rgba(139,0,0,.16)">淺暗紅</span>）</span></div>' +
-        '<div style="display:flex;gap:8px;padding:4px 0;font-size:11px;color:var(--dim)">' +
-        '<span style="flex:1"></span><span style="white-space:nowrap">2026 總成績</span><span style="white-space:nowrap;min-width:52px;text-align:right">勝率</span>' +
-        '<span style="white-space:nowrap">最近七日</span><span style="white-space:nowrap;min-width:52px;text-align:right">勝率</span></div>' +
-        '<div class="lg7body"><div class="note">⏳ 載入緊…</div></div>';
+        '<span style="color:var(--dim);font-size:12px">2026 總成績｜最近七日（結算即更新；近7日勝率排先；雙低於60%<span style="background:rgba(139,0,0,.16)">淺暗紅</span>；表格可橫掃）</span></div>' +
+        /* 橫掃容器：表格闊過熒幕時手指掃，唔再裁字（2026-10-26） */
+        '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch">' +
+        '<div class="lg7body" style="display:table;border-collapse:collapse"><div class="note">⏳ 載入緊…</div></div></div>';
       container.prepend(card);
     }
     this.renderInto(tool, card.querySelector('.lg7body'));
@@ -3668,18 +3679,23 @@ async function loadX8(){
             const rb = (b.L.w + b.L.l) ? b.L.w / (b.L.w + b.L.l) : -1;
             return rb - ra;
           });
-          return `<div style="margin-top:6px">${merged.map(({L, r7}) => {
+          /* 2026-10-26：同一個 League7 表格走哂位根因——改 display:table＋外層橫掃，
+           * 欄位對齊、全部文字可見（詳見 League7.rowHtml 註釋）。 */
+          const c8 = 'display:table-cell;white-space:nowrap;padding:4px 12px 4px 0;font-size:13px';
+          return `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><div style="display:table;border-collapse:collapse">` +
+            `<div style="display:table-row"><span style="${c8};font-size:11px;color:var(--dim)"></span><span style="${c8};font-size:11px;color:var(--dim)">2026 總成績</span><span style="${c8};font-size:11px;color:var(--dim);padding:4px 0 4px 12px;text-align:right">勝率</span><span style="${c8};font-size:11px;color:var(--dim)">最近七日</span><span style="${c8};font-size:11px;color:var(--dim);padding:4px 0 4px 12px;text-align:right">勝率</span></div>` +
+            merged.map(({L, r7}) => {
             const dec = L.w + L.l, r2 = dec ? L.w / dec : null;
             const warn = r7 && r7.warn;
             const hit7t = r7 ? (r7.hit7 != null ? r7.hit7.toFixed(1) + '%' : '—') : '—';
             const d7t = r7 ? (r7.n7 != null ? `${r7.n7}場｜<b style="color:#3fb950">贏${r7.w7 || 0}</b>｜<b style="color:#f85149">輸${r7.l7 || 0}</b>${r7.p7 ? '｜<span style="color:var(--dim)">走' + r7.p7 + '</span>' : ''}` : '—') : '—';
-            return `<div style="display:flex;gap:8px;align-items:baseline;padding:4px 0;border-bottom:1px solid rgba(128,128,128,.15);font-size:13px;${warn ? 'background:rgba(139,0,0,.16)' : ''}">
-              <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(L.league)}</span>
-              <span style="color:var(--dim);white-space:nowrap">${L.n}場｜<b style="color:#3fb950">贏${L.w}</b>｜<b style="color:#f85149">輸${L.l}</b>${L.p ? '｜<span style="color:var(--dim)">走' + L.p + '</span>' : ''}</span>
-              <b class="num" style="white-space:nowrap;min-width:52px;text-align:right;color:${r2 != null && r2 >= 0.5 ? '#3fb950' : '#f85149'}">${r2 == null ? '—' : (r2 * 100).toFixed(1) + '%'}</b>
-              <span style="color:var(--dim);white-space:nowrap">${d7t}</span>
-              <b class="num" style="white-space:nowrap;min-width:52px;text-align:right;color:${r7 && r7.hit7 != null ? (r7.hit7 >= 50 ? '#3fb950' : '#f85149') : 'var(--dim)'}">${hit7t}</b></div>`;
-          }).join('')}</div>`;
+            return `<div style="display:table-row;${warn ? 'background:rgba(139,0,0,.16);' : ''}">
+              <span style="${c8}">${esc(L.league)}</span>
+              <span style="${c8};color:var(--dim)">${L.n}場｜<b style="color:#3fb950">贏${L.w}</b>｜<b style="color:#f85149">輸${L.l}</b>${L.p ? '｜<span style="color:var(--dim)">走' + L.p + '</span>' : ''}</span>
+              <b class="num" style="${c8};padding:4px 0 4px 12px;text-align:right;color:${r2 != null && r2 >= 0.5 ? '#3fb950' : '#f85149'}">${r2 == null ? '—' : (r2 * 100).toFixed(1) + '%'}</b>
+              <span style="${c8};color:var(--dim)">${d7t}</span>
+              <b class="num" style="${c8};padding:4px 0 4px 12px;text-align:right;color:${r7 && r7.hit7 != null ? (r7.hit7 >= 50 ? '#3fb950' : '#f85149') : 'var(--dim)'}">${hit7t}</b></div>`;
+          }).join('') + '</div></div>';
         })() : ''}
         ${B.note ? `<div class="sub" style="margin-top:4px;color:var(--dim);font-size:12px">⚠️ ${esc(B.note)}</div>` : ''}
       </div>`;

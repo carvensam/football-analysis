@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>精選8s</title>
 <style>
-/* 2026-10-25 全局字體加大（同主 App 一致；手機帽 1.8） */
+/* 2026-10-25 全局字體加大（同主 App 一致）；2026-10-26 手機 zoom 1.15 */
 html{zoom:1}
-@media (max-width:600px){html{zoom:1.35}}/* 2026-10-25 用戶校準（60歲老花友善）：1.0 太細→2.0/1.8 太大→1.35（~19px）
- * 想再調淨係改呢個數（1.2=細啲 1.5=大啲） */
+@media (max-width:600px){html{zoom:1.15}}/* 2026-10-26 用戶校準：1.35 太大→1.15（~16px）
+ * 想再調淨係改呢個數（1.0=細啲 1.3=大啲） */
 img,table{max-width:100%}
 :root{
   --bg:#0d1117; --bg2:#161d27; --card:#1a2230; --line:#2b3648;
@@ -117,11 +117,15 @@ tr.mode-watch td:first-child{box-shadow:inset 3px 0 0 var(--dim)}
   body{font-size:14px;padding:0 0 16px}
   .gold-banner{position:static;height:34px;font-size:22px;line-height:34px}
   .gold-banner.bottom{height:26px;font-size:15px;line-height:26px}
-  #topbar{top:0;padding:4px 6px;gap:4px}
+  /* 2026-10-26：margin:0 -10px（桌面用）喺手機會令頂欄闊過熒幕 20px——status 文字被裁 */
+  #topbar{top:0;margin:0;padding:4px 6px;gap:4px}
   #status{font-size:12px;min-width:0}
   .mrow .ko{min-width:0}
   .mrow .lg{min-width:0}
   .mrow .tm{min-width:0;flex-basis:100%}
+  /* 每聯賽公式表（6-7 欄）手機橫掃，唔畀佢撑爆版 */
+  table.t{display:block;overflow-x:auto;max-width:100%}
+  table.t th{position:static}
   .toast{bottom:16px;max-width:92vw}
 }
 </style>
