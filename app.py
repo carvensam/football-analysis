@@ -3682,8 +3682,9 @@ def _apply_delta(path):
             if t not in _INGEST_WHITELIST:
                 rep[t] = 'skip（唔喺白名單）'
                 continue
-            dst_cols = {r[1] for r in conn.execute(f'PRAGMA table_info({t})')}
-            src_info = src.execute(f'PRAGMA table_info({t})').fetchall()
+            tq = '"%s"' % t.replace('"', '""')
+            dst_cols = {r[1] for r in conn.execute(f'PRAGMA table_info({tq})')}
+            src_info = src.execute(f'PRAGMA table_info({tq})').fetchall()
             cols = [r[1] for r in src_info]
             if not dst_cols:
                 # 2026-10-21：雲端舊庫冇嘅表（如 competitions）——照源庫 schema 即場起表
@@ -3692,28 +3693,31 @@ def _apply_delta(path):
                     (t,)).fetchone()[0]
                 conn.execute(create_sql)
                 conn.commit()
-                dst_cols = {r[1] for r in conn.execute(f'PRAGMA table_info({t})')}
+                dst_cols = {r[1] for r in conn.execute(f'PRAGMA table_info({tq})')}
             if set(cols) - dst_cols:
                 # 2026-10-24：由 skip 改自動補欄（additive only——淨係加缺少嘅
                 # 欄，唔郁原有）。本機新加欄位（如今日精選表 hc/giver）雲端
                 # 唔會再成表停同步。boot 遷移都做同樣升級，雙重保險。
+                # 2026-10-26 修正：欄名一律雙引號——數字開頭欄名（xsrc_team_alias
+                # 嘅 7m_name）裸寫會炸「unrecognized token」停晒成個同步。
                 for _cid, cname, ctype, *_r in src_info:
                     if cname in dst_cols:
                         continue
-                    conn.execute(f'ALTER TABLE {t} ADD COLUMN {cname} '
+                    conn.execute(f'ALTER TABLE {tq} ADD COLUMN '
+                                 f'"{cname.replace(chr(34), chr(34)*2)}" '
                                  f'{ctype or "TEXT"}')
                     dst_cols.add(cname)
                 conn.commit()
-            collist = ','.join(cols)
+            collist = ','.join('"%s"' % c.replace('"', '""') for c in cols)
             ph = ','.join('?' * len(cols))
             n = 0
             while True:
                 rows = src.execute(
-                    f'SELECT {collist} FROM {t} LIMIT 2000 OFFSET {n}').fetchall()
+                    f'SELECT {collist} FROM {tq} LIMIT 2000 OFFSET {n}').fetchall()
                 if not rows:
                     break
                 conn.executemany(
-                    f'INSERT OR REPLACE INTO {t} ({collist}) VALUES ({ph})',
+                    f'INSERT OR REPLACE INTO {tq} ({collist}) VALUES ({ph})',
                     rows)
                 n += len(rows)
             if t in _DELTA_FULL_REPLACE:
