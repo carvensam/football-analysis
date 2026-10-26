@@ -3671,8 +3671,16 @@ def api_alerts_read():
 def _apply_delta(path):
     """套用增量 sqlite：白名單內嘅表 INSERT OR REPLACE，回傳每表行數。
     用雙連線（delta 獨立開）而唔係 ATTACH——Windows 下 ATTACH 新檔
-    好易被防毒短鎖搞到成盤失敗。"""
+    好易被防毒短鎖搞到成盤失敗。
+
+    2026-10-26：busy_timeout 120s——雲端自己嘅爬取/重算寫鎖會同 ingest
+    撞（19:56/20:03 連續 database is locked 停同步）；busy_timeout 令
+    SQLite 內部退避重試。"""
     conn = db()
+    try:
+        conn.execute('PRAGMA busy_timeout=120000')
+    except Exception:
+        pass
     rep = {}
     try:
         src = sqlite3.connect(path, timeout=30)
@@ -11158,6 +11166,10 @@ class Handler(BaseHTTPRequestHandler):
                     # 重試會行冪等分支）
                     if _gen is not None and not _dup:
                         _mconn = db()
+                        try:
+                            _mconn.execute('PRAGMA busy_timeout=120000')
+                        except Exception:
+                            pass
                         try:
                             _mconn.execute('CREATE TABLE IF NOT EXISTS '
                                            'sync_meta(k TEXT PRIMARY KEY, '
