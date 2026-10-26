@@ -4,19 +4,36 @@
  * 後端 /api/league_report 即時 SQL：賽事一結算，下次載入即反映。 */
 (function(){
   var me = document.currentScript;
+  // 2026-10-26 iframe 內 currentScript 間中為 null（parser 時序）令報表卡唔插入——
+  // fallback 搵 script[data-tool] 標記，再唔得主動搵 main/body 頂。
+  if (!me) me = document.querySelector('script[data-tool]');
   var tool = (me && me.dataset) ? me.dataset.tool : '';
   var UP = 'var(--up, #3fb950)', DOWN = 'var(--down, #f85149)', DIM = 'var(--dim, #8b94a3)';
   var box = document.createElement('div');
   box.style.cssText = 'margin:10px auto;max-width:1000px;padding:0 10px';
-  if (me && me.parentNode) me.parentNode.insertBefore(box, me);
-  else return;
+  // 2026-10-26：一律插去 #main 之前（body 層）——iframe 頁內 #main 內容會俾
+  // 頁面自己嘅重建邏輯成個換走（盒插喺 main 裏面會跟住被掟）；body 層冇人郁。
+  var mainEl = document.getElementById('main');
+  if (mainEl && mainEl.parentNode) mainEl.parentNode.insertBefore(box, mainEl);
+  else if (me && me.parentNode) me.parentNode.insertBefore(box, me);
+  else if (document.body) document.body.insertBefore(box, document.body.firstChild);
   function esc(s){
     return String(s == null ? '' : s).replace(/[&<>"]/g,
       function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; });
   }
-  fetch('/api/league_report?tool=' + encodeURIComponent(tool))
+  // 2026-10-26 v4：iframe 內 fetch 會俾 60s 自動刷新cut線／慢響應卡住——
+  // 加 8s 超時＋每 20s 重試，直到攞到數據先停；載入期間盒有最小高度。
+  box.innerHTML = '<div style="color:' + DIM + ';font-size:13px;padding:14px 4px">🏆 分聯賽/杯賽實測：⏳ 載入緊…</div>';
+  function loadTable(){
+    var ctl = null;
+    try { ctl = new AbortController(); setTimeout(function(){ ctl.abort(); }, 8000); } catch (e) {}
+    fetch('/api/league_report?tool=' + encodeURIComponent(tool), ctl ? {signal: ctl.signal} : {})
     .then(function(r){ return r.json(); })
     .then(function(d){
+      if (!d.rows || !d.rows.length){
+        box.innerHTML = '<div style="color:' + DIM + ';font-size:13px">🏆 分聯賽/杯賽實測：暫無 2026 已結算紀錄。</div>';
+        return;
+      }
       if (!d.rows || !d.rows.length){
         box.innerHTML = '<div style="color:' + DIM + ';font-size:13px">🏆 分聯賽/杯賽實測：暫無 2026 已結算紀錄。</div>';
         return;
@@ -47,6 +64,9 @@
       box.innerHTML = h + '</div></div></div>';
     })
     .catch(function(){
-      box.innerHTML = '<div style="color:' + DIM + ';font-size:13px">🏆 分聯賽/杯賽實測：載入失敗。</div>';
+      box.innerHTML = '<div style="color:' + DIM + ';font-size:13px">🏆 分聯賽/杯賽實測：⏳ 載入緊（重試中）…</div>';
+      setTimeout(loadTable, 20000);
     });
+  }
+  loadTable();
 })();

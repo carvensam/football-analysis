@@ -259,18 +259,24 @@ function goto(pg){
     htftm: () => loadHtftRules(),
     pstat: () => loadPredStats(),
     haobao: () => {
+      // 2026-10-26：分聯賽表喺 iframe 外面（父文件）mount——iframe 內 league7.js
+      // 執行異常（零錯誤零盒），父文件掛載同其他工具頁同款機制。
+      League7.mount('hb', $('#hbLg7Mount'));
       const f = $('#hbFrame');
       if (f && !f.src) f.src = '/haobao/';
     },
     fw8s: () => {
+      League7.mount('8s', $('#fw8sLg7Mount'));
       const f = $('#fw8sFrame');
       if (f && !f.src) f.src = '/fw8s';
     },
     w88: () => {
+      League7.mount('88w', $('#w88Lg7Mount'));
       const f = $('#w88Frame');
       if (f && !f.src) f.src = '/88w';
     },
     newjx: () => {
+      League7.mount('jx', $('#newjxLg7Mount'));
       const f = $('#jxFrame');
       if (f && !f.src) f.src = '/newjx';
     },
@@ -1378,6 +1384,12 @@ function refreshCurrentTool(){
     if (loaders[curPage]) return loaders[curPage]();
     const frames = {haobao: '#hbFrame', fw8s: '#fw8sFrame',
                     w88: '#w88Frame', newjx: '#jxFrame'};
+    // 2026-10-26：分聯賽表改喺 iframe 外面（父文件）mount——iframe 內
+    // league7.js 喺用戶瀏覽器入面執行異常（零錯誤零盒），父文件掛載
+    // 同其餘 9 個工具頁同款機制，穩定可靠。
+    const lg7map = {haobao: ['hb', '#hbLg7Mount'], fw8s: ['8s', '#fw8sLg7Mount'],
+                    w88: ['88w', '#w88Lg7Mount'], newjx: ['jx', '#newjxLg7Mount']};
+    if (lg7map[curPage]) League7.mount(lg7map[curPage][0], $(lg7map[curPage][1]));
     const sel = frames[curPage];
     const f = sel && $(sel);
     if (f && f.src) {
@@ -3844,6 +3856,7 @@ async function loadFw12Lib(){
     }
     h += '</div>';
     S.innerHTML = h;
+    League7.mount('g12', $('#fw12libStats'));
     G.innerHTML = (d.leagues && d.leagues.length) ? '<div class="fcard"><div class="f-top" style="flex-wrap:wrap;gap:6px"><b>分聯賽</b>　' +
       d.leagues.map(x => {
         const dec = x.w + x.l;
