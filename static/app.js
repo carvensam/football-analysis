@@ -1575,7 +1575,7 @@ function _betForm(p, confirmed){
     </div>
     <div class="toolbar">${confirmed
       ? '<button class="btn gold bet-save">保存更新（即時重算盈利）</button>'
-      : '<button class="btn gold bet-confirm">確認</button>'}</div>
+      : '<button class="btn gold bet-confirm">確認</button><button class="btn warn bet-delete">刪除</button>'}</div>
   </div>`;
 }
 function _betProfit(p){
@@ -1651,6 +1651,19 @@ async function loadPicksPage(){
         else toast(r.error || '確認失敗');
       }
     } catch (e) { toast('確認失敗：' + e.message); } finally { b.disabled = false; }
+  });
+  $$('#pkList .bet-delete').forEach(b => b.onclick = async () => {
+    if (!window.confirm('確定刪除這場待確認注單？此操作不可復原。')) return;
+    b.disabled = true;
+    try {
+      const form = b.closest('.bet-form');
+      const r = await jpost('/api/bets/delete', {bet_id: +form.dataset.betid});
+      if (r.ok && r.deleted === 1) {
+        toast('已刪除該場待確認注單'); loadPicksPage(); refreshPicksMap();
+      } else {
+        toast(r.error || '找不到待確認注單，可能已確認或已刪除');
+      }
+    } catch (e) { toast('刪除失敗：' + e.message); } finally { b.disabled = false; }
   });
   $$('#pkList .bet-edit').forEach(b => b.onclick = () => {
     const form = b.closest('.bet-card').querySelector('.bet-form');

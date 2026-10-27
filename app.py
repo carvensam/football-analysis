@@ -247,7 +247,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.7.3'
+SERVER_VERSION = '5.7.4'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -4577,6 +4577,16 @@ def do_bet_edit(body):
         return bets.edit(conn, int(body.get('bet_id')), body.get('home'),
                          body.get('away'), body.get('line'), body.get('odds'),
                          body.get('stake'), choice=body.get('choice'))
+    except (TypeError, ValueError) as exc:
+        return {'ok': False, 'error': str(exc)}
+    finally:
+        conn.close()
+
+
+def do_bet_delete(body):
+    conn = db()
+    try:
+        return bets.delete_pending(conn, bet_id=int(body.get('bet_id')))
     except (TypeError, ValueError) as exc:
         return {'ok': False, 'error': str(exc)}
     finally:
@@ -11805,7 +11815,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path in ('/api/bets', '/api/bets/confirm', '/api/bets/edit',
-                      '/api/bets/delete-day', '/api/bets/delete-week'):
+                      '/api/bets/delete', '/api/bets/delete-day', '/api/bets/delete-week'):
             n = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(n) or b'{}')
             try:
@@ -11815,6 +11825,8 @@ class Handler(BaseHTTPRequestHandler):
                     rep = do_bet_confirm(body)
                 elif u.path == '/api/bets/edit':
                     rep = do_bet_edit(body)
+                elif u.path == '/api/bets/delete':
+                    rep = do_bet_delete(body)
                 elif u.path == '/api/bets/delete-day':
                     rep = do_bet_delete_period('day', body.get('day'))
                 else:
