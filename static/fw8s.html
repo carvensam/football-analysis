@@ -93,6 +93,7 @@ select{background:var(--card);color:var(--tx);border:1px solid var(--line);borde
 .mrow .sub b{color:var(--gold2)}
 .sec-h{font-size:13px;font-weight:700;color:var(--gold2);margin:12px 0 4px}
 /* 表格 */
+.table-wrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
 table.t{width:100%;border-collapse:collapse;font-size:12px;margin:4px 0}
 table.t th,table.t td{border:1px solid var(--line);padding:4px 6px;text-align:center}
 table.t th{background:var(--bg2);color:var(--gold2);position:sticky;top:100px}
@@ -123,8 +124,8 @@ tr.mode-watch td:first-child{box-shadow:inset 3px 0 0 var(--dim)}
   .mrow .ko{min-width:0}
   .mrow .lg{min-width:0}
   .mrow .tm{min-width:0;flex-basis:100%}
-  /* 每聯賽公式表（6-7 欄）手機橫掃，唔畀佢撑爆版 */
-  table.t{display:block;overflow-x:auto;max-width:100%}
+  /* 保留真正 table 排版；只係外層橫掃，避免手機 display:block 令表頭／欄位消失 */
+  table.t{display:table;min-width:650px;max-width:none}
   table.t th{position:static}
   .toast{bottom:16px;max-width:92vw}
 }
@@ -156,7 +157,7 @@ tr.mode-watch td:first-child{box-shadow:inset 3px 0 0 var(--dim)}
 </main>
 <div class="gold-banner bottom">專搵上盤</div>
 <div class="toast" id="toast"></div>
-<script src="/static/fw8s.js?v=fw8s3"></script>
+<script src="/static/fw8s.js?v=fw8s4"></script>
 <script src="/static/crawlbtn.js?v=5.3.1"></script>
 </body>
 </html>

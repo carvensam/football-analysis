@@ -135,7 +135,7 @@
       si('全庫命中率', pct(d.total && d.total.up_r), 'up') +
       si('聯賽數', rows.length, 'gold') +
       '</div>';
-    h += '<table class="t"><thead><tr><th>聯賽／杯賽</th><th>模式</th><th>n</th>' +
+    h += '<div class="table-wrap"><table class="t"><thead><tr><th>聯賽／杯賽</th><th>模式</th><th>n</th>' +
       '<th>上盤率</th><th>逐年（n＋%）</th><th>精煉條件</th></tr></thead><tbody>';
     rows.forEach(function (r) {
       var yrs = Object.keys(r.years || {}).map(function (y) {
@@ -150,7 +150,7 @@
         '<td class="l yrs">' + esc(yrs) + '</td>' +
         '<td class="l">' + esc((r.conds || []).join('、') || '') + '</td></tr>';
     });
-    h += '</tbody></table>';
+    h += '</tbody></table></div>';
     body.innerHTML = h;
   }
 
@@ -170,7 +170,7 @@
       si('走盤', t.p || 0, '') +
       si('下盤開出率', pct(t.down_r), 'up') +
       '</div>';
-    h += '<table class="t"><thead><tr><th>聯賽／杯賽</th><th>共識場次</th>' +
+    h += '<div class="table-wrap"><table class="t"><thead><tr><th>聯賽／杯賽</th><th>共識場次</th>' +
       '<th>下盤開出</th><th>下盤輸</th><th>走盤</th><th>下盤開出率</th></tr></thead><tbody>';
     (d.rows || []).forEach(function (r) {
       var dn = r.down || { n: 0, a: 0, b: 0, p: 0, hit_r: null };
@@ -180,7 +180,7 @@
         '<td>' + dn.p + '</td>' +
         '<td class="' + pcCls + '">' + pct(dn.hit_r) + '</td></tr>';
     });
-    h += '</tbody></table>';
+    h += '</tbody></table></div>';
     body.innerHTML = h;
   }
 
@@ -210,7 +210,7 @@
       h += '<div class="empty">暫無入選紀錄（每次掃描自動記低入選場次，開賽後自動結算）</div>';
       body.innerHTML = h; return;
     }
-    h += '<table class="t"><thead><tr><th>開賽時間</th><th>聯賽</th><th>對賽</th>' +
+    h += '<div class="table-wrap"><table class="t"><thead><tr><th>開賽時間</th><th>聯賽</th><th>對賽</th>' +
       '<th>盤口</th><th>模式</th><th>比分</th><th>結果</th></tr></thead><tbody>';
     d.rows.forEach(function (r) {
       var res = r.result
@@ -224,7 +224,7 @@
         '<td>' + esc(r.line || '') + '</td><td>' + modeTxt + '</td>' +
         '<td>' + esc(r.score || '—') + '</td><td>' + res + '</td></tr>';
     });
-    h += '</tbody></table>';
+    h += '</tbody></table></div>';
     body.innerHTML = h;
   }
 

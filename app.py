@@ -55,6 +55,12 @@ if _ENGINE_DIR not in sys.path:
 import numpy as np
 import screen_engine
 try:
+    from . import home_tools, worklog, bets
+except ImportError:
+    import home_tools
+    import worklog
+    import bets
+try:
     import fw8x
 except ImportError:
     fw8x = None
@@ -241,7 +247,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.6.8'
+SERVER_VERSION = '5.7.1'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -598,12 +604,36 @@ def _start_bg_scan(kind):
     return True
 
 
+def _ensure_competitions(conn):
+    conn.execute('''CREATE TABLE IF NOT EXISTS competitions(
+        titan_id INTEGER PRIMARY KEY, req_name TEXT NOT NULL,
+        name_tc TEXT, name_sc TEXT, name_en TEXT,
+        category TEXT NOT NULL, sub_of INTEGER, enabled INTEGER DEFAULT 1)''')
+    if conn.execute('SELECT COUNT(*) FROM competitions').fetchone()[0]:
+        return 0
+    path = os.path.join(PARENT_DIR, 'leagues.json')
+    if not os.path.exists(path):
+        path = os.path.join(BASE_DIR, 'leagues.json')
+    with open(path, encoding='utf-8') as f:
+        leagues = json.load(f)
+    rows = [(lg['titan_id'], lg['req_name'], lg.get('name_tc'),
+             lg.get('name_sc'), lg.get('name_en'), lg['category'],
+             lg.get('sub_of'), 1 if lg.get('enabled', True) else 0)
+            for lg in leagues]
+    conn.executemany(
+        'INSERT OR IGNORE INTO competitions(titan_id,req_name,name_tc,name_sc,'
+        'name_en,category,sub_of,enabled) VALUES(?,?,?,?,?,?,?,?)', rows)
+    return len(rows)
+
+
 def _migrate_db():
-    """開機遷移：odds_asian 加 fetched_at（每場賠率/盤口「最後更新」顯示用）。
-    同 crawler.connect() 內嘅遷移一致；喺度再做一次係保證 APP 查詢前欄位必存在
-    （例如雲端 DB 係舊快照種子，未行過 crawler 遷移）。"""
+    """開機遷移：賠率欄位、聯賽參考表及工作 LOG。"""
     conn = sqlite3.connect(DB_PATH, timeout=120)
     try:
+        seeded = _ensure_competitions(conn)
+        if seeded:
+            print('[boot] competitions 缺失／空白：已由 leagues.json 補 %d 個賽事' %
+                  seeded, flush=True)
         cols = [r[1] for r in conn.execute('PRAGMA table_info(odds_asian)')]
         if 'fetched_at' not in cols:
             conn.execute("ALTER TABLE odds_asian ADD COLUMN fetched_at TEXT")
@@ -650,6 +680,12 @@ def _migrate_db():
                 conn.execute(f'ALTER TABLE {t} ADD COLUMN hc REAL')
             if 'giver' not in cols:
                 conn.execute(f'ALTER TABLE {t} ADD COLUMN giver TEXT')
+        worklog.migrate(conn)
+        bets.migrate(conn)
+        interrupted = worklog.interrupt_running(conn)
+        if interrupted:
+            print('[boot] 工作 LOG：%d 輪未完成工作已標記中斷' % interrupted,
+                  flush=True)
         conn.commit()
     finally:
         conn.close()
@@ -657,11 +693,10 @@ def _migrate_db():
 
 def upcoming(hours=48):
     conn = db()
-    # hours=0 → 不設時限上限，列出全部即將開賽賽事
     cap = "AND m.kickoff <= datetime('now','+8 hours', ?) " if hours else ""
     args = (f'+{hours} hours',) if hours else ()
     rows = conn.execute(
-        "SELECT m.id, c.req_name, m.kickoff, ht.name_tc, at.name_tc, m.odds_done, "
+        "SELECT m.id, c.req_name, c.category, m.kickoff, ht.name_tc, at.name_tc, m.odds_done, "
         "EXISTS(SELECT 1 FROM odds_asian oa WHERE oa.match_id=m.id AND oa.company_id=12), "
         "oc.handicap, oc.giver, oc.home_odds, oc.away_odds, "
         "oc3.handicap, oc3.giver, oc3.home_odds, oc3.away_odds, "
@@ -673,7 +708,6 @@ def upcoming(hours=48):
         "JOIN teams at ON at.titan_id=m.away_id "
         "LEFT JOIN odds_asian oc ON oc.match_id=m.id AND oc.company_id=12 "
         "AND oc.label='closing' "
-        # Crown(3) 後備：易胜博未開盤嘅場次照顯示盤口（標明來源）
         "LEFT JOIN odds_asian oc3 ON oc3.match_id=m.id AND oc3.company_id=3 "
         "AND oc3.label='closing' "
         "LEFT JOIN match_prestandings ps ON ps.match_id=m.id "
@@ -684,7 +718,8 @@ def upcoming(hours=48):
         "WHERE m.home_score IS NULL AND m.kickoff >= datetime('now','+8 hours') "
         + cap + "ORDER BY m.kickoff", args).fetchall()
     out = []
-    for mid, lg, ko, h, a, od, has, hc, gv, ho, ao, c3h, c3g, c3ho, c3ao, hr_, ar_, odds_at in rows:
+    for (mid, lg, cat, ko, h, a, od, has, hc, gv, ho, ao, c3h, c3g,
+         c3ho, c3ao, hr_, ar_, odds_at) in rows:
         line = None
         if hc is not None:
             line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao,
@@ -694,16 +729,14 @@ def upcoming(hours=48):
             line = {'line': screen_engine.fmt_line(c3h, c3g), 'ho': c3ho, 'ao': c3ao,
                     'giver': c3g or 'none', 'src': 'crown',
                     'v': (-c3h if c3g == 'home' else (0.0 if not c3g else c3h))}
-        out.append({'id': mid, 'league': lg, 'kickoff': ko, 'home': h, 'away': a,
-                    'has_odds': bool(has), 'line': line, 'odds_at': odds_at,
-                    'rank_home': hr_, 'rank_away': ar_,
+        out.append({'id': mid, 'league': lg, 'category': cat, 'kickoff': ko,
+                    'home': h, 'away': a, 'has_odds': bool(has), 'line': line,
+                    'odds_at': odds_at, 'rank_home': hr_, 'rank_away': ar_,
                     'fetched_ago': int(time.time() - _last_fetch[mid]) if mid in _last_fetch else None})
-    # 同賽事盤口規則：每場附上/下盤%預測（2026-10-05 用戶指示）
     try:
         _attach_oupred(out)
     except Exception:
         pass
-    # 10-16 用戶：主頁三欄——精選8／精選8s／好波大細
     try:
         _attach_preds3(out)
     except Exception:
@@ -713,10 +746,7 @@ def upcoming(hours=48):
 
 
 def played(fin_hours=120, fin_cat='all'):
-    """已開賽場次（預設最近 120 小時），主頁「已開賽／已完賽」區用。
-    2026-10-11 用戶規格：已完賽回查——Period（fin_hours，最遠 720 小時）
-    同聯賽杯賽類（fin_cat=聯賽/杯賽）二選一或二選二；輸出連 cat 同
-    大小球尾盤（之前已完賽部分得亞盤，資料唔齊全）。"""
+    """已開賽場次，附回查篩選、排名、盤口及最後賠率更新時間。"""
     fin_hours = max(1, min(int(fin_hours or 120), 720))
     cat_sql, cat_arg = '', ()
     if fin_cat in ('聯賽', '杯賽'):
@@ -731,6 +761,7 @@ def played(fin_hours=120, fin_cat='all'):
         "oc.handicap, oc.giver, oc.home_odds, oc.away_odds, "
         "oc3.handicap, oc3.giver, oc3.home_odds, oc3.away_odds, "
         "ou.total_line, ou.over_odds, ou.under_odds, "
+        "COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank), "
         "(SELECT MAX(oa2.fetched_at) FROM odds_asian oa2 WHERE oa2.match_id=m.id) "
         "FROM matches m JOIN seasons s ON s.id=m.season_id "
         "JOIN competitions c ON c.titan_id=s.titan_id "
@@ -738,28 +769,33 @@ def played(fin_hours=120, fin_cat='all'):
         "JOIN teams at ON at.titan_id=m.away_id "
         "LEFT JOIN odds_asian oc ON oc.match_id=m.id AND oc.company_id=12 "
         "AND oc.label='closing' "
-        # 易勝博無資料 → Crown 後備照出（同即將開賽區玩法；前端已有 Crown 標籤）
         "LEFT JOIN odds_asian oc3 ON oc3.match_id=m.id AND oc3.company_id=3 "
         "AND oc3.label='closing' "
         "LEFT JOIN odds_ou ou ON ou.match_id=m.id AND ou.company_id=12 "
         "AND ou.label='closing' "
+        "LEFT JOIN match_prestandings ps ON ps.match_id=m.id "
+        "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
+        "AND hr.scope='total' AND hr.grp='' "
+        "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
+        "AND ar.scope='total' AND ar.grp='' "
         "WHERE m.kickoff < datetime('now','+8 hours') "
         "AND m.kickoff >= datetime('now','+8 hours','-%d hours') " % fin_hours
         + cat_sql +
         " ORDER BY m.kickoff DESC LIMIT %d" % limit, cat_arg).fetchall()
     out = []
     for (mid, lg, cat, ko, h, a, hs, aws, hh, ha, fg, hc, gv, ho, ao,
-         c3h, c3g, c3ho, c3ao, oul, ouo, ouu, odds_at) in rows:
+         c3h, c3g, c3ho, c3ao, oul, ouo, ouu, hr_, ar_, odds_at) in rows:
         line = None
         if hc is not None:
             line = {'line': screen_engine.fmt_line(hc, gv), 'ho': ho, 'ao': ao,
+                    'giver': gv or 'none',
                     'v': (-hc if gv == 'home' else (0.0 if not gv else hc))}
         elif c3h is not None:
             line = {'line': screen_engine.fmt_line(c3h, c3g), 'ho': c3ho,
-                    'ao': c3ao, 'src': 'crown',
+                    'ao': c3ao, 'src': 'crown', 'giver': c3g or 'none',
                     'v': (-c3h if c3g == 'home' else (0.0 if not c3g else c3h))}
-        rec = {'id': mid, 'league': lg, 'cat': cat, 'kickoff': ko,
-               'home': h, 'away': a,
+        rec = {'id': mid, 'league': lg, 'cat': cat, 'category': cat, 'kickoff': ko,
+               'home': h, 'away': a, 'rank_home': hr_, 'rank_away': ar_,
                'score': None if hs is None else f'{hs}-{aws}', 'line': line,
                'odds_at': odds_at}
         if oul is not None:
@@ -780,19 +816,28 @@ def do_fetch(mid, force=False):
             return {'ok': True, 'cached': True}
         crawler, fetcher = get_crawler()
         conn = db()
-        row = conn.execute('SELECT kickoff FROM matches WHERE id=?', (mid,)).fetchone()
-        if not row:
+        worklog.begin(conn, '單場更新盤口及賠率｜場次%s' % mid)
+        ok = False
+        try:
+            row = conn.execute('SELECT kickoff FROM matches WHERE id=?',
+                               (mid,)).fetchone()
+            if not row:
+                worklog.event(conn, 'error', message='找不到賽事', status='失敗')
+                return {'ok': False, 'error': '找不到賽事'}
+            ok = crawler.crawl_odds_for_match(conn, fetcher, mid, row[0], 12)
+            work_league, work_match = _work_match_info(conn, mid)
+            worklog.event(conn, 'crawl', league=work_league,
+                          match_text=work_match, markets=['讓球'], done=1, total=1,
+                          status='成功' if ok else '失敗')
+        except Exception as exc:
+            worklog.event(conn, 'error', message=str(exc), status='失敗')
+            raise
+        finally:
+            worklog.end(conn, 'done' if ok else 'error',
+                        '單場爬取成功' if ok else '單場爬取失敗')
             conn.close()
-            return {'ok': False, 'error': '找不到賽事'}
-        before = _closing_now(conn, mid)
-        ok = crawler.crawl_odds_for_match(conn, fetcher, mid, row[0], 12)
-        conn.close()
-        # 失敗唔緩存（2026-09-29）：冷卻期內被拒絕嘅請求唔記錄時間，
-        # 下次撳掣即刻重試，唔會俾 120 秒快取擋住
         if ok:
             _last_fetch[mid] = time.time()
-            # 2026-10-25：after_odds_update 已刪除——0.15 門檻後備路徑淨係會
-            # skip；watcher（notify→20s）已無條件覆蓋每次成功爬取，冇存在價值。
             return {'ok': True}
         err = (getattr(fetcher, 'last_error', None)
                or 'titan007 無回應（數據伺服器可能暫時中斷，已排定自動重試）')
@@ -832,42 +877,60 @@ def _reval_submit(mid, tag='line-move'):
     重算好波（api_hb_predict 自帶賠率 signature 快取＋淨係規則命中先記低，
     唔會污染 hb_pick_log；兩邊都做（雲端 2GB 夠行））。"""
     def _job():
-        # 2026-10-25 讓路邏輯全拆：舊制掃描行緊就排隊等（最多 30 分鐘）——
-        # 水位變動喺掃描期間會被拖後，違反「任何變動即時重算」。2 線池本身
-        # 就係並發調節器，同掃描短暫重疊係正確性應有嘅代價（舊制 53s/場係
-        # 每場一 thread 時代嘅問題，同池化後已唔存在）。
-        for _att in range(3):
-            try:
-                conn = db()
-                try:
-                    acts = _pick_revalidate(conn, mid)
-                    conn.commit()
-                finally:
-                    conn.close()
-                if acts:
-                    print('[%s] 場次%s 轉盤→重算：%s'
-                          % (tag, mid, ','.join(acts)), flush=True)
-                # 2026-10-25：好波重算兩邊都做——HB 池僅 14MB（雲端 2GB
-                # 預熱本來就建），signature 快取令冇變嘅場微秒過；唔再做
-                # 本地限定（舊 512MB 思維）。
+        start_conn = db()
+        try:
+            worklog.begin(start_conn, '盤口變動後重算｜%s｜場次%s' % (tag, mid))
+        finally:
+            start_conn.close()
+        error = None
+        try:
+            for _att in range(3):
                 try:
                     conn = db()
                     try:
-                        has_ou = conn.execute(
-                            "SELECT 1 FROM odds_ou WHERE match_id=? "
-                            "AND label='closing' LIMIT 1", (mid,)).fetchone()
+                        acts = _pick_revalidate(conn, mid)
+                        conn.commit()
                     finally:
                         conn.close()
-                    if has_ou:
-                        api_hb_predict(mid)   # 快取命中＝微秒；miss 先計
+                    if acts:
+                        print('[%s] 場次%s 轉盤→重算：%s'
+                              % (tag, mid, ','.join(acts)), flush=True)
+                    try:
+                        conn = db()
+                        try:
+                            has_ou = conn.execute(
+                                "SELECT 1 FROM odds_ou WHERE match_id=? "
+                                "AND label='closing' LIMIT 1", (mid,)).fetchone()
+                        finally:
+                            conn.close()
+                        if has_ou:
+                            api_hb_predict(mid)
+                            log_conn = db()
+                            try:
+                                work_league, work_match = _work_match_info(log_conn, mid)
+                                worklog.event(log_conn, 'recalc', league=work_league,
+                                              match_text=work_match, tool='好波',
+                                              done=1, total=1, status='完成',
+                                              commit=True)
+                            finally:
+                                log_conn.close()
+                    except Exception:
+                        pass
+                    return
+                except sqlite3.OperationalError as exc:
+                    error = str(exc)
+                    time.sleep(4)
                 except Exception:
-                    pass
-                return
-            except sqlite3.OperationalError:
-                time.sleep(4)
-            except Exception:
-                traceback.print_exc(limit=2)
-                return
+                    error = traceback.format_exc(limit=2)
+                    traceback.print_exc(limit=2)
+                    return
+        finally:
+            log_conn = db()
+            try:
+                worklog.end(log_conn, 'error' if error else 'done',
+                            error or '盤口變動後全部工具重算完成')
+            finally:
+                log_conn.close()
     try:
         _reval_pool().submit(_job)
     except RuntimeError:
@@ -1206,6 +1269,7 @@ def _eval_all(conn, ctx, light=False):
         except ValueError:
             pass
     now = time.strftime('%Y-%m-%d %H:%M:%S')
+    work_league, work_match = _work_match_info(conn, mid)
     # 2026-10-24 剔走記錄：評估前快照各表未結算列（方向＝被剔嗰注嘅方向）。
     # 只係 PK 查詢，微秒級；light（雲端）跳過。
     _pre_rm = {}
@@ -1225,6 +1289,7 @@ def _eval_all(conn, ctx, light=False):
         # 落注時盤（INSERT 六張精選表一併寫入；stored-first 結算用）
         phc, pgv = _tgt_pick_line(conn, t, mid)
         # 精選W（V3 六條件）
+        _work_recalc_stage('精選W', work_match)
         try:
             fw = ctx.fw()
             row = conn.execute('SELECT result FROM v3_featured WHERE match_id=?',
@@ -1249,6 +1314,7 @@ def _eval_all(conn, ctx, light=False):
         # V1 十六字頭（＋同主隊 Z）——letters 同 V2 共用 ctx 計算
         # 2026-10-22 統一化：V2（featured/featured_z）同一 letters 結果一併寫
         # （舊邏輯 V2 只有独立全掃先更新，單場重檢唔會同步——而家一致）
+        _work_recalc_stage('精V1／精V1Z／精V2／精V2Z', work_match)
         try:
             fl = ctx.letters()
             d = fl.get('direction')
@@ -1325,6 +1391,7 @@ def _eval_all(conn, ctx, light=False):
         rep8s = None
         try:
             for g in ('7', '8', '12', '8s'):
+                _work_recalc_stage('精選' + g if g != '8s' else '格8s', work_match)
                 try:
                     rep = ctx.rep8s() if g == '8s' else ctx.grid(g)
                     if g == '8s':
@@ -1359,6 +1426,7 @@ def _eval_all(conn, ctx, light=False):
     # （20 分鐘循環會照新線補返；已結算歷史永不刪）。評估邏輯同各引擎
     # scan 共用 eval_match，唔會漂移。
     # 88W（一場可中多條市場方法）
+    _work_recalc_stage('88W', work_match)
     try:
         import w88_engine
         hits = w88_engine.eval_match(conn, mid)
@@ -1383,6 +1451,7 @@ def _eval_all(conn, ctx, light=False):
     except Exception:
         traceback.print_exc(limit=3)
     # 新精選
+    _work_recalc_stage('新精選', work_match)
     try:
         import newjx_engine
         v = newjx_engine.eval_match(conn, mid)
@@ -1401,6 +1470,7 @@ def _eval_all(conn, ctx, light=False):
     except Exception:
         traceback.print_exc(limit=3)
     # 8X
+    _work_recalc_stage('8X', work_match)
     try:
         import fw8x
         got = fw8x.eval_match(conn, mid)
@@ -1428,6 +1498,7 @@ def _eval_all(conn, ctx, light=False):
     # 8s 紀錄表（fw8s_log；rep8s 喺上面格循環已計，唔使重計。light 模式冇
     # 格報告，成塊跳過——否則會誤刪雲端由本機同步嚟嘅 8s 入選）
     if not light:
+        _work_recalc_stage('精選8s', work_match)
         try:
             row = conn.execute('SELECT result FROM fw8s_log WHERE match_id=?',
                                (mid,)).fetchone()
@@ -1454,6 +1525,15 @@ def _eval_all(conn, ctx, light=False):
             raise   # 寫表鎖死：成場重試，保證各表一致
         except Exception:
             traceback.print_exc(limit=3)
+    work_tools = ('8X／88W／新精選' if light else
+                  '精選W／精V1／精V1Z／精V2／精V2Z／精選7／精選8／精選12／格8s／精選8s／8X／88W／新精選')
+    worklog.event(conn, 'recalc', league=work_league, match_text=work_match,
+                  tool=work_tools,
+                  done=(_unified_scan.get('done', 0) + 1)
+                  if _unified_scan.get('running') else 1,
+                  total=_unified_scan.get('total')
+                  if _unified_scan.get('running') else 1,
+                  status='完成', message='；'.join(acts) or '資格不變')
     # 2026-10-22 用戶規格：入選/剔走即時推送＋清顯示快取（剔走 100% 唔殘留）
     if any(('新增' in a or '移出' in a) for a in acts):
         try:
@@ -1463,6 +1543,10 @@ def _eval_all(conn, ctx, light=False):
         _bust_tool_caches()
         # 2026-10-25 即時推送：有新增/剔走即刻廣播（SSE client 1-3 秒內刷新）
         _publish_event({'type': 'reval', 'mid': mid, 'acts': acts})
+        pages = _work_pages(acts)
+        if pages:
+            worklog.event(conn, 'push', league=work_league,
+                          match_text=work_match, pages=pages, status='已發出')
     # 2026-10-25 用戶規格：重新入選（新增）→ 剔走頁刪除該場次該工具嘅舊記錄，
     # 保證同一場次只出現一次。放喺記錄剔走之前——同一 pass 又有新增又有移出
     # 時，最後留下嘅係最新嗰條剔走記錄。
@@ -1733,6 +1817,8 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
         _bg_scan_info['newjx']['error'] = None
         _bg_scan_info['w88']['error'] = None
         conn = db()
+        if worklog.current_job_id() is None:
+            worklog.begin(conn, '統一重算｜' + str(st['triggered_by']))
         try:
             # 開工前預熱三座池並釘住——掃描期間爬蟲寫盤口唔會觸發重建
             import screen_engine
@@ -1919,6 +2005,15 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
             _sync_push_now(force=True)
         except Exception:
             pass
+        if worklog.current_job_id() is not None:
+            _log_conn = db()
+            try:
+                worklog.end(_log_conn, 'error' if st.get('error') else 'done',
+                            st.get('error') or
+                            '重算完成：新增 %d・剔走 %d・保留 %d' %
+                            (st['added'], st['removed'], st['kept']))
+            finally:
+                _log_conn.close()
         st['running'] = False
         st['phase'] = ''
         _UNIFIED_RUNNING[0] = False
@@ -2179,6 +2274,12 @@ def _settle_finished_tools(conn):
             out['feat_hourly'] = n
     except sqlite3.Error:
         pass
+    try:
+        n = bets.settle(conn)
+        if n:
+            out['user_bets'] = n
+    except sqlite3.Error:
+        pass
     if out:
         try:
             conn.commit()
@@ -2300,6 +2401,7 @@ def _update_worker():
     # 限流跟 config.json 分層休息方案（2026-09-29），唔再禁用休息
     conn = sqlite3.connect(DB_PATH, timeout=180)
     ok = False
+    worklog.begin(conn, '全量更新賽事、讓球盤口及賠率')
     # 開工前快測數據主機；死緊就即刻收工，唔好逐場捱逾時（watchdog 會自動重試）
     if not crawler.data_host_probe():
         _update_state['error'] = (
@@ -2310,13 +2412,17 @@ def _update_worker():
         _update_state['phase'] = ''
         _update_state['last_done'] = time.time()
         print('[update] 數據主機中斷，本次更新跳過（自動重試緊）', flush=True)
+        worklog.end(conn, 'error', _update_state['error'])
         conn.close()
         return
     try:
         # ① 賽果＋新場次＋最近三日補盤口（各聯賽現行賽季檔）
+        def _update_progress(message):
+            _update_state.update(phase=message)
+            worklog.event(conn, 'status', tool='賽季檔／聯賽更新',
+                          message=message, status='進行中')
         st = crawler.recent_update(
-            conn, cfg, days=3,
-            progress=lambda m: _update_state.update(phase=m))
+            conn, cfg, days=3, progress=_update_progress)
         _update_state['last_result'] = st
         # ② 已存在場次嘅盤口＋賠率全部強制刷新：
         #    未開賽（最近開賽排先）＋ 進行中（開賽後 4 小時內、未有賽果）——
@@ -2338,8 +2444,10 @@ def _update_worker():
                 break
             _update_state['phase'] = (
                 f'刷新已存在場次嘅盤口及賠率 {i + 1}/{len(todo)}')
+            got = False
             try:
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
+                    got = True
                     n_ok += 1
                     outage_streak = 0
                 else:
@@ -2350,6 +2458,11 @@ def _update_worker():
             except Exception:
                 n_fail += 1
                 outage_streak += 1
+            work_league, work_match = _work_match_info(conn, mid)
+            worklog.event(conn, 'crawl', league=work_league,
+                          match_text=work_match, markets=['讓球'],
+                          done=i + 1, total=len(todo),
+                          status='成功' if got else '失敗', commit=True)
             if outage_streak >= 12:
                 print('[update] 連線連續逾時 12 場，中止本次更新'
                       '（代理池太差，半小時後自動重試）', flush=True)
@@ -2373,13 +2486,16 @@ def _update_worker():
         for i, (mid, ko) in enumerate(todo2):
             _update_state['phase'] = (
                 f'補爬缺少盤口嘅場次 {i + 1}/{len(todo2)}')
+            crawl_status = '失敗'
             try:
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
+                    crawl_status = '成功（12BET）'
                     n_fill_ok += 1
                     outage_streak2 = 0
                 elif crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 3):
                     # 易胜博未開盤 → Crown(3) 暫代（顯示用，V3 分析照舊 12）；
                     # 記入 line12_track：之後每日用 12BET 再試直至成功
+                    crawl_status = '成功（Crown 後備）'
                     n_fill_crown += 1
                     _line12_record(conn, mid)
                     outage_streak2 = 0
@@ -2391,6 +2507,11 @@ def _update_worker():
             except Exception:
                 n_fill_fail += 1
                 outage_streak2 += 1
+            work_league, work_match = _work_match_info(conn, mid)
+            worklog.event(conn, 'crawl', league=work_league,
+                          match_text=work_match, markets=['讓球'],
+                          done=i + 1, total=len(todo2), status=crawl_status,
+                          commit=True)
             if outage_streak2 >= 12:
                 print('[update] 補爬階段連線連續逾時 12 場，中止本次更新'
                       '（代理池太差，半小時後自動重試）', flush=True)
@@ -2406,12 +2527,24 @@ def _update_worker():
         traceback.print_exc()
         _update_state['error'] = traceback.format_exc(limit=3)
     finally:
+        if not ok:
+            worklog.end(conn, 'error' if _update_state.get('error') else
+                        ('stopped' if _update_state.get('stop') else 'done'),
+                        _update_state.get('error') or '全量更新完結')
         conn.close()
         _update_state['running'] = False
         _update_state['phase'] = ''
         _update_state['last_done'] = time.time()
     if ok:
-        _recompute_featured_after_update()
+        try:
+            _recompute_featured_after_update()
+        finally:
+            if worklog.current_job_id() is not None:
+                _log_conn = db()
+                try:
+                    worklog.end(_log_conn, 'done', '全量爬取、重算及工具頁推送完成')
+                finally:
+                    _log_conn.close()
 
 
 def do_update(auto=False):
@@ -2468,6 +2601,7 @@ def _window_update_worker(win):
     cond, wname = WIN_SQL[win]
     conn = sqlite3.connect(DB_PATH, timeout=180)
     try:
+        worklog.begin(conn, '窗口更新｜' + wname)
         todo = conn.execute(
             'SELECT m.id, m.kickoff FROM matches m '
             'WHERE m.home_score IS NULL '
@@ -2481,8 +2615,10 @@ def _window_update_worker(win):
         fail_streak = 0
         for i, (mid, ko) in enumerate(todo):
             _win_state['phase'] = f'更新{wname}盤口及賠率 {i + 1}/{len(todo)}'
+            got = False
             try:
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
+                    got = True
                     _win_state['ok'] += 1
                     fail_streak = 0
                 else:
@@ -2491,7 +2627,12 @@ def _window_update_worker(win):
             except Exception:
                 _win_state['fail'] += 1
                 fail_streak += 1
-            _win_state['done'] += 1   # 舊制漏咗——進度條一直 0/N
+            _win_state['done'] += 1
+            work_league, work_match = _work_match_info(conn, mid)
+            worklog.event(conn, 'crawl', league=work_league,
+                          match_text=work_match, markets=['讓球'],
+                          done=i + 1, total=len(todo),
+                          status='成功' if got else '失敗', commit=True)
             if fail_streak >= 5:
                 # 同 fbatch 斷路器：5 連敗＝真封鎖——收工留清楚訊息，
                 # 唔再逐場捱晒變僵屍（殭屍會鎖死「即時更新」掣）
@@ -2502,13 +2643,20 @@ def _window_update_worker(win):
                 print('[win-update] 5 連敗收工', flush=True)
                 break
         _win_state['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
-        _win_state['error'] = None
+        if fail_streak < 5:
+            _win_state['error'] = None
         print(f"[win-update] {wname} 完成：{_win_state['ok']} 成 / "
               f"{_win_state['fail']} 敗 / 共 {len(todo)} 場", flush=True)
     except Exception:
         traceback.print_exc()
         _win_state['error'] = traceback.format_exc(limit=3)
     finally:
+        worklog.end(conn, 'error' if _win_state.get('error') else
+                    ('stopped' if _win_state.get('stop') else 'done'),
+                    _win_state.get('error') or
+                    '%s：爬取 %d/%d・成功 %d・失敗 %d' %
+                    (wname, _win_state.get('done', 0), _win_state.get('total', 0),
+                     _win_state.get('ok', 0), _win_state.get('fail', 0)))
         conn.close()
         _win_state['running'] = False
         _win_state['phase'] = ''
@@ -2571,6 +2719,9 @@ def _fetch_batch_worker(hours, ids=None):
     cfg['blocked_retry_times'] = 1
     conn = sqlite3.connect(DB_PATH, timeout=180)
     try:
+        worklog.begin(conn, '即時更新盤口及賠率｜%s' %
+                      (('%d 場指定場次' % len(ids)) if ids else
+                       ('全部未來場次' if not hours else '未來%d小時' % hours)))
         # 開工前快測數據主機；死緊即刻收工俾清楚訊息（同 _update_worker 邏輯）
         # 2026-10-24 突破封鎖：探測改『軟啟動』——12 個代理抽樣假陰性太高
         # （池 395 個部分燒咗，輪轉爬其實行得通，實測每小時經代理落
@@ -2644,18 +2795,24 @@ def _fetch_batch_worker(hours, ids=None):
                 fail_streak += 1
                 if _fbatch_state.get('stop'):
                     fail_streak = 0   # 人手停止唔算熔斷，唔登記補跑
-                if fail_streak >= 5:
-                    # 頭 5 場連滅＝真封鎖（唔係輪轉陣痛）——收工＋登記補跑
-                    _FBATCH_PEND['hours'] = hours
-                    _FBATCH_PEND['ts'] = time.time()
-                    _save_scan_state()
-                    _fbatch_state['error'] = (
-                        '連頭 5 場都爬唔到——titan007 而家真係封緊。'
-                        '已登記：復活後自動補跑，唔使再撳')
-                    _scanlog('⚡ 更新賠率遇真封鎖（5 連敗）——已登記自動補跑')
-                    print('[fbatch] 5 連敗收工（已登記補跑）', flush=True)
-                    break
             _fbatch_state['done'] += 1
+            work_league, work_match = _work_match_info(conn, mid)
+            worklog.event(conn, 'crawl', league=work_league,
+                          match_text=work_match,
+                          markets=['讓球', '大小', '歐盤'] if got else ['讓球'],
+                          done=i + 1, total=len(todo),
+                          status='成功' if got else '失敗', commit=True)
+            if not got and fail_streak >= 5:
+                # 頭 5 場連滅＝真封鎖（唔係輪轉陣痛）——收工＋登記補跑
+                _FBATCH_PEND['hours'] = hours
+                _FBATCH_PEND['ts'] = time.time()
+                _save_scan_state()
+                _fbatch_state['error'] = (
+                    '連頭 5 場都爬唔到——titan007 而家真係封緊。'
+                    '已登記：復活後自動補跑，唔使再撳')
+                _scanlog('⚡ 更新賠率遇真封鎖（5 連敗）——已登記自動補跑')
+                print('[fbatch] 5 連敗收工（已登記補跑）', flush=True)
+                break
         _fbatch_state['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
         if fail_streak < 5:
             _fbatch_state['error'] = None
@@ -2700,6 +2857,12 @@ def _fetch_batch_worker(hours, ids=None):
         traceback.print_exc()
         _fbatch_state['error'] = traceback.format_exc(limit=3)
     finally:
+        worklog.end(conn, 'error' if _fbatch_state.get('error') else
+                    ('stopped' if _fbatch_state.get('stop') else 'done'),
+                    _fbatch_state.get('error') or
+                    '爬取 %d/%d・成功 %d・失敗 %d；重算及工具頁推送工序完結' %
+                    (_fbatch_state.get('done', 0), _fbatch_state.get('total', 0),
+                     _fbatch_state.get('ok', 0), _fbatch_state.get('fail', 0)))
         conn.close()
         _fbatch_state['running'] = False
         _fbatch_state['phase'] = ''
@@ -2756,6 +2919,11 @@ def _regrab_worker():
     base = os.path.dirname(os.path.abspath(__file__))      # screen_app/（雲端＝repo 根）
     root = os.path.dirname(base)                            # 工作區根
     os.makedirs(os.path.join(root, 'logs'), exist_ok=True)
+    log_conn = db()
+    try:
+        worklog.begin(log_conn, '補缺口＋重算｜' + str(st.get('mode')))
+    finally:
+        log_conn.close()
     if st.get('mode') == 'cloud':
         # 雲端：P1/P1b 千祈唔好用 subprocess——子進程會再載一次 v2/v3 數據池
         # （約230MB），app 本體＋子進程加埋爆 512MB 上限，10-22 實測 OOM
@@ -2808,6 +2976,14 @@ def _regrab_worker():
         print('[regrab] 雲端重算完成 rc=%s'
               % {k: v for k, v in st.items() if k.startswith('rc_')},
               flush=True)
+        log_conn = db()
+        try:
+            worklog.event(log_conn, 'recalc', tool='八個精選系統',
+                          status='完成' if not st.get('error') else '失敗')
+            worklog.end(log_conn, 'error' if st.get('error') else 'done',
+                        st.get('error') or '雲端補缺口重算完成')
+        finally:
+            log_conn.close()
         return
     steps = [
         ('crawl16', '① 重抓 asian/OU 缺口（斷點續跑）',
@@ -2819,6 +2995,15 @@ def _regrab_worker():
     ]
     for key, label, cmd, cwd in steps:
         st.update(step=key, phase=label)
+        log_conn = db()
+        try:
+            worklog.event(log_conn, 'recalc' if key == 'requalify' else 'crawl',
+                          tool=label,
+                          markets=(['讓球', '大小'] if key == 'crawl16' else
+                                   (['歐盤', '半場', '角球'] if key == 'crawl_mk' else None)),
+                          status='進行中', commit=True)
+        finally:
+            log_conn.close()
         try:
             logf = open(os.path.join(root, 'logs', 'regrab_%s.log' % key),
                         'a', encoding='utf-8')
@@ -2844,6 +3029,14 @@ def _regrab_worker():
     print('[regrab] 完成 rc=%s' % {k: st.get('rc_' + k)
                                    for k in ('crawl16', 'crawl_mk',
                                              'requalify')}, flush=True)
+    failed = st.get('error') or any(st.get('rc_' + key) not in (None, 0)
+                                    for key in ('crawl16', 'crawl_mk', 'requalify'))
+    log_conn = db()
+    try:
+        worklog.end(log_conn, 'error' if failed else 'done',
+                    st.get('error') or '補缺口、重算及工具頁推送工序完結')
+    finally:
+        log_conn.close()
 
 
 def do_regrab_recompute():
@@ -2882,7 +3075,7 @@ def regrab_status():
 # 架構：本機係數據主人（獨立爬＋每日 06:17 推送上雲端）；手機自己爬嘅盤口賠率
 # **唔寫入任何庫**（唔使亦唔應該更新本機／雲端）——呢個端點只做「核對」：
 # 收到手機爬嘅七時點後，同雲端（＝本機鏡像）嘅尾盤比較，結果連裝置名寫入
-# crawl_log（📋 工作記錄見到），並回傳 agree 俾手機即場顯示 ✓／⚠。
+# crawl_log（診斷日誌；主頁工作 LOG 另存 work_log），並回傳 agree 俾手機即場顯示 ✓／⚠。
 # 權責：唔一致時**以本機為準**（分析/推算全部行雲端本機數據；手機爬嘅
 # 只係自己熒幕嘅即時顯示）——本機每日推送會自動覆蓋雲端，權責天然兌現。
 _PHONE_LABELS = ('initial', 'pre_4h', 'pre_30m', 'pre_15m', 'pre_10m',
@@ -3051,7 +3244,7 @@ _INGEST_WHITELIST = {
     'competitions', 'seasons', 'teams',
     # 2026-10-22：工具入選/剔走推送——本機寫入，經 delta 同步到雲端，
     # 手機版都收到（用戶：所有工具新入選＋勾走都要推送信息）
-    'alerts',
+    'alerts', 'work_jobs', 'work_log', 'user_bets',
     # 2026-10-26：第三/四源交叉表——歷史回填（16,224 場）同三源一致性
     # 數據都要上雲端（用戶：手機端都要更新）。全量上傳之外，delta 同步
     # 都帶埋佢哋，之後 ns/7M 新聯賽抓取手機先跟到。
@@ -3070,7 +3263,8 @@ _DELTA_FULL_REPLACE = frozenset({
     'featured_z', 'featured_z_log', 'v1_featured', 'v1_featured_z',
     'fw_grid_featured', 'hb_pick_log', 'k3_log', 'newjx_log',
     'w88_log', 'fw8s_log', 'fw8x_log', 'fw8x_bt2026', 'fw8s_bt',
-    'tool_bt', 'competitions', 'seasons', 'teams',
+    'tool_bt', 'alerts', 'work_jobs', 'work_log', 'user_bets',
+    'competitions', 'seasons', 'teams',
 })
 
 
@@ -3146,6 +3340,41 @@ def _act_tool_name(a):
         if a.startswith(p):
             return n
     return None
+
+
+def _work_match_info(conn, mid):
+    row = conn.execute(
+        'SELECT c.req_name, ht.name_tc, at.name_tc FROM matches m '
+        'JOIN seasons s ON s.id=m.season_id '
+        'JOIN competitions c ON c.titan_id=s.titan_id '
+        'JOIN teams ht ON ht.titan_id=m.home_id '
+        'JOIN teams at ON at.titan_id=m.away_id WHERE m.id=?', (mid,)).fetchone()
+    if not row:
+        return '', '場次%s' % mid
+    return row[0], '%s｜%s vs %s' % row
+
+
+def _work_pages(acts):
+    mapping = {'精選W': '精選W頁', '精選V1': '舊版V1/V2頁',
+               '精選V1Z': '舊版V1/V2頁', '精選V2': '舊版V1/V2頁',
+               '精選V2Z': '舊版V1/V2頁', '精選7': '精選7頁',
+               '精選8': '精選8頁', '精選12': '精選12頁',
+               '精選8s': '精選8s頁', '8X': '8X頁', '88W': '88W頁',
+               '新精選': '新精選頁', '好波': '好波頁', 'K3': '88W頁'}
+    pages = []
+    for action in acts:
+        tool = _act_tool_name(action)
+        if action.startswith('好波'):
+            tool = '好波'
+        page = mapping.get(tool)
+        if page and page not in pages:
+            pages.append(page)
+    return pages
+
+
+def _work_recalc_stage(tool, match_text=None):
+    _unified_scan['current_tool'] = tool
+    _unified_scan['current_match'] = match_text
 
 
 # 2026-10-27 用戶規格：入選/剔走推送標明預測方向。
@@ -3310,6 +3539,10 @@ def _notify_tool(conn, mid, acts, pre=None):
                 'INSERT INTO alerts(tool,kind,match_id,league,home,away,'
                 'kickoff,msg,ts) VALUES(?,?,?,?,?,?,?,?,?)',
                 (tool, kind, _mid, _lg, h, aw, _ko, msg, ts))
+            worklog.event(conn, kind, league=_lg,
+                          match_text='%s｜%s vs %s' % (_lg, h, aw),
+                          tool=tool, direction=dtxt or '方向未記錄',
+                          status='新場' if kind == 'new' else '剔走')
         conn.commit()
         _NOTIFY_N[0] += len(rows)
     except Exception:
@@ -3709,6 +3942,7 @@ def _bust_tool_caches():
     唔會再喺篩選列表出現』：DB 已 DELETE，快取都唔准殘留（舊制 fw8s
     600s／featured 300s TTL 會令被剔場次殘留數分鐘）。"""
     try:
+        home_tools.invalidate()
         for c in (_FW8S_CACHE, _SRCS_CACHE):
             c['ts'] = 0.0
             c['data'] = None
@@ -3857,6 +4091,7 @@ def _apply_delta(path):
         src.close()
         conn.commit()
         # 同步完即刻清相關快取（唔等 TTL），手機即刻見到新 pick
+        home_tools.invalidate()
         for _c in (_featured_full_cache, _v1_featured_full_cache):
             try:
                 with _c['lock']:
@@ -3996,7 +4231,7 @@ def do_featured_refresh(mid):
             'removed': removed, 'removed_z': removed_z}
 
 
-# ============ 我的選擇（上/下盤 記錄 + 勝出率統計） ============
+# ============ 我的選擇（投注確認、盤口賠率、盈虧及日週管理） ============
 
 def init_picks():
     # 用戶爬蟲全速行緊時 DB 長期鎖住：成個 init 包重試（最多 10 次×20 秒），
@@ -4104,90 +4339,44 @@ def do_pick(mid, choice):
     if choice not in ('up', 'down'):
         return {'ok': False, 'error': '選擇無效'}
     conn = db()
-    # 揀嘅當刻影低當時嘅盤口/水位（冇 closing 就用最新一筆）
-    row = conn.execute(
-        'SELECT handicap, giver, home_odds, away_odds FROM odds_asian '
-        'WHERE match_id=? AND company_id=12 '
-        'ORDER BY (label=\'closing\') DESC, label DESC LIMIT 1',
-        (mid,)).fetchone()
-    conn.execute(
-        'INSERT INTO user_picks(match_id, choice, created, pick_handicap, '
-        'pick_giver, pick_home_odds, pick_away_odds) VALUES(?,?,?,?,?,?,?) '
-        'ON CONFLICT(match_id) DO UPDATE SET choice=excluded.choice, '
-        'created=excluded.created, pick_handicap=excluded.pick_handicap, '
-        'pick_giver=excluded.pick_giver, '
-        'pick_home_odds=excluded.pick_home_odds, '
-        'pick_away_odds=excluded.pick_away_odds',
-        (mid, choice, time.time()) + tuple(row) if row else
-        (mid, choice, time.time(), None, None, None, None))
-    conn.commit()
-    conn.close()
-    return {'ok': True}
+    try:
+        row = conn.execute(
+            'SELECT handicap,giver,home_odds,away_odds FROM odds_asian '
+            'WHERE match_id=? AND company_id=12 '
+            "ORDER BY (label='closing') DESC,label DESC LIMIT 1",
+            (mid,)).fetchone()
+        if not row or row[0] is None:
+            return {'ok': False, 'error': '本場未有盤口，請先更新賠率'}
+        hc, giver, ho, ao = row
+        line = -hc if giver == 'home' else (hc if giver == 'away' else 0.0)
+        up_home = giver != 'away'
+        water = (ho if up_home else ao) if choice == 'up' else (ao if up_home else ho)
+        if water is None:
+            return {'ok': False, 'error': '本場未有賠率，請先更新'}
+        return bets.create(conn, mid, choice, line, water, 0)
+    except ValueError as exc:
+        return {'ok': False, 'error': str(exc)}
+    finally:
+        conn.close()
 
 
 def do_pick_delete(mid):
     conn = db()
-    conn.execute('DELETE FROM user_picks WHERE match_id=?', (mid,))
-    conn.commit()
-    conn.close()
-    return {'ok': True}
+    try:
+        return bets.delete_pending(conn, match_id=mid)
+    finally:
+        conn.close()
 
 
 def get_picks():
     conn = db()
-    rows = conn.execute(
-        'SELECT p.match_id, p.choice, m.kickoff, m.home_score, m.away_score, '
-        'ht.name_tc, at.name_tc, c.req_name, '
-        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
-        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
-        'FROM user_picks p '
-        'JOIN matches m ON m.id=p.match_id '
-        'JOIN seasons s ON s.id=m.season_id '
-        'JOIN competitions c ON c.titan_id=s.titan_id '
-        'JOIN teams ht ON ht.titan_id=m.home_id '
-        'JOIN teams at ON at.titan_id=m.away_id '
-        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
-        "AND oc.label='closing' AND oc.company_id=12 "
-        'LEFT JOIN match_prestandings ps ON ps.match_id=m.id '
-        "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
-        "AND hr.scope='total' AND hr.grp='' "
-        "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
-        "AND ar.scope='total' AND ar.grp='' "
-        'ORDER BY m.kickoff DESC').fetchall()
-    out = []
-    wins = losses = pushes = pending = 0
-    for (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao, hr_, ar_) in rows:
-        rec = {'id': mid, 'choice': choice, 'kickoff': ko, 'home': h, 'away': a,
-               'league': lg, 'rank_home': hr_, 'rank_away': ar_,
-               'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
-               'odds': f'主{ho}/客{ao}' if ho is not None else None}
-        if hs is None:
-            rec['result'] = None          # 未開賽
-            pending += 1
-        else:
-            r = pick_result(hc, gv, hs, aws)
-            rec['score'] = f'{hs}-{aws}'
-            if r is None:
-                rec['result'] = 'X'       # 無尾盤數據，無法判定
-                pending += 1
-            else:
-                won = (r == 'A' and choice == 'up') or (r == 'B' and choice == 'down')
-                rec['result'] = 'W' if won else ('L' if r != 'P' else 'P')
-                if r == 'P':
-                    pushes += 1
-                elif won:
-                    wins += 1
-                else:
-                    losses += 1
-        out.append(rec)
-    stats = {'total': len(out), 'pending': pending, 'wins': wins, 'losses': losses,
-             'pushes': pushes,
-             'win_rate': wins / (wins + losses) if (wins + losses) else None}
-    conn.close()
-    return {'stats': stats, 'picks': out}
+    try:
+        return bets.summary(conn)
+    finally:
+        conn.close()
 
 
-# ============ 我的選擇 · 大版面（未開賽全部＋已開賽保留24小時） ============
+# ============ 場次篩查摘要（精選及詳情頁共用） ============
 _pk_full_cache = {}
 
 
@@ -4352,65 +4541,53 @@ def _build_pick_rec(row, now_str):
 
 def get_picks_full():
     conn = db()
-    rows = conn.execute(
-        'SELECT p.match_id, p.choice, m.kickoff, m.home_score, m.away_score, '
-        'ht.name_tc, at.name_tc, c.req_name, '
-        'oc.handicap, oc.giver, oc.home_odds, oc.away_odds, '
-        'p.pick_handicap, p.pick_giver, p.pick_home_odds, p.pick_away_odds, '
-        'COALESCE(ps.home_total_rank, hr.rank), COALESCE(ps.away_total_rank, ar.rank) '
-        'FROM user_picks p '
-        'JOIN matches m ON m.id=p.match_id '
-        'JOIN seasons s ON s.id=m.season_id '
-        'JOIN competitions c ON c.titan_id=s.titan_id '
-        'JOIN teams ht ON ht.titan_id=m.home_id '
-        'JOIN teams at ON at.titan_id=m.away_id '
-        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
-        "AND oc.label='closing' AND oc.company_id=12 "
-        'LEFT JOIN match_prestandings ps ON ps.match_id=m.id '
-        "LEFT JOIN standings hr ON hr.season_id=m.season_id AND hr.team_id=m.home_id "
-        "AND hr.scope='total' AND hr.grp='' "
-        "LEFT JOIN standings ar ON ar.season_id=m.season_id AND ar.team_id=m.away_id "
-        "AND ar.scope='total' AND ar.grp='' "
-        # 全部選擇永久保留（唔設 24 小時限制）
-    ).fetchall()
-    conn.close()
-    now_str = time.strftime('%Y-%m-%d %H:%M:%S')
+    try:
+        return bets.full(conn)
+    finally:
+        conn.close()
 
-    def _fallback(row):
-        (mid, choice, ko, hs, aws, h, a, lg, hc, gv, ho, ao,
-         ph, pg, pho, pao, hr_, ar_) = row
-        return {'id': mid, 'choice': choice, 'kickoff': ko, 'home': h,
-                'away': a, 'league': lg, 'rank_home': hr_, 'rank_away': ar_,
-                'line': screen_engine.fmt_line(hc, gv) if hc is not None else None,
-                'odds': f'主{ho}/客{ao}' if ho is not None else None,
-                'pick_line': screen_engine.fmt_line(ph, pg)
-                if ph is not None else None,
-                'pick_odds': f'主{pho}/客{pao}' if pho is not None else None,
-                'played': ko < now_str, 'brief': None}
 
-    def build(row):
-        try:
-            return _build_pick_rec(row, now_str)
-        except Exception:
-            traceback.print_exc()
-            return _fallback(row)
+def do_bet_create(body):
+    conn = db()
+    try:
+        return bets.create(conn, int(body.get('id')), str(body.get('choice')),
+                           body.get('line'), body.get('odds'), body.get('stake'))
+    except (TypeError, ValueError) as exc:
+        return {'ok': False, 'error': str(exc)}
+    finally:
+        conn.close()
 
-    # 並行起唄——單線程每場 5–8 秒，幾十場必超時；
-    # 超時未完成用 fallback 補底（brief=None），唔丟 row
-    out = [r or _fallback(row)
-           for r, row in zip(_map_bounded(build, rows), rows)]
-    # 未開賽順時間排先；已開賽永久保留跟後（按日子分類），最新嘅排最前
-    pending = sorted([r for r in out if not r['played']],
-                     key=lambda r: r['kickoff'])
-    played = sorted([r for r in out if r['played']],
-                    key=lambda r: r['kickoff'], reverse=True)
-    wins = sum(1 for r in played if r.get('result') == 'W')
-    losses = sum(1 for r in played if r.get('result') == 'L')
-    pushes = sum(1 for r in played if r.get('result') == 'P')
-    stats = {'total': len(out), 'pending': len(pending), 'wins': wins,
-             'losses': losses, 'pushes': pushes,
-             'win_rate': wins / (wins + losses) if (wins + losses) else None}
-    return {'stats': stats, 'pending': pending, 'played': played}
+
+def do_bet_confirm(body):
+    conn = db()
+    try:
+        return bets.confirm(conn, int(body.get('bet_id')))
+    except (TypeError, ValueError) as exc:
+        return {'ok': False, 'error': str(exc)}
+    finally:
+        conn.close()
+
+
+def do_bet_edit(body):
+    conn = db()
+    try:
+        return bets.edit(conn, int(body.get('bet_id')), body.get('home'),
+                         body.get('away'), body.get('line'), body.get('odds'),
+                         body.get('stake'), choice=body.get('choice'))
+    except (TypeError, ValueError) as exc:
+        return {'ok': False, 'error': str(exc)}
+    finally:
+        conn.close()
+
+
+def do_bet_delete_period(period, key):
+    conn = db()
+    try:
+        return bets.delete_period(conn, period, str(key or ''))
+    except (TypeError, ValueError) as exc:
+        return {'ok': False, 'error': str(exc)}
+    finally:
+        conn.close()
 
 
 # ============ 精選（七重準則全通過嘅場次，永久保留＋自動結算） ============
@@ -5138,23 +5315,17 @@ def get_results(limit=1000, league=None, hc=None, gv=None, scope='featured'):
     stats['feat_l'] = fl
     stats['feat_p'] = fp
     stats['feat_r'] = fw / (fw + fl) if (fw + fl) else None
-    # 我的選擇命中率（已完場，走盤唔計入分母）
+    # 已確認投注命中率（半贏／半輸分別歸入贏／輸，走盤唔計入分母）
     pr = conn.execute(
-        'SELECT p.choice, oc.handicap, oc.giver, m.home_score, m.away_score '
-        'FROM user_picks p JOIN matches m ON m.id=p.match_id '
-        'LEFT JOIN odds_asian oc ON oc.match_id=m.id '
-        "AND oc.label='closing' AND oc.company_id=12 "
-        'WHERE m.home_score IS NOT NULL').fetchall()
+        "SELECT result FROM user_bets WHERE status='confirmed' "
+        'AND result IS NOT NULL').fetchall()
     pw = pl = pp = 0
-    for choice, hc_, gv_, hs, aws in pr:
-        r = pick_result(hc_, gv_, hs, aws)
-        if r is None:
-            continue
-        if r == 'P':
+    for (result,) in pr:
+        if result == 'P':
             pp += 1
-        elif (r == 'A') == (choice == 'up'):
+        elif result in ('W', 'HW'):
             pw += 1
-        else:
+        elif result in ('L', 'HL'):
             pl += 1
     stats['pk_w'] = pw
     stats['pk_l'] = pl
@@ -5882,8 +6053,12 @@ def api_v3_list(hours=48, fin_hours=120, fin_cat='all'):
     for m in pl:
         m['state'] = 'finished' if m.get('score') else (
             'unknown' if (m.get('kickoff') or '') <= stale else 'live')
-    _attach_srcs(up)
-    return {'upcoming': up, 'played': pl, 'now': now}
+    conn = db()
+    try:
+        tool_defs = home_tools.attach_home_tools(conn, up + pl)
+    finally:
+        conn.close()
+    return {'upcoming': up, 'played': pl, 'now': now, 'tools': tool_defs}
 
 
 def api_v3_target(mid):
@@ -6155,7 +6330,10 @@ def api_match_tools(mid):
         # 都係照 featured 家族計（同一數據唔重複起爐灶）。
         def _letters_methods(payload):
             d = json.loads(payload or '{}')
-            return list((d.get('letters') or {}).get('letters') or [])
+            letters = d.get('letters') if isinstance(d, dict) else d
+            if isinstance(letters, dict):
+                letters = letters.get('letters')
+            return list(letters or [])
         for key, name, tbl, is_z in (
                 ('V2', '精V2', 'featured', False),
                 ('V2Z', '精V2Z', 'featured_z', True)):
@@ -6262,15 +6440,15 @@ def api_match_tools(mid):
 
         # ---- 新精選：篩選法＝16 欄位組合（conds 陣列）----
         row = conn.execute(
-            'SELECT dir, added_at, result, conds FROM newjx_log '
+            'SELECT dir, added_at, result, conds, giver FROM newjx_log '
             'WHERE match_id=?', (mid,)).fetchone()
         if row:
-            dirn, added_at, result, conds = row
+            dirn, added_at, result, conds, stored_giver = row
             _methods = lambda payload: [
                 '＋'.join(str(x) for x in json.loads(payload or '[]'))]
             ma, ml = _tally('conds', 'newjx_log')
             add('JX', '新精選', False,
-                (dirn, added_at, result, conds), ma, ml, gv=row[4])
+                (dirn, added_at, result, conds), ma, ml, gv=stored_giver)
             tool_rate_fill(len(tools) - 1, 'newjx_log')
 
         # ---- 好波（大小球）：預測＝大/細；篩選法＝規則 rule ----
@@ -7318,8 +7496,10 @@ def _predstats_build(days=30, lg=''):
                      ' FROM v3_featured')
         m_fwg = _map1('SELECT match_id, direction, result, grid, hc, giver'
                       ' FROM fw_grid_featured')
-        m_user = _map1('SELECT match_id, choice, pick_handicap, pick_giver'
-                       ' FROM user_picks')
+        m_user = _map1(
+            'SELECT match_id,choice,ABS(line),'
+            "CASE WHEN line<0 THEN 'home' WHEN line>0 THEN 'away' ELSE NULL END "
+            "FROM user_bets WHERE status='confirmed'")
         ou_lines = {}
         if m_ou:
             ph = ','.join('?' * len(mids))
@@ -7853,10 +8033,19 @@ def _hb_requalify():
                             reason, _dir_text({'side': side}) or side
                             or '唔明'),
                          time.strftime('%Y-%m-%d %H:%M:%S')))
+                    worklog.event(conn, 'removed', league=lg,
+                                  match_text='%s｜%s vs %s' % (lg, info[0], info[1]),
+                                  tool='好波',
+                                  direction=_dir_text({'side': side}) or side or '方向未記錄',
+                                  status='剔走')
             except Exception:
                 traceback.print_exc(limit=2)
         if removed:
             conn.commit()
+            _publish_event({'type': 'reval',
+                            'acts': ['好波剔走 %d 場' % removed]})
+            worklog.event(conn, 'push', pages=['好波頁'], status='已發出',
+                          message='好波剔走 %d 場' % removed, commit=True)
             _scanlog('⚽ 好波重檢：剔走 %d 場唔合資格' % removed)
             print('[hb-requalify] 剔走 %d 場唔合資格嘅好波入選' % removed,
                   flush=True)
@@ -8130,6 +8319,7 @@ def _hb_log_pick(mid, lg, ou):
     side = str(pick.get('side'))
     rate = pick.get('best')
     method = 'rule'
+    notify_hb = False
     # 2026-10-22：好波規則命中＝新入選推送（用戶規格：所有工具入選推送）
     try:
         conn0 = db()
@@ -8162,6 +8352,7 @@ def _hb_log_pick(mid, lg, ou):
                                     'line': (ou.get('pick') or {}).get('line')})
                          or side or '唔明')),
                      time.strftime('%Y-%m-%d %H:%M:%S')))
+                notify_hb = True
                 conn0.commit()
         finally:
             conn0.close()
@@ -8190,6 +8381,14 @@ def _hb_log_pick(mid, lg, ou):
             (mid, lg, side, rate, ou.get('line'),
              time.strftime('%Y-%m-%d %H:%M:%S'), method,
              pick.get('rule_label')))
+        work_league, work_match = _work_match_info(conn, mid)
+        worklog.event(conn, 'recalc', league=work_league,
+                      match_text=work_match, tool='好波', done=1, total=1,
+                      status='完成')
+        if notify_hb and info:
+            worklog.event(conn, 'new', league=info[0],
+                          match_text='%s｜%s vs %s' % (info[0], info[2], info[3]),
+                          tool='好波', direction=side, status='新場')
         conn.commit()
         # 2026-10-25 用戶規格：好波重新入選 → 剔走頁刪返該場次舊剔走記錄
         # （同一場次喺剔走頁只出現一次）。
@@ -8204,6 +8403,9 @@ def _hb_log_pick(mid, lg, ou):
         # 2026-10-25 即時推送：好波新入選/轉方向都廣播
         _publish_event({'type': 'reval', 'mid': mid,
                         'acts': ['好波' + str(side)]})
+        worklog.event(conn, 'push', league=work_league,
+                      match_text=work_match, pages=['好波頁'], status='已發出',
+                      commit=True)
         # 2026-10-22 優化：每次記錄後順手更新 live 規則健康度（停腐化規則）
         try:
             _hb_rule_gate_update(conn)
@@ -8786,28 +8988,32 @@ def api_health():
 
 
 def api_worklog(limit=30):
-    """最近嘅 crawler 工作記錄（crawl_log 表）＋更新／窗口更新／補抓狀態。
-    前端「📋 工作記錄」面板用。"""
-    rows = []
+    """最新一輪工作 LOG：該輪全部結構化事件，唔再截舊 crawl_log 30 條。"""
+    conn = db()
     try:
-        conn = db()
-        rows = conn.execute(
-            'SELECT ts, level, msg FROM crawl_log ORDER BY id DESC LIMIT ?',
-            (max(1, min(int(limit), 100)),)).fetchall()
+        worklog.migrate(conn)
+        data = worklog.latest(conn)
+    finally:
         conn.close()
-    except Exception:
-        pass
-    return {'ok': True,
-            'update': {'running': _update_state['running'],
-                       'phase': _update_state['phase'],
-                       'error': _update_state['error'],
-                       'last_result': _update_state['last_result'],
-                       'last_done': _update_state['last_done']},
-            'window': dict(_win_state),
-            'catchup': {k: _result_catchup[k]
-                        for k in ('last', 'fixed', 'error')},
-            'log': [{'ts': ts, 'level': lv,
-                     'msg': (msg or '')[:400]} for ts, lv, msg in rows]}
+    active = None
+    for name, state in (('即時更新', _fbatch_state), ('全量更新', _update_state),
+                        ('窗口更新', _win_state), ('補缺口＋重算', _regrab_state)):
+        if state.get('running'):
+            active = {'source': name, 'phase': state.get('phase') or state.get('step'),
+                      'done': state.get('done'), 'total': state.get('total'),
+                      'ok': state.get('ok'), 'fail': state.get('fail')}
+            break
+    data.update({
+        'ok': True,
+        'active': active,
+        'recalc': {'running': bool(_unified_scan.get('running')),
+                   'tool': _unified_scan.get('current_tool'),
+                   'match': _unified_scan.get('current_match'),
+                   'done': _unified_scan.get('done'),
+                   'total': _unified_scan.get('total'),
+                   'triggered_by': _unified_scan.get('triggered_by')},
+        'error': _update_state.get('error') or _fbatch_state.get('error')})
+    return data
 
 
 # ============ 聯賽預測（逐聯賽 >78% 規則，_lg_preds.json 離線挖掘） ============
@@ -11593,6 +11799,27 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
+        if u.path in ('/api/bets', '/api/bets/confirm', '/api/bets/edit',
+                      '/api/bets/delete-day', '/api/bets/delete-week'):
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                if u.path == '/api/bets':
+                    rep = do_bet_create(body)
+                elif u.path == '/api/bets/confirm':
+                    rep = do_bet_confirm(body)
+                elif u.path == '/api/bets/edit':
+                    rep = do_bet_edit(body)
+                elif u.path == '/api/bets/delete-day':
+                    rep = do_bet_delete_period('day', body.get('day'))
+                else:
+                    rep = do_bet_delete_period('week', body.get('week'))
+                self._send(200, json.dumps(rep, ensure_ascii=False))
+            except Exception as e:
+                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
         if u.path == '/api/pick/delete':
             n = int(self.headers.get('Content-Length', 0))
             body = json.loads(self.rfile.read(n) or b'{}')
@@ -11931,7 +12158,7 @@ def _result_catchup_once():
         'UNION SELECT match_id FROM featured_z WHERE result IS NULL '
         'UNION SELECT match_id FROM featured_z_log '
         'UNION SELECT match_id FROM fw_grid_featured WHERE result IS NULL '
-        'UNION SELECT match_id FROM user_picks')
+        'UNION SELECT match_id FROM user_bets')
     rows = conn.execute(
         'SELECT m.id, s.titan_id FROM matches m '
         'JOIN seasons s ON s.id=m.season_id '

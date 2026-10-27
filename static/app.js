@@ -170,37 +170,56 @@ async function repairConn(){
     refreshConnChip();
   }
 }
-/* ---------- 工作記錄面板：crawl_log 最近動態 + 更新狀態 ---------- */
-let _worklogLoaded = false;
+/* ---------- 新一輪工作 LOG：爬取→重算→工具頁→新場／剔走，全部項目 ---------- */
+function _workLogEvent(e){
+  const n = v => v == null ? '—' : v;
+  const match = e.match_text || '整體工序';
+  let text = '', cls = '';
+  if (e.kind === 'crawl') {
+    text = `爬取盤口及賠率｜${match}｜${(e.markets || []).join('＋') || e.tool || '盤口'}｜` +
+      `已爬取 ${n(e.done)}／總爬取 ${n(e.total)}｜${e.status || ''}`;
+  } else if (e.kind === 'recalc') {
+    text = `爬取後重算｜${e.tool || '全部工具'}｜${match}｜` +
+      `進度 ${n(e.done)}/${n(e.total)}｜${e.status || ''}`;
+  } else if (e.kind === 'push') {
+    text = `已推送至工具頁｜${(e.pages || []).join('、') || '未標頁面'}｜${match}`;
+  } else if (e.kind === 'new') {
+    text = `【新場】${e.tool || '未標工具'}．${e.direction || '方向未記錄'}．${match}`;
+    cls = 'NEW';
+  } else if (e.kind === 'removed') {
+    text = `【剔走】${e.tool || '未標工具'}．${e.direction || '方向未記錄'}．${match}`;
+    cls = 'ERR';
+  } else {
+    text = `${e.tool ? e.tool + '｜' : ''}${e.message || e.status || match}`;
+    cls = e.kind === 'error' ? 'ERR' : '';
+  }
+  if (e.message && !['status', 'error'].includes(e.kind)) text += `｜${e.message}`;
+  return `<div class="wl-row ${cls}"><span class="wl-ts">${esc((e.ts || '').slice(5, 19))}</span>${esc(text)}</div>`;
+}
 async function refreshWorkLog(){
   const box = $('#workLogBox');
   if (!box || !box.open) return;
   let d;
-  try { d = await jget('/api/worklog?limit=30'); }
-  catch (e) { $('#workLog').innerHTML = '<div class="err">工作記錄載入失敗：' + esc(String(e)) + '</div>'; return; }
-  const u = d.update || {}, w = d.window || {}, c = d.catchup || {};
-  let sum = '';
-  if (u.running) sum = `更新緊：${u.phase || ''}`;
-  else if (u.error) sum = '⚠️ 上次更新失敗（見下）';
-  else if (u.last_done) sum = '上次更新：' + Math.round((Date.now() / 1000 - u.last_done) / 60) + ' 分鐘前';
-  if (w.running) sum += `${sum ? '｜' : ''}⚡窗口更新 ${w.done}/${w.total}`;
-  if (c.last) sum += `${sum ? '｜' : ''}賽果補抓：${c.last.slice(5, 16)} 補 ${c.fixed || 0} 場`;
-  $('#workLogSum').textContent = sum;
-  let h = '';
-  if (u.error) h += `<div class="wl-row ERR"><span class="wl-ts">更新</span>${esc(u.error)}</div>`;
-  if (u.last_result && typeof u.last_result === 'object'){
-    const lr = u.last_result;
-    const bits = [];
-    if (lr.seasons != null) bits.push(`賽季檔 ${lr.seasons} 個`);
-    if (lr.odds != null) bits.push(`補盤口 ${lr.odds} 場${lr.odds_fail ? `（敗 ${lr.odds_fail}）` : ''}`);
-    if (lr.odds_refresh) bits.push(`刷新盤口 ${lr.odds_refresh}`);
-    if (lr.odds_fill) bits.push(`補爬盤口 ${lr.odds_fill}`);
-    if (bits.length) h += `<div class="wl-row"><span class="wl-ts">上次更新</span>${bits.map(esc).join('｜')}</div>`;
+  try { d = await jget('/api/worklog'); }
+  catch (e) { $('#workLog').innerHTML = '<div class="err">工作 LOG 載入失敗：' + esc(String(e)) + '</div>'; return; }
+  const job = d.job || {}, events = d.events || [];
+  $('#workLogSum').textContent = job.id
+    ? `${job.source || ''}｜${job.started_at || ''}｜本輪 ${events.length} 項全部顯示`
+    : '未有新工作記錄';
+  let live = '';
+  if (d.active) {
+    const a = d.active;
+    live += `<div class="wl-live">進行中：${esc(a.source || '')}｜${esc(a.phase || '')}｜` +
+      `已爬取 ${a.done == null ? '—' : a.done}／總爬取 ${a.total == null ? '—' : a.total}</div>`;
   }
-  h += (d.log || []).map(r =>
-    `<div class="wl-row ${esc(r.level || '')}"><span class="wl-ts">${esc((r.ts || '').slice(5, 19))}</span>${esc(r.msg || '').replace(/\n/g, '<br>')}</div>`
-  ).join('') || '<div class="note">暫無記錄</div>';
-  $('#workLog').innerHTML = h;
+  if (d.recalc && d.recalc.running) {
+    const r = d.recalc;
+    live += `<div class="wl-live">爬取後重算中：${esc(r.tool || '全部工具')}｜${esc(r.match || '')}｜` +
+      `${r.done || 0}/${r.total || 0}｜觸發：${esc(r.triggered_by || '')}</div>`;
+  }
+  if (d.error) live += `<div class="wl-row ERR">${esc(d.error)}</div>`;
+  $('#workLog').innerHTML = live + (events.map(_workLogEvent).join('') ||
+    '<div class="note">暫無新工作項目；執行更新後，呢度會逐項顯示完整流程。</div>');
 }
 async function refreshUpdInfo(){
   try {
@@ -423,15 +442,11 @@ async function loadHome(){
     window._jfRetryHook = null;
     homeData = d;
     LoadX.hide();
-    jget('/api/lgpred').then(p => { lgPred = p.predictions || {}; renderHome(); })
+    jget('/api/lgpred').then(p => { lgPred = p.predictions || {}; })
       .catch(() => {});
     renderHome();
     fillCheckSelect($('#ckMatch'), '— 揀場次 —');
     checkLgAlerts();
-    /* 精選8/8s 衝突徽章：快取未 ready 就後補油（2026-10-15） */
-    loadFwConflicts().then(map => {
-      if (Object.keys(map).length) paintFwConflicts();
-    });
   } catch (e) {
     window._jfRetryHook = null;
     LoadX.hide();
@@ -497,49 +512,6 @@ $('#alertBell').onclick = async () => {
 };
 $('#alertClose').onclick = () => { $('#alertPanel').style.display = 'none'; };
 /* ---------- 2026-10-22 工具入選/剔走推送（📣） ---------- */
-/* ---------- 2026-10-23 篩選進行中 Log（用戶：加/減場次要知道做緊乜） ----------
-   每 3.5 秒增量拉 /api/scanlog；掃描行緊或有新行就彈出面板（自動滾到底）。
-   🆕=新增（綠） ❌=剔走（紅） ⏸=等待 🧮=結算 ✅=完成。*/
-const ScanLog = {
-  after: 0, lines: [], hideUntilIdle: false, timer: null,
-  start(){
-    if (this.timer) return;
-    this.timer = setInterval(() => this.tick(), 3500);
-  },
-  async tick(){
-    let d;
-    try { d = await jget('/api/scanlog?after=' + this.after + '&limit=80'); }
-    catch (e) { return; }
-    if (!d) return;
-    for (const x of (d.items || [])){
-      this.after = Math.max(this.after, x.id);
-      this.lines.push(x);
-    }
-    if (this.lines.length > 120) this.lines = this.lines.slice(-120);
-    const box = $('#scanlogBox');
-    if (!box) return;
-    const show = (d.running || (d.items && d.items.length)) && !this.hideUntilIdle;
-    if (show){
-      box.style.display = 'block';
-      const p = d.progress || {};
-      $('#scanlogTitle').textContent = d.running
-        ? `🛠 篩選進行中 ${p.done || 0}/${p.total || 0}（🆕${p.added || 0} ❌${p.removed || 0}）${p.phase ? '｜' + p.phase : ''}`
-        : '🛠 篩選記錄（最近）';
-      const el = $('#scanlogLines');
-      el.innerHTML = this.lines.map(x => {
-        const cls = x.msg.indexOf('❌') >= 0 || x.msg.indexOf('剔走') >= 0
-          ? 'color:#ff9d9d' : (x.msg.indexOf('🆕') >= 0 || x.msg.indexOf('新增') >= 0)
-            ? 'color:#8fe3a8' : 'color:#9db4cc';
-        return `<div style="${cls}"><span style="color:#5a6b80">${esc(x.ts)}</span> ${esc(x.msg)}</div>`;
-      }).join('');
-      el.scrollTop = el.scrollHeight;
-    } else if (!d.running && this.hideUntilIdle){
-      box.style.display = 'none';
-      this.hideUntilIdle = false;
-    }
-  }
-};
-
 let _toolBellSeen = 0;   // 已知最新 id——輪詢見到新 id 就 badge＋瀏覽器通知
 let _toolBellNotifOn = false;
 async function checkToolBell(first){
@@ -588,7 +560,6 @@ $('#toolBell').onclick = async () => {
   }
 };
 $('#toolBellClose').onclick = () => { $('#toolBellPanel').style.display = 'none'; };
-$('#scanlogClose').onclick = () => { ScanLog.hideUntilIdle = true; $('#scanlogBox').style.display = 'none'; };
 $('#toolBellNotif').onchange = async function(){
   _toolBellNotifOn = this.checked;
   if (this.checked && window.Notification && Notification.permission === 'default'){
@@ -653,16 +624,17 @@ const BetSlip = {
   async open(preset){
     this.m = preset;
     this.baseV = 0;
+    this.market = null;
     $('#betMeta').textContent =
       `${(preset.ko || '').slice(5, 16)}　${preset.lg}　${preset.h} vs ${preset.a}`;
     $('#betMsg').textContent = '';
     $('#betAmt').value = localStorage.getItem('bet_amt') || '';
-    $('#betWater').value = localStorage.getItem('bet_water') || '';
-    /* 攞該場尾盤做基準盤（冇就初盤），生出 ±0.25 三個盤 × 上/下盤 共六選項 */
+    $('#betWater').value = '';
     try {
       const r = await jget('/api/v3/target?id=' + preset.id);
       const t = r && r.target;
       const c = t && (t.close || t.init);
+      this.market = c || null;
       if (c && typeof c.v === 'number') this.baseV = c.v;
     } catch (e) {}
     const q = x => Math.round(x * 100) / 100;
@@ -693,8 +665,27 @@ const BetSlip = {
       opts.map(v => optHTML(v, 'up')).join('') + `</div>` +
       `<div class="bet-sec-t">下盤（受讓方；平手＝客隊）</div><div class="bet-lines">` +
       opts.map(v => optHTML(v, 'down')).join('') + `</div>`;
+    const setWater = () => {
+      const sel = this.sel(), w = this.marketWater(sel.v, sel.side);
+      if (w != null) $('#betWater').value = w;
+    };
+    setWater();
+    $$('input[name=betline]').forEach(r => r.addEventListener('change', setWater));
     $('#betModal').classList.add('on');
     setTimeout(() => { if (!$('#betAmt').value) $('#betAmt').focus(); }, 80);
+  },
+  marketWater(v, side){
+    const c = this.market;
+    if (!c) return null;
+    const upHome = v <= 0;
+    const homeSelected = side === 'up' ? upHome : !upHome;
+    return homeSelected ? c.ho : c.ao;
+  },
+  currentOdds(){
+    const typed = $('#betWater').value.trim();
+    if (typed) return typed;
+    const sel = this.sel();
+    return this.marketWater(sel.v, sel.side);
   },
   sel(){
     const r = document.querySelector('input[name=betline]:checked');
@@ -730,10 +721,32 @@ $('#betClose').onclick = () => BetSlip.close();
 $('#betModal').addEventListener('click', ev => {
   if (ev.target.id === 'betModal') BetSlip.close();
 });
-$('#betShareNoW').onclick = () => {
-  if (!$('#betAmt').value.trim()) { toast('請先輸入金額'); $('#betAmt').focus(); return; }
-  shareText(BetSlip.txt(false));
-  BetSlip.close();
+$('#betShareNoW').onclick = async () => {
+  const amount = Number($('#betAmt').value.trim());
+  if (!Number.isFinite(amount) || amount <= 0) {
+    toast('請先輸入有效本金'); $('#betAmt').focus(); return;
+  }
+  const sel = BetSlip.sel(), odds = BetSlip.currentOdds();
+  if (odds == null || !Number.isFinite(Number(odds)) || Number(odds) <= 0) {
+    toast('未能讀取本場賠率，請自行輸入有效賠率'); $('#betWater').focus(); return;
+  }
+  const btn = $('#betShareNoW');
+  btn.disabled = true;
+  try {
+    const r = await jpost('/api/bets', {id: BetSlip.m.id, choice: sel.side,
+      line: sel.v, odds: Number(odds), stake: amount});
+    if (!r.ok) { toast(r.error || '新增至我的選擇失敗'); return; }
+    localStorage.setItem('bet_amt', String(amount));
+    localStorage.setItem('bet_water', String(odds));
+    shareText(BetSlip.txt(false));
+    BetSlip.close();
+    refreshPicksMap();
+    toast('已新增至我的選擇');
+  } catch (e) {
+    toast('新增失敗：' + e.message);
+  } finally {
+    btn.disabled = false;
+  }
 };
 $('#betShare').onclick = () => {
   if (!$('#betAmt').value.trim()) { toast('請先輸入金額'); $('#betAmt').focus(); return; }
@@ -832,24 +845,6 @@ $('#twinClose').onclick = () => Twin.close();
 $('#twinModal').addEventListener('click', ev => {
   if (ev.target.id === 'twinModal') Twin.close();
 });
-/* 主頁訊號帶（2026-10-16 三欄：精選8／精選8s／好波大細；2026-10-25 用戶
- * 規格改兩欄——「波」好波大細徽章係非篩選結果殘留（同朝早清除嘅好波 chip
- * 同一性質），唔再喺主頁展示。兩個來源各自獨立——冇入選/冇快取就唔顯示。 */
-function _pred3Badge(m){
-  if (!m) return '';
-  const st = 'display:inline-block;font-size:10px;line-height:16px;padding:0 4px;' +
-             'border-radius:3px;margin-left:4px;vertical-align:middle;';
-  const parts = [];
-  if (m.f8)
-    parts.push('<span style="' + st + 'background:rgba(212,175,55,.15);color:var(--gold2);' +
-               'border:1px solid rgba(212,175,55,.4)" title="精選8（格共識入選方向）">8·' +
-               esc(m.f8) + '</span>');
-  if (m.f8s)
-    parts.push('<span style="' + st + 'background:rgba(80,140,255,.12);color:#7ea8ff;' +
-               'border:1px solid rgba(80,140,255,.35)" title="精選8s（上盤公式入選方向）">8s·' +
-               esc(m.f8s) + '</span>');
-  return parts.join('');
-}
 /* ---------- 同聯賽/杯賽命中率（2026-10-17 用戶）：六源速查 ----------
  * 後端 /api/lg_hit_rates（600s 快取）回 {lg: {src: [命中, n]}}。
  * 渲染用 slot：先放空位，load 完一次過填——同步渲染同動態列表都合用。 */
@@ -895,35 +890,37 @@ function _fillLgSlots(){
 LgHit.load();
 setInterval(() => { LgHit._p = null; LgHit.rates = null; LgHit.load(); }, 900000);
 
-/* ---------- 每場入選系統來源徽章（2026-10-22 用戶規格「講明每個數據由邊個篩選出嚟」） ----------
- * 後端 /api/v3/list 嘅 m.srcs 標記咗場次入選咗邊啲精選系統；
- * 行內藍色小徽章可見，hover 有出處說明。 */
-const SRC_META = {
-  W:   ['精選W', 'V3 六條件精選W（/api/v3/featured）'],
-  V2:  ['精V2',  '舊版本 V2 十六字頭精選（/api/featured）'],
-  V2Z: ['精V2Z', '舊版本 V2 同主隊 Z 槽（/api/featured?z=1）'],
-  V1:  ['精V1',  '舊版本 V1 十六字頭精選（/api/v1/featured）'],
-  V1Z: ['精V1Z', '舊版本 V1 同主隊 Z 槽（/api/v1/featured?z=1）'],
-  F7:  ['精7',   '精選7 格組合（/api/fwgrid?g=7）'],
-  F8:  ['精8',   '精選8 格組合（/api/fwgrid?g=8）'],
-  F12: ['精12',  '精選12 格組合（/api/fwgrid?g=12）'],
-  F8S: ['格8s',  'fw_grid 8s 格入選（/api/fwgrid?g=8s）'],
-  S8:  ['8s',    '精選8s 公式引擎（/api/fw8s）'],
-  X8:  ['8X',    '8X 上/下盤公式（/api/8x）'],
-  W88: ['88W',   '88W 全市場方法庫（/api/w88）'],
-  JX:  ['新精選', '新精選 16 欄位全組合挖掘（/api/newjx）']
-};
-function _srcChips(m){
-  const s = m.srcs;
-  if (!s || !s.length) return '';
-  const parts = s.map(k => {
-    const meta = SRC_META[k] || [k, k];
-    return `<span class="tag" style="font-size:10px;color:#9ecbff;border-color:#2b4a6b" ` +
-      `title="此場入選咗「${meta[1]}」——賽事分析同徽章數據係由呢個系統篩選出嚟">${meta[0]}</span>`;
-  });
-  return ` <span class="srcs" style="white-space:nowrap" title="呢場入選咗嘅精選系統（每個數據嘅來源標記）">｜${parts.join('')}</span>`;
+const HOME_TOOL_FALLBACK = [
+  ['W','精選W','精選W頁'], ['V1','精V1','舊版V1/V2頁'],
+  ['V1Z','精V1Z','舊版V1/V2頁'], ['V2','精V2','舊版V1/V2頁'],
+  ['V2Z','精V2Z','舊版V1/V2頁'], ['F7','精選7','精選7頁'],
+  ['F8','精選8','精選8頁'], ['F12','精選12','精選12頁'],
+  ['F8S','格8s','精選8s頁'], ['S8','精選8s','精選8s頁'],
+  ['X8','8X','8X頁'], ['W88','88W','88W頁'], ['JX','新精選','新精選頁'],
+  ['HB','好波','好波頁'], ['K3','K3（舊紀錄）','88W頁']
+].map(x => ({key:x[0], name:x[1], page:x[2]}));
+function _homeToolDefs(){ return homeData.tools && homeData.tools.length ? homeData.tools : HOME_TOOL_FALLBACK; }
+function _homeRate(r){
+  return r && r.n ? `${Number(r.hit).toFixed(1)}%（n=${r.n}）` : '—（n=0）';
 }
-
+function _homeRateTitle(r){
+  return r ? `贏${r.w}／輸${r.l}／走${r.p}｜命中率=(贏+0.5×走)÷總場` : '';
+}
+function _homeToolCell(def, picks){
+  const pass = picks.length > 0;
+  const title = pass ? picks.map(p => `${p.direction}｜${p.filter || '未記錄篩選條件'}｜${p.page}`).join('\n') : '本場未入選';
+  const result = pass ? picks.map(p => {
+    const res = {W:'｜命中', L:'｜未中', P:'｜走盤'}[p.result] || '';
+    const filter = picks.length > 1 && p.filter ? `［${p.filter}］` : '';
+    return `<div class="ht-result" title="${esc(p.filter || '')}">${esc(p.direction)}${esc(filter + res)}</div>`;
+  }).join('') : '<div class="ht-muted">未入選</div>';
+  const rates = (field, label) => pass ? picks.map(p =>
+    `<div class="ht-rate" title="${esc(_homeRateTitle(p[field]))}">${label}：${_homeRate(p[field])}</div>`
+  ).join('') : `<div class="ht-rate ht-muted">${label}：—</div>`;
+  return `<div class="home-tool${pass ? ' is-pass' : ''}" title="${esc(title)}">` +
+    `<div class="ht-name">${esc(def.name)}</div><div class="ht-label">篩選結果</div>${result}` +
+    rates('history', '相同歷史') + rates('recent14', '近14日') + `</div>`;
+}
 function _mrow(m, playedSec){
   const pc = window.PhoneCrawl ? PhoneCrawl.lineFor(m.id) : null;
   const pcMark = pc ? (pc.agree === true ? ' <span style="color:var(--up);font-size:10px">✓同本機</span>'
@@ -932,128 +929,31 @@ function _mrow(m, playedSec){
     ? `<div class="ln"><b>${esc(fmtLine(pc.line))}</b><span class="tag" style="font-size:10px;color:var(--gold2)">📱直爬</span>${pcMark}<br>主${pc.ho.toFixed(2)}/客${pc.ao.toFixed(2)}</div>`
     : (m.line ? `<div class="ln"><b>${esc(m.line.line)}</b>${m.line.src === 'crown' ? '<span class="tag dim" style="font-size:10px">Crown</span>' : ''}<br>主${m.line.ho != null ? m.line.ho.toFixed(2) : '—'}/客${m.line.ao != null ? m.line.ao.toFixed(2) : '—'}</div>` : '<div class="ln">無盤</div>');
   const od = playedSec ? '' : ((m.has_odds || (m.line && m.line.src === 'crown'))
-    ? `<span class="od has">已有賠率</span>`
-    : '<span class="od">未獲取賠率</span>');
+    ? '<span class="od has">已有賠率</span>' : '<span class="od">未獲取賠率</span>');
   const oud = (playedSec && m.ou && m.ou.line != null)
     ? `<div class="ln" title="大小球尾盤（易勝博）"><b>大${esc(String(m.ou.line))}</b><br>` +
-      `${m.ou.over != null ? m.ou.over.toFixed(2) : '—'}/${m.ou.under != null ? m.ou.under.toFixed(2) : '—'}</div>`
-    : '';
-  const at = pc
-    ? `<span class="od at" title="手機直爬最後更新：${esc(pc.at)}（裝置 ${esc(window.PhoneCrawl.device)}）">📱 ${esc(pc.at.slice(11, 16))}</span>`
-    : (m.odds_at ? `<span class="od at" title="賠率/盤口最後更新：${esc(m.odds_at)}">🕒 ${esc(fmtAt(m.odds_at))}</span>` : '');
+      `${m.ou.over != null ? m.ou.over.toFixed(2) : '—'}/${m.ou.under != null ? m.ou.under.toFixed(2) : '—'}</div>` : '';
   const rfb = (playedSec && m.score) ? '' : `<button class="rfb" data-fb="${m.id}" data-ko="${esc(m.kickoff || '')}" title="即時更新呢場最新賠率同盤口">⟳</button>`;
   const sc = m.score ? `<span class="sc">${esc(m.score)}</span>${_htftTag(m)}` : (m.ht ? _htftTag(m) : '');
-  const pr = (!playedSec && lgPred[m.id]) ? _lgPredBadge(m, lgPred[m.id]) : '';
-  const oup = (!playedSec && m.oupred) ? _oupredBadge(m, m.oupred) : '';
-  /* 2026-10-23 主頁介面重設（用戶：唔知咩打咩）——兩行結構＋每區有標籤：
-     第一行＝賽事本身（時間/聯賽/對賽/狀態比分/盤/按鈕）；
-     第二行＝訊號帶，每組數據前面有『入選/預測/提示/同聯賽』小標籤。 */
-  const srcs = _srcChips(m);
-  const preds = pr + oup;
-  const hints = _fwConflictBadge(m) + _pred3Badge(m);
-  // 2026-10-25 用戶規格：主頁刪走好波非篩選結果殘留——「波」chip 係好波
-  // 聯賽命中率，唔係入選/預測結果，唔再喺主頁展示
-  const lgr = _lgRateSlot(m.league, ['main','feat_v2','f7','f8']);
-  const sig = (label, inner) => inner
-    ? `<span class="sig-label">${label}</span>${inner}` : '';
-  const signals = [
-    sig('入選', srcs), sig('預測', preds), sig('提示', hints),
-    sig('同聯賽', lgr)].filter(Boolean).join('');
+  const home = `${m.home || '—'}${m.rank_home ? ` (${m.rank_home})` : ''}`;
+  const away = `${m.away || '—'}${m.rank_away ? ` (${m.rank_away})` : ''}`;
+  const updated = pc ? pc.at : m.odds_at;
+  const grouped = {};
+  for (const p of (m.tool_picks || [])) (grouped[p.key] || (grouped[p.key] = [])).push(p);
+  const tools = _homeToolDefs().map(def => _homeToolCell(def, grouped[def.key] || [])).join('');
   return `<div class="mrow" data-mid="${m.id}">
     <div class="m-main">
-      <span class="ko">${esc((m.kickoff || '').slice(5, 16))}</span>
-      <span class="lg">${esc(m.league)}</span>
-      <span class="tm">${esc(rn(m.home, m.rank_home))} <span class="r">vs</span> ${esc(rn(m.away, m.rank_away))}</span>
-      ${_stateTag(m.state)}${sc}${line}${oud}${od}${at}${rfb}${BetSlip.btn(m)}${Twin.btn(m)}
+      <div class="m-fix"><span><b>日期</b> ${esc((m.kickoff || '').slice(0, 10) || '—')}</span>` +
+      `<span><b>時間</b> ${esc((m.kickoff || '').slice(11, 16) || '—')}</span>` +
+      `<span><b>賽事類別</b> ${esc([m.category || m.cat, m.league].filter(Boolean).join('｜') || '—')}</span></div>
+      <div class="tm"><span><b>主場</b> ${esc(home)}</span><span class="r">vs</span><span><b>客場</b> ${esc(away)}</span>${_stateTag(m.state)}${sc}</div>
+      <div class="m-update"><b>最後更新時間</b> ${esc(updated || '未有記錄')}${pc ? '（手機直爬）' : ''}</div>
+      <div class="m-actions">${line}${oud}${od}${rfb}${BetSlip.btn(m)}${Twin.btn(m)}</div>
     </div>
-    ${signals ? `<div class="m-signals">${signals}</div>` : ''}
+    <div class="home-tools">${tools}</div>
   </div>`;
 }
-/* ---------- 精選8 vs 精選8s 方向衝突（2026-10-15 用戶：主頁展示兩套規則打架嘅場次） ----------
- * 精選8 = fw_grid '8'（12 格入面 7/19/21/25 必填＋共識方向）；精選8s = fw8s 引擎
- * （每聯賽獨立公式，入選＝方向上盤）。一個下盤一個上盤＝衝突，喺主頁行尾出紫色徽章。 */
-let _fwConfCache = {ts: 0, map: {}};
-function loadFwConflicts(){
-  const now = Date.now();
-  if (now - _fwConfCache.ts < 300000) return Promise.resolve(_fwConfCache.map);
-  return Promise.all([
-    jget('/api/fwgrid/full?g=8').catch(() => null),
-    jget('/api/fw8s/full?hours=72').catch(() => null),
-  ]).then(([g8, s8]) => {
-    const map = {};
-    if (g8) for (const grp of ['pending', 'live']) {
-      for (const m of (g8[grp] || [])) {
-        if (m.direction === 'up' || m.direction === 'down') {
-          map[m.id] = Object.assign(map[m.id] || {}, {fw8: m.direction});
-        }
-      }
-    }
-    if (s8) for (const p of (s8.picks || [])) {
-      const mid = p.match_id || p.id;
-      if (mid) map[mid] = Object.assign(map[mid] || {}, {s8: 'up'});
-    }
-    _fwConfCache = {ts: now, map};
-    return map;
-  });
-}
-function _fwConflictBadge(m){
-  const c = _fwConfCache.map[m.id];
-  if (!c || !c.fw8 || !c.s8 || c.fw8 === c.s8) return '';
-  const t = (x) => x === 'down' ? '下' : '上';
-  return ` <span class="tag" style="background:#7a2ea6;color:#fff;font-size:10px" ` +
-    `title="精選8揀${t(c.fw8)}盤 vs 精選8s揀${t(c.s8)}盤——兩套規則方向衝突，落注前三思">` +
-    `⚔️8:${t(c.fw8)}|8s:${t(c.s8)}</span>`;
-}
-/* 首次載入（快取未 ready）後補油：喺現有行度直接插入徽章，唔成張重畫 */
-function paintFwConflicts(){
-  const map = _fwConfCache.map;
-  document.querySelectorAll('#homeList .mrow').forEach(row => {
-    const mid = +row.dataset.mid;
-    const tm = row.querySelector('.tm');
-    if (!tm) return;
-    let b = row.querySelector('[data-fwcon]');
-    const c = map[mid];
-    const show = c && c.fw8 && c.s8 && c.fw8 !== c.s8;
-    if (show && !b) {
-      const t = (x) => x === 'down' ? '下' : '上';
-      b = document.createElement('span');
-      b.dataset.fwcon = '1';
-      b.className = 'tag';
-      b.style.cssText = 'background:#7a2ea6;color:#fff;font-size:10px';
-      b.title = `精選8揀${t(c.fw8)}盤 vs 精選8s揀${t(c.s8)}盤——兩套規則方向衝突，落注前三思`;
-      b.textContent = `⚔️8:${t(c.fw8)}|8s:${t(c.s8)}`;
-      tm.appendChild(b);
-    } else if (!show && b) b.remove();
-  });
-}
-
-/* 同賽事盤口模型：主頁球隊旁展示上/下盤%（oupred = upcoming() 每場自帶） */
-function _oupredBadge(m, p){
-  const cls = p.dir === 'up' ? 'r-up' : 'r-down';
-  const val = p.dir === 'up' ? p.up_r : p.down_r;
-  const title = `同賽事盤口模型：上${p.up_r}%／下${p.down_r}%（≥50%指嗰邊）\n` +
-    `F1 同賽事・聯賽獨立盤口 ${p.f[0]}%（n=${p.n_line}）\n` +
-    `F2 同賽事・聯賽水位帶 ${p.f[1]}%（n=${p.n_water}）\n` +
-    `F3 球隊近况 ${p.f[2]}%（近20場贏盤率）`;
-  return ` <span class="tag oupred ${cls}" title="${esc(title)}">📐${p.dir === 'up' ? '上' : '下'}${val}%</span>`;
-}
-/* 聯賽預測：主頁球隊旁展示方向（lgPred = /api/lgpred 結果） */
 let lgPred = {};
-function _lgPredTeam(m, dir){
-  const gv = m.line && m.line.giver;
-  if (dir === 'up') return gv === 'away' ? m.away : m.home;
-  return gv === 'away' ? m.home : m.away;
-}
-function _lgPredBadge(m, p){
-  const team = _lgPredTeam(m, p.direction);
-  const best = (p.rules || [])[0];
-  const rate = best ? Math.round(100 * (best.rate || 0)) : null;
-  const n = best ? best.n : 0;
-  const cls = p.direction === 'up' ? 'r-up' : 'r-down';
-  const title = (p.rules || []).map(r =>
-    `${r.desc}：${r.direction === 'up' ? '上' : '下'}${Math.round(100 * (r.rate || 0))}%（${r.n}場）`).join('\n');
-  return ` <span class="tag lgpred ${cls}" title="${esc(title)}">🎯${p.direction === 'up' ? '上' : '下'}｜${esc(team)}${rate != null ? ` ${rate}%・${n}場` : ''}</span>`;
-}
 function renderHome(){
   let h = `<div class="day-h">🏟 即將開賽（${homeData.upcoming.length} 場）</div>`;
   if (!homeData.upcoming.length) h += '<div class="note">呢個時段冇即將開賽嘅賽事。</div>';
@@ -1424,6 +1324,7 @@ function startEvents(){
     const now = Date.now();
     if (now - _esLastFire < 3000) return;
     _esLastFire = now;
+    refreshWorkLog();
     if (document.hidden) return;
     if (curPage === 'home' && !_updBusy) loadHome();
     else if (curPage === 'review') loadReview();
@@ -1529,20 +1430,17 @@ async function openDetail(mid){
       <h2 style="color:var(--gold2)">🧰 工具預測<span style="font-weight:400;font-size:12px;color:var(--dim)">（每工具＋逐篩選法嘅全庫／同聯賽命中率；ⓩ＝Z 槽同主隊組合）</span></h2>
       <div id="toolPredBox"><div class="note">工具預測載入中…</div></div>
     </div>
-    ${_pickBar(t.id, 'top')}
     <div class="tcard" id="v3sec">
       <h2 style="color:var(--gold2)">⚽ V3 場次分析（45 項）</h2>
       <div id="v3Sum" class="note">精選W 檢查載入中…</div>
       <div id="v3Items"><div class="note">項目清單載入中…</div></div>
     </div>
-    ${_pickBar(t.id, 'bottom')}
     <div class="tcard" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       ${BetSlip.btn(t, '🎯 我想投注')}
-      <span class="hint">揀該場盤口±0.25｜入金額｜撳分享→入水位→再撳分享出文字</span>
+      <span class="hint">揀盤口＋本金＋賠率；「不連水位分享」會先新增至我的選擇</span>
     </div>`;
   $('#detBody').innerHTML = h;
   LoadX.hide();
-  wirePickBars(t.id);
   initV3Section(t.id);
   renderDetLgPred(t.id);
   loadMatchTools(t.id);
@@ -1614,20 +1512,6 @@ function renderDetLgPred(mid){
     (pr.rules || []).map(r =>
       `<div class="note" style="margin:2px 0">・${esc(r.desc)}：${r.direction === 'up' ? '上' : '下'} ${Math.round(100 * (r.rate || 0))}%（${r.n}場基數）</div>`).join('');
 }
-function _pickBar(mid, pos){
-  return `<div class="tcard pk-bar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <b>我的選擇${pos === 'top' ? '（第1項之上）' : '（最後1項之下）'}：</b>
-    <button class="btn pk up" data-pk="up">上盤（${esc(_un())}）</button>
-    <button class="btn pk down" data-pk="down">下盤（${esc(_dn())}）</button>
-    <span class="hint" id="pkMsg_${pos}"></span>
-  </div>`;
-}
-function wirePickBars(mid){
-  $$('#detBody .pk-bar').forEach(bar => {
-    bar.querySelectorAll('.pk').forEach(b => b.onclick = () => doPick(mid, b.dataset.pk, bar));
-  });
-  updatePkButtons(mid);
-}
 $('#btnBack').onclick = () => goto('home');
 $('#btnDetFetch').onclick = async function(){
   if (!curMatch) return;
@@ -1671,76 +1555,128 @@ async function refreshPicksMap(){
     $('#pkCnt').textContent = d.stats.total ? `(${d.stats.total})` : '';
   } catch (e) {}
 }
-function updatePkButtons(mid){
-  const c = picksMap[mid] || '';
-  $$('#detBody .pk').forEach(b => b.classList.toggle('accent', b.dataset.pk === c));
-}
-async function doPick(mid, choice, bar){
-  const r = await jpost('/api/pick', {id: mid, choice});
-  const msg = bar ? bar.querySelector('.hint') : null;
-  if (r.ok) {
-    picksMap[mid] = choice;
-    if (msg) msg.textContent = `已記低：${choice === 'up' ? '上盤' : '下盤'}（${esc(choice === 'up' ? _un() : _dn())}）（永不刪除）`;
-    updatePkButtons(mid);
-    refreshPicksMap();
-  } else if (msg) {
-    msg.textContent = r.error || '記錄失敗';
+function _betLineOptions(selected){
+  let h = '';
+  for (let i = -20; i <= 20; i++) {
+    const v = i / 4;
+    h += `<option value="${v}"${Number(selected) === v ? ' selected' : ''}>${esc(fmtLine(v))}（${v}）</option>`;
   }
+  return h;
 }
-const RES_TXT = {W: '<b class="r-up">✓ 贏</b>', L: '<b class="r-down">✗ 輸</b>', P: '<b>➖ 走</b>', X: '<span style="color:var(--dim)">無法判定</span>'};
+function _betForm(p, confirmed){
+  return `<div class="bet-form" data-betid="${p.bet_id}"${confirmed ? ' style="display:none"' : ''}>
+    <div class="bet-grid">
+      <label>主場隊伍<input data-f="home" value="${esc(p.home)}"></label>
+      <label>客場隊伍<input data-f="away" value="${esc(p.away)}"></label>
+      <label>方向<select data-f="choice"><option value="up"${p.choice === 'up' ? ' selected' : ''}>上盤</option><option value="down"${p.choice === 'down' ? ' selected' : ''}>下盤</option></select></label>
+      <label>盤口<select data-f="line">${_betLineOptions(p.line)}</select></label>
+      <label>賠率<input data-f="odds" type="number" min="0.01" step="0.01" value="${esc(p.odds)}"></label>
+      <label>本金<input data-f="stake" type="number" min="0" step="0.01" value="${esc(p.stake)}"></label>
+    </div>
+    <div class="toolbar">${confirmed
+      ? '<button class="btn gold bet-save">保存更新（即時重算盈利）</button>'
+      : '<button class="btn gold bet-confirm">確認</button>'}</div>
+  </div>`;
+}
+function _betProfit(p){
+  if (p.profit == null) return '<span class="hint">賽事未完，待計盈利</span>';
+  const v = Number(p.profit), cls = v > 0 ? 'r-up' : (v < 0 ? 'r-down' : '');
+  return `<b class="bet-profit ${cls}">盈利 ${v > 0 ? '+' : ''}${v.toFixed(2)}</b>`;
+}
+function _betCard(p, confirmed){
+  const result = {W:'贏',L:'輸',P:'走盤',HW:'半贏',HL:'半輸',X:'無法判定'}[p.result] || '待賽';
+  return `<div class="fcard bet-card">
+    <div class="f-top"><span class="f-time">${esc((p.kickoff || '').slice(5, 16))}　${esc(p.league || '')}</span>
+      <span class="f-teams">${esc(p.home)} vs ${esc(p.away)}</span>
+      ${p.score ? `<span class="f-score">${esc(p.score)}</span>` : ''}
+      <span class="tag ${p.choice}">${p.choice === 'up' ? '上盤' : '下盤'}＝${esc(p.choice_team)}</span>
+      ${confirmed ? `<span class="tag dim">${result}</span>${_betProfit(p)}<button class="btn bet-edit">編輯</button>` : '<span class="tag live">待確認</span>'}
+    </div>
+    <div class="gaprow"><span class="lab">注單</span>${esc(p.line_text)}｜賠率 ${esc(p.odds)}｜本金 ${esc(p.stake)}${confirmed ? `｜確認於 ${esc(p.confirmed_at || '')}` : ''}</div>
+    ${_betForm(p, confirmed)}
+  </div>`;
+}
+function _betPayload(form){
+  return {bet_id: +form.dataset.betid,
+    home: form.querySelector('[data-f="home"]').value.trim(),
+    away: form.querySelector('[data-f="away"]').value.trim(),
+    choice: form.querySelector('[data-f="choice"]').value,
+    line: Number(form.querySelector('[data-f="line"]').value),
+    odds: Number(form.querySelector('[data-f="odds"]').value),
+    stake: Number(form.querySelector('[data-f="stake"]').value)};
+}
+async function _betSave(form){
+  const r = await jpost('/api/bets/edit', _betPayload(form));
+  if (!r.ok) { toast(r.error || '更新失敗'); return false; }
+  return true;
+}
 async function loadPicksPage(){
   $('#pkList').innerHTML = '<div class="note">⏳ 載入緊：我的選擇…</div>';
   let d;
   try { d = await jget('/api/picks/full'); }
   catch (e) { $('#pkList').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
   const s = d.stats;
-  $('#pkStats').innerHTML = `<div class="statbar">
-    <span>總場數 <b>${s.total}</b></span><span>未開賽 <b>${s.pending}</b></span>
-    <span>贏 <b class="r-up">${s.wins}</b></span><span>輸 <b class="r-down">${s.losses}</b></span>
-    <span>走 <b>${s.pushes}</b></span>
-    <span>勝出率 <b>${pct(s.win_rate)}</b>（贏÷(贏+輸)，走唔計）</span></div>`;
-  const card = p => {
-    const res = p.played ? (RES_TXT[p.result] || '<span style="color:var(--dim)">待結算</span>') : '<span style="color:var(--dim)">未開賽</span>';
-    const pud = p.line ? (p.line.indexOf('主讓') === 0 ? {up: p.home, down: p.away, push: false}
-      : p.line.indexOf('客讓') === 0 ? {up: p.away, down: p.home, push: false}
-      : {up: p.home, down: p.away, push: true}) : null;
-    return `<div class="fcard" data-mid="${p.id}">
-      <div class="f-top">
-        <span class="f-time">${esc((p.kickoff || '').slice(5, 16))}　${esc(p.league)}</span>
-        <span class="f-teams">${esc(rn(p.home, p.rank_home))} vs ${esc(rn(p.away, p.rank_away))}</span>
-        ${p.score ? `<span class="f-score">${esc(p.score)}${p.ht ? `<span style="color:var(--dim);font-weight:400">（半${esc(p.ht)}）</span>` : ''}${p.first_goal ? ` <span style="color:var(--gold2)">首球${p.first_goal === 'home' ? '主' : '客'}</span>` : ''}</span>` : (p.ht ? `<span class="f-score" style="color:var(--dim)">半${esc(p.ht)}</span>` : '')}
-        <span class="tag ${p.choice}">${p.choice === 'up' ? '上盤' : '下盤'}＝${pud ? esc(pud[p.choice]) : '—'}</span>
-        <span>${res}</span>
-        <span class="f-btns">
-          <button class="btn pk-repick">⇄ 照揑</button>
-        </span>
-      </div>
-      <div class="gaprow"><span class="lab">本場</span>上盤＝<b>${pud ? esc(pud.up) : '—'}</b>｜下盤＝<b>${pud ? esc(pud.down) : '—'}</b>${pud && pud.push ? '（平手盤：上盤＝平手主隊）' : ''}</div>
-      <div class="gaprow"><span class="lab">揀時</span>${esc(p.pick_line || '—')} ${esc(p.pick_odds || '')}</div>
-      <div class="gaprow"><span class="lab">尾盤</span>${esc(p.line || '—')} ${esc(p.odds || '')}</div>
-    ${p.line_moved ? `<div class="gaprow" style="border:1px solid #d8a03c;background:rgba(216,160,60,.12);border-radius:8px;padding:6px 8px"><span class="lab">⚠️ 尾盤已變</span>入選/檢定時（${esc((p.snap_at || '').slice(5, 16) || '—')}）：<b>${esc(p.line_at_pick || '—')}</b> → 而家：<b>${esc(p.line || '—')} ${esc(p.odds || '')}</b>　條件已按新尾盤自動重檢</div>` : ''}
-    </div>`;
-  };
+  $('#pkStats').innerHTML = `<div class="statbar"><span>待確認 <b>${s.pending}</b></span>
+    <span>已確認 <b>${s.confirmed}</b></span><span>總盈利 <b>${s.profit > 0 ? '+' : ''}${Number(s.profit).toFixed(2)}</b></span>
+    <span>贏 ${s.wins}｜半贏 ${s.half_wins}｜輸 ${s.losses}｜半輸 ${s.half_losses}｜走 ${s.pushes}</span></div>`;
   let h = '';
-  if (d.pending.length) {
-    h += `<div class="day-h">🔜 未開賽（${d.pending.length} 場・順開賽時間・永久保留）</div>` + d.pending.map(card).join('');
+  if (d.weeks.length) {
+    h += '<div class="day-h">每星期總數（星期一12:01至下星期一12:00）</div>' + d.weeks.map(w =>
+      `<div class="statbar"><span>星期 ${esc(w.week)}</span><span>${w.n} 場</span>` +
+      `<span>總盈利 <b>${w.profit > 0 ? '+' : ''}${Number(w.profit).toFixed(2)}</b></span>` +
+      `${w.pending_settlement ? `<span>${w.pending_settlement} 場待結算</span>` : ''}` +
+      `<button class="btn warn" data-delweek="${esc(w.week)}">刪全週</button></div>`).join('');
   }
-  if (d.played.length) {
-    h += `<div class="day-h">📼 已開賽（${d.played.length} 場・永久保留，最新排先）</div>` + d.played.map(card).join('');
+  h += `<div class="day-h">待確認（${d.pending.length}）</div>`;
+  h += d.pending.length ? d.pending.map(p => _betCard(p, false)).join('')
+    : '<div class="note">沒有待確認注單。主頁「投注」→「不連水位分享」會新增到這裡。</div>';
+  h += `<div class="day-h">已確認賽事（${d.confirmed.length}）</div>`;
+  if (!d.confirmed.length) h += '<div class="note">尚未有已確認賽事。</div>';
+  for (const day of d.days) {
+    const rows = d.confirmed.filter(p => p.day === day.day);
+    h += `<div class="statbar"><span>${esc(day.day)}（12:01至翌日12:00）</span><span>${day.n} 場</span>` +
+      `<span>每日總盈利 <b>${day.profit > 0 ? '+' : ''}${Number(day.profit).toFixed(2)}</b></span>` +
+      `${day.pending_settlement ? `<span>${day.pending_settlement} 場待結算</span>` : ''}` +
+      `<button class="btn warn" data-delday="${esc(day.day)}">刪全日</button></div>`;
+    h += rows.map(p => _betCard(p, true)).join('');
   }
-  if (!h) h = '<div class="note">仲未揀過任何場次。入場次分析頁「我的選擇」撳上/下盤即記低。</div>';
   $('#pkList').innerHTML = h;
-  $$('#pkList .fcard').forEach(c => {
-    const mid = +c.dataset.mid;
-    c.querySelector('.pk-repick').onclick = async ev => {
-      ev.stopPropagation();
-      const ch = picksMap[mid];
-      if (!ch) { toast('搵唔到原先選擇'); return; }
-      await jpost('/api/pick', {id: mid, choice: ch});
-      toast('已照揑再記一次'); loadPicksPage(); refreshPicksMap();
-    };
-    c.onclick = () => openDetail(mid);
+  $$('#pkList .bet-confirm').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try {
+      const form = b.closest('.bet-form');
+      if (await _betSave(form)) {
+        const r = await jpost('/api/bets/confirm', {bet_id: +form.dataset.betid});
+        if (r.ok) { toast('已確認，移至下方已確認賽事'); loadPicksPage(); refreshPicksMap(); }
+        else toast(r.error || '確認失敗');
+      }
+    } catch (e) { toast('確認失敗：' + e.message); } finally { b.disabled = false; }
   });
+  $$('#pkList .bet-edit').forEach(b => b.onclick = () => {
+    const form = b.closest('.bet-card').querySelector('.bet-form');
+    const show = form.style.display === 'none';
+    form.style.display = show ? '' : 'none';
+    b.textContent = show ? '收起' : '編輯';
+  });
+  $$('#pkList .bet-save').forEach(b => b.onclick = async () => {
+    b.disabled = true;
+    try { if (await _betSave(b.closest('.bet-form'))) {
+      toast('已更新；如已有賽果，盈利已即時重算'); loadPicksPage(); refreshPicksMap();
+    } } catch (e) { toast('更新失敗：' + e.message); } finally { b.disabled = false; }
+  });
+  const del = async (url, key, label, btn) => {
+    if (!window.confirm(`確定${label}？此操作不可復原。`)) return;
+    btn.disabled = true;
+    try {
+      const r = await jpost(url, key);
+      if (r.ok) { toast(`已刪除 ${r.deleted} 筆已確認紀錄`); loadPicksPage(); refreshPicksMap(); }
+      else toast(r.error || '刪除失敗');
+    } catch (e) { toast('刪除失敗：' + e.message); } finally { btn.disabled = false; }
+  };
+  $$('#pkList [data-delday]').forEach(b => b.onclick = () =>
+    del('/api/bets/delete-day', {day: b.dataset.delday}, `刪除 ${b.dataset.delday} 全日已確認紀錄`, b));
+  $$('#pkList [data-delweek]').forEach(b => b.onclick = () =>
+    del('/api/bets/delete-week', {week: b.dataset.delweek}, `刪除 ${b.dataset.delweek} 全週已確認紀錄`, b));
 }
 
 /* ================= V3 場次分析渲染器 ================= */
@@ -3380,11 +3316,11 @@ async function shareText(txt){
     refreshConnChip();
     $('#btnRepair').onclick = repairConn;
     $('#workLogBox').addEventListener('toggle', () => { refreshWorkLog(); });
+    refreshWorkLog();
     // 每 2 分鐘靜靜哋更新計數
     setInterval(refreshPicksMap, 120000);
     setInterval(() => { refreshUpdInfo(); refreshConnChip(); refreshWorkLog(); checkToolBell(); }, 30000);
     checkToolBell(true);
-    ScanLog.start();
     // 主頁／事後回查／過往紀錄自動刷新（完場狀態、新場次、新結算會自己更新，2026-09-29）
     // 2026-10-25 加：工具頁（精選W/V1/V2/格）一齊自動刷新——watcher 重算後
     // bust 快取係伺服器端即時，但使用者坐喺工具頁要等到轉頁先見新結果；
