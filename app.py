@@ -247,7 +247,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.7.2'
+SERVER_VERSION = '5.7.3'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -9775,7 +9775,7 @@ def api_fw8s_full(hours=72, force=False):
     try:
         _ensure_competitions(conn)
         picks, watched, stats = fw8s_engine.scan_upcoming(conn, hours)
-        rules = fw8s_engine.load_rules()
+        rules = fw8s_engine.load_rules(conn)
         modes = {'direct': 0, 'refine': 0, 'watch': 0}
         for r in rules.values():
             modes[r.get('mode', 'watch')] = modes.get(r.get('mode', 'watch'), 0) + 1
@@ -9829,7 +9829,7 @@ def api_fw8s_rules():
     conn = db()
     try:
         _ensure_competitions(conn)
-        rules = fw8s_engine.load_rules()
+        rules = fw8s_engine.load_rules(conn)
         rows = conn.execute("""
             SELECT c.req_name, m.kickoff, cr.res FROM check_rows cr
             JOIN matches m ON m.id=cr.match_id
