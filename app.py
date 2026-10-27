@@ -247,7 +247,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.7.1'
+SERVER_VERSION = '5.7.2'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -605,12 +605,14 @@ def _start_bg_scan(kind):
 
 
 def _ensure_competitions(conn):
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='competitions'").fetchone()
+    if exists and conn.execute('SELECT COUNT(*) FROM competitions').fetchone()[0]:
+        return 0
     conn.execute('''CREATE TABLE IF NOT EXISTS competitions(
         titan_id INTEGER PRIMARY KEY, req_name TEXT NOT NULL,
         name_tc TEXT, name_sc TEXT, name_en TEXT,
         category TEXT NOT NULL, sub_of INTEGER, enabled INTEGER DEFAULT 1)''')
-    if conn.execute('SELECT COUNT(*) FROM competitions').fetchone()[0]:
-        return 0
     path = os.path.join(PARENT_DIR, 'leagues.json')
     if not os.path.exists(path):
         path = os.path.join(BASE_DIR, 'leagues.json')
@@ -623,6 +625,7 @@ def _ensure_competitions(conn):
     conn.executemany(
         'INSERT OR IGNORE INTO competitions(titan_id,req_name,name_tc,name_sc,'
         'name_en,category,sub_of,enabled) VALUES(?,?,?,?,?,?,?,?)', rows)
+    conn.commit()
     return len(rows)
 
 
@@ -9770,6 +9773,7 @@ def api_fw8s_full(hours=72, force=False):
         return _FW8S_CACHE['data']
     conn = db()
     try:
+        _ensure_competitions(conn)
         picks, watched, stats = fw8s_engine.scan_upcoming(conn, hours)
         rules = fw8s_engine.load_rules()
         modes = {'direct': 0, 'refine': 0, 'watch': 0}
@@ -9824,6 +9828,7 @@ def api_fw8s_rules():
     import fw8s_engine
     conn = db()
     try:
+        _ensure_competitions(conn)
         rules = fw8s_engine.load_rules()
         rows = conn.execute("""
             SELECT c.req_name, m.kickoff, cr.res FROM check_rows cr
