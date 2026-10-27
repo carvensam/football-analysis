@@ -1457,7 +1457,7 @@ def _eval_all(conn, ctx, light=False):
     # 2026-10-22 用戶規格：入選/剔走即時推送＋清顯示快取（剔走 100% 唔殘留）
     if any(('新增' in a or '移出' in a) for a in acts):
         try:
-            _notify_tool(conn, mid, acts)
+            _notify_tool(conn, mid, acts, _pre_rm)
         except Exception:
             pass
         _bust_tool_caches()
@@ -3148,6 +3148,93 @@ def _act_tool_name(a):
     return None
 
 
+# 2026-10-27 用戶規格：入選/剔走推送標明預測方向。
+_ACT_DIR_TAB = (('W', 'v3_featured'), ('V2Z', 'featured_z'),
+                ('V2', 'featured'), ('V1Z', 'v1_featured_z'),
+                ('V1', 'v1_featured'), ('格', 'fw_grid_featured'),
+                ('88W', 'w88_log'), ('新精選', 'newjx_log'),
+                ('8X', 'fw8x_log'), ('8s', 'fw8s_log'))
+_DIR_TXT = {'up': '上盤', 'down': '下盤', 'over': '大球', 'under': '細球',
+            'ah_up': '讓球上盤', 'ah_down': '讓球下盤',
+            'home_win': '主勝', 'away_win': '客勝', 'even': '平手',
+            'win': '主勝', 'lose': '客勝'}
+
+
+def _rows_dicts(cur):
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def _act_dir_from(rows, a):
+    """由 pre 快照/live 行列表揀對應 action 嗰行（格→grid 對應）。"""
+    if not rows:
+        return None
+    if a.startswith('格'):
+        try:
+            end = a.index('新增') if '新增' in a else a.index('移出')
+            g = a[1:end]
+        except ValueError:
+            g = ''
+        for r in rows:
+            if str(r.get('grid') or '') == g:
+                return r
+        return rows[0]
+    return rows[0]
+
+
+def _dir_text(r):
+    """pick row（dict）→ 預測方向人話；冇方向回 None。best-effort。"""
+    if not r:
+        return None
+    try:
+        lab = r.get('label')            # 88W：'K3大球'/'K3上盤'
+        if lab:
+            return lab
+        side = r.get('side')            # 好波：'大'/'細'（已人話）
+        if side and not str(side).isascii():
+            return str(side)
+        line = r.get('line')            # 8s：'客讓半/一'（已人話）
+        if line and not str(line).isascii():
+            return str(line)
+        d = (r.get('direction') or r.get('dir') or r.get('market')
+             or r.get('side'))  # ascii side（home_win 等）都入詞表
+        base = _DIR_TXT.get(d or '')
+        if not base:
+            return None
+        for k in ('ou_line', 'line_h', 'hc'):
+            v = r.get(k)
+            if isinstance(v, (int, float)) and v:
+                return '%s %.2f' % (base, v)
+        return base
+    except Exception:
+        return None
+
+
+def _act_tab(a):
+    for p, t in _ACT_DIR_TAB:
+        if a.startswith(p):
+            return t
+    return None
+
+
+def _live_pick_row(conn, mid, a):
+    tab = _act_tab(a)
+    if not tab:
+        return None
+    try:
+        cur = conn.execute('SELECT * FROM %s WHERE match_id=?' % tab, (mid,))
+        return _act_dir_from(_rows_dicts(cur), a)
+    except Exception:
+        return None
+
+
+def _pre_pick_row(pre, a):
+    tab = _act_tab(a)
+    if not tab or not pre:
+        return None
+    return _act_dir_from(pre.get(tab) or [], a)
+
+
 def _notify_window_ok(conn, mid):
     """2026-10-25 用戶規格：彈出通知淨限主頁窗口（即時至未來7日）嘅未賽場次——
     歷史 backlog 重檢／遠期（>7日）場次嘅入選/剔走唔再彈通知（用戶投訴更新時
@@ -3167,7 +3254,7 @@ def _notify_window_ok(conn, mid):
         return True   # 查唔到唔阻塞通知（寧彈唔好漏）
 
 
-def _notify_tool(conn, mid, acts):
+def _notify_tool(conn, mid, acts, pre=None):
     """將 _eval_all 嘅動作列表翻成推送（🆕入選／❌剔走）。best-effort：
     任何錯誤都唔影響掃描本體。同場同工具同類型 12 小時內去重。"""
     news = [a for a in acts if '新增' in a]
@@ -3198,12 +3285,14 @@ def _notify_tool(conn, mid, acts):
         for a in news:
             t = _act_tool_name(a)
             if t:
-                rows.append((t, 'new', mid, lg, home, away, ko, now))
+                rows.append((t, 'new', mid, lg, home, away, ko, now,
+                             _dir_text(_live_pick_row(conn, mid, a))))
         for a in rems:
             t = _act_tool_name(a)
             if t:
-                rows.append((t, 'removed', mid, lg, home, away, ko, now))
-        for tool, kind, _mid, _lg, h, aw, _ko, ts in rows:
+                rows.append((t, 'removed', mid, lg, home, away, ko, now,
+                             _dir_text(_pre_pick_row(pre, a))))
+        for tool, kind, _mid, _lg, h, aw, _ko, ts, dtxt in rows:
             dup = conn.execute(
                 'SELECT 1 FROM alerts WHERE tool=? AND kind=? AND match_id=? '
                 "AND ts >= datetime('now','localtime','-12 hours') LIMIT 1",
@@ -3211,8 +3300,12 @@ def _notify_tool(conn, mid, acts):
             if dup:
                 continue
             verb = '🆕 新入選' if kind == 'new' else '❌ 已剔走（唔合資格）'
-            msg = '%s %s：%s vs %s（%s｜%s）' % (verb, tool, h, aw, _lg,
-                                              (_ko or '')[5:16])
+            if dtxt:
+                msg = ('%s %s：%s vs %s（%s｜%s｜方向：%s）'
+                       % (verb, tool, h, aw, _lg, (_ko or '')[5:16], dtxt))
+            else:
+                msg = '%s %s：%s vs %s（%s｜%s）' % (
+                    verb, tool, h, aw, _lg, (_ko or '')[5:16])
             conn.execute(
                 'INSERT INTO alerts(tool,kind,match_id,league,home,away,'
                 'kickoff,msg,ts) VALUES(?,?,?,?,?,?,?,?,?)',
@@ -7755,9 +7848,10 @@ def _hb_requalify():
                         'home,away,kickoff,msg,ts) VALUES(?,?,?,?,?,?,?,?,?)',
                         ('好波', 'removed', mid, lg, info[0], info[1],
                          info[2],
-                         '❌ 已剔走（唔合資格）好波：%s vs %s（%s｜%s｜%s）'
+                         '❌ 已剔走（唔合資格）好波：%s vs %s（%s｜%s｜%s｜方向：%s）'
                          % (info[0], info[1], lg, (info[2] or '')[5:16],
-                            reason),
+                            reason, _dir_text({'side': side}) or side
+                            or '唔明'),
                          time.strftime('%Y-%m-%d %H:%M:%S')))
             except Exception:
                 traceback.print_exc(limit=2)
@@ -8061,9 +8155,12 @@ def _hb_log_pick(mid, lg, ou):
                     'INSERT INTO alerts(tool,kind,match_id,league,home,'
                     'away,kickoff,msg,ts) VALUES(?,?,?,?,?,?,?,?,?)',
                     ('好波', 'new', mid, info[0], info[2], info[3], info[1],
-                     '🆕 新入選 好波：%s vs %s（%s｜%s｜%.1f%%）'
+                     '🆕 新入選 好波：%s vs %s（%s｜%s｜%.1f%%｜方向：%s）'
                      % (info[2], info[3], info[0], (info[1] or '')[5:16],
-                        rate or 0),
+                        rate or 0,
+                        (_dir_text({'side': side,
+                                    'line': (ou.get('pick') or {}).get('line')})
+                         or side or '唔明')),
                      time.strftime('%Y-%m-%d %H:%M:%S')))
                 conn0.commit()
         finally:
@@ -10266,7 +10363,33 @@ def get_feat_hourly():
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
-        pass
+        # 2026-10-27：請求日誌——暫停讓路總督 v3 用它偵測『用緊工具』。
+        # best-effort；檔案 >2MB 時截尾防爆盤。寫唔到唔影響服務。
+        try:
+            import os as _os
+            import time as _time
+            p = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                              'logs', 'app_requests.log')
+            if not hasattr(self, '_rq_n'):
+                self._rq_n = 0
+            self._rq_n += 1
+            if self._rq_n % 200 == 0:
+                try:
+                    if _os.path.getsize(p) > 2 * 1024 * 1024:
+                        with open(p, encoding='utf-8', errors='replace') as rf:
+                            tail = rf.readlines()[-5000:]
+                        with open(p, 'w', encoding='utf-8') as wf:
+                            wf.writelines(tail)
+                except OSError:
+                    pass
+            with open(p, 'a', encoding='utf-8') as f:
+                # log_request 傳 format+args（format 含 %s）——淨寫 args 部分
+                parts = a[1:] if (a and isinstance(a[0], str)
+                                  and '%' in a[0]) else a
+                f.write('[%s] %s\n' % (_time.strftime('%Y-%m-%d %H:%M:%S'),
+                                        ' '.join(str(x) for x in parts)))
+        except Exception:
+            pass
 
     def _send(self, code, body, ctype='application/json; charset=utf-8'):
         # 2026-10-26：快取分派器用——捕獲首個回應（code+body），之後照常送出
