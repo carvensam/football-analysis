@@ -2,6 +2,7 @@
 import math
 import re
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 
 
@@ -231,13 +232,23 @@ def settle(conn):
 
 def delete_pending(conn, bet_id=None, match_id=None):
     if bet_id is not None:
-        cur = conn.execute("DELETE FROM user_bets WHERE id=? AND status='pending'",
-                           (bet_id,))
+        sql = "DELETE FROM user_bets WHERE id=? AND status='pending'"
+        args = (bet_id,)
     else:
-        cur = conn.execute("DELETE FROM user_bets WHERE match_id=? AND status='pending'",
-                           (match_id,))
-    conn.commit()
-    return {'ok': True, 'deleted': cur.rowcount}
+        sql = "DELETE FROM user_bets WHERE match_id=? AND status='pending'"
+        args = (match_id,)
+    conn.execute('PRAGMA busy_timeout=5000')
+    for attempt in range(4):
+        try:
+            cur = conn.execute(sql, args)
+            conn.commit()
+            return {'ok': True, 'deleted': cur.rowcount}
+        except sqlite3.OperationalError as exc:
+            conn.rollback()
+            locked = 'locked' in str(exc).lower() or 'busy' in str(exc).lower()
+            if not locked or attempt == 3:
+                raise
+            time.sleep(0.5 * (attempt + 1))
 
 
 def delete_period(conn, period, key):

@@ -1658,10 +1658,12 @@ async function loadPicksPage(){
     try {
       const form = b.closest('.bet-form');
       const r = await jpost('/api/bets/delete', {bet_id: +form.dataset.betid});
-      if (r.ok && r.deleted === 1) {
-        toast('已刪除該場待確認注單'); loadPicksPage(); refreshPicksMap();
+      if (r.ok) {
+        await Promise.all([loadPicksPage(), refreshPicksMap()]);
+        toast(r.deleted === 1 ? '已刪除該場待確認注單'
+                              : '該場已不在待確認列，已更新列表');
       } else {
-        toast(r.error || '找不到待確認注單，可能已確認或已刪除');
+        toast(r.error || '刪除失敗，請稍後重試');
       }
     } catch (e) { toast('刪除失敗：' + e.message); } finally { b.disabled = false; }
   });
