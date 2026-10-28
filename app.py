@@ -247,7 +247,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.7.5'
+SERVER_VERSION = '5.7.6'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -1434,17 +1434,24 @@ def _eval_all(conn, ctx, light=False):
         import w88_engine
         hits = w88_engine.eval_match(conn, mid)
         now_keys = {(k[1], k[2]) for k, _v in hits}
-        have = {(r[0], r[1]) for r in conn.execute(
-            'SELECT market, conds FROM w88_log WHERE match_id=? '
+        have = {(r[0], r[1]): r[2] for r in conn.execute(
+            'SELECT market, conds, label FROM w88_log WHERE match_id=? '
             'AND result IS NULL', (mid,))}
         for k, v in hits:
-            if (k[1], k[2]) not in have:
-                conn.execute(
-                    'INSERT OR IGNORE INTO w88_log '
-                    '(match_id, market, conds, league, label, ou_line, hc, '
-                    ' giver, added_at) VALUES(?,?,?,?,?,?,?,?,?)', v)
+            key = (k[1], k[2])
+            conn.execute(
+                'INSERT INTO w88_log '
+                '(match_id, market, conds, league, label, ou_line, hc, '
+                ' giver, added_at) VALUES(?,?,?,?,?,?,?,?,?) '
+                'ON CONFLICT(match_id,market,conds) DO UPDATE SET '
+                'league=excluded.league,label=excluded.label,'
+                'ou_line=excluded.ou_line,hc=excluded.hc,giver=excluded.giver,'
+                'added_at=excluded.added_at', v)
+            if key not in have or have[key] != v[3]:
                 acts.append('88W新增')
-        for mkt, conds in have - now_keys:
+            else:
+                acts.append('88W保留')
+        for mkt, conds in have.keys() - now_keys:
             conn.execute(
                 'DELETE FROM w88_log WHERE match_id=? AND market=? '
                 'AND conds=? AND result IS NULL', (mid, mkt, conds))
@@ -1458,14 +1465,20 @@ def _eval_all(conn, ctx, light=False):
     try:
         import newjx_engine
         v = newjx_engine.eval_match(conn, mid)
-        row = conn.execute('SELECT result FROM newjx_log WHERE match_id=?',
+        row = conn.execute('SELECT dir, result FROM newjx_log WHERE match_id=?',
                            (mid,)).fetchone()
         if v:
-            if not row:
-                conn.execute('INSERT OR IGNORE INTO newjx_log '
-                             'VALUES(?,?,?,?,?,?,?,?,?)', v + (None, None))
+            conn.execute(
+                'INSERT INTO newjx_log VALUES(?,?,?,?,?,?,?,?,?) '
+                'ON CONFLICT(match_id) DO UPDATE SET league=excluded.league,'
+                'dir=excluded.dir,conds=excluded.conds,hc=excluded.hc,'
+                'giver=excluded.giver,added_at=excluded.added_at',
+                v + (None, None))
+            if not row or row[0] != v[2]:
                 acts.append('新精選新增')
-        elif row and row[0] is None:
+            else:
+                acts.append('新精選保留')
+        elif row and row[1] is None:
             conn.execute('DELETE FROM newjx_log WHERE match_id=?', (mid,))
             acts.append('新精選移出')
     except sqlite3.OperationalError:
@@ -1477,21 +1490,28 @@ def _eval_all(conn, ctx, light=False):
     try:
         import fw8x
         got = fw8x.eval_match(conn, mid)
-        row = conn.execute('SELECT result FROM fw8x_log WHERE match_id=?',
+        row = conn.execute('SELECT direction, result FROM fw8x_log WHERE match_id=?',
                            (mid,)).fetchone()
         if got:
-            if not row:
-                info, f = got
-                conn.execute(
-                    'INSERT OR IGNORE INTO fw8x_log VALUES(?,?,?,?,?,?,?,?,?,'
-                    '?,?,?,?,?,?,?)',
-                    (mid, info['kickoff'], info['league'], info['home'],
-                     info['away'], f['dir'], json.dumps(
-                         f['preds'], ensure_ascii=False),
-                     f.get('hit'), f.get('n'), info['hc'], info['gv'],
-                     info['cho'], info['cao'], time.time(), None, 0))
+            info, f = got
+            conn.execute(
+                'INSERT INTO fw8x_log VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) '
+                'ON CONFLICT(match_id) DO UPDATE SET kickoff=excluded.kickoff,'
+                'league=excluded.league,home=excluded.home,away=excluded.away,'
+                'direction=excluded.direction,preds=excluded.preds,'
+                'hit_back=excluded.hit_back,n_back=excluded.n_back,'
+                'line_h=excluded.line_h,giver=excluded.giver,upw=excluded.upw,'
+                'dnw=excluded.dnw,created_ts=excluded.created_ts',
+                (mid, info['kickoff'], info['league'], info['home'],
+                 info['away'], f['dir'], json.dumps(
+                     f['preds'], ensure_ascii=False),
+                 f.get('hit'), f.get('n'), info['hc'], info['gv'],
+                 info['cho'], info['cao'], time.time(), None, 0))
+            if not row or row[0] != f['dir']:
                 acts.append('8X新增')
-        elif row and row[0] is None:
+            else:
+                acts.append('8X保留')
+        elif row and row[1] is None:
             conn.execute('DELETE FROM fw8x_log WHERE match_id=?', (mid,))
             acts.append('8X移出')
     except sqlite3.OperationalError:
