@@ -247,7 +247,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.7.4'
+SERVER_VERSION = '5.7.5'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -9948,7 +9948,14 @@ def api_fw8s_bt():
     bt_path = os.path.join(os.path.dirname(os.path.abspath(DB_PATH)),
                            'fw8s_bt.db')
     if not os.path.exists(bt_path):
-        return {'ok': False, 'error': '未找到 fw8s_bt.db——先喺本機跑 fw8s_backtest.py'}
+        summary_path = os.path.join(BASE_DIR, 'fw8s_bt_summary.json')
+        if os.path.exists(summary_path):
+            with open(summary_path, encoding='utf-8') as f:
+                data = json.load(f)
+            _FW8S_BT_CACHE['data'] = data
+            _FW8S_BT_CACHE['ts'] = now
+            return data
+        return {'ok': False, 'error': '未找到 fw8s_bt.db 或摘要——先喺本機跑 fw8s_backtest.py'}
     bt = sqlite3.connect('file:%s?mode=ro' % bt_path, uri=True, timeout=10)
     try:
         rows = bt.execute(
