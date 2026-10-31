@@ -3,12 +3,13 @@
 
 順序執行：
   P1  featured 家族逐場重評：featured / featured_z / v1_featured / v1_featured_z /
-      v3_featured（精選W、精選7、精選12 等）——合資格加入、唔合資格踢走（已完場都重評）
-  P1b fw_grid_featured 格 7/8/12/8s：只重評受影響場次（補數觸及 + 原有入選）
-  P2  新精選：清 '2026回查' 列 → newjx_backfill 全年重查
-  P3  88W：清 '2026回查' 列 → w88_backfill 全年重查
+      v3_featured（精選W、精選7、精選12 等）——合資格加入，未結算唔合資格先移走
+  P1b fw_grid_featured 格 7/8/12/8s：預設重評受影響場次；--full 全部完場
+  P2  新精選：保留原有記錄，newjx_backfill 回查並重結算受變動記錄
+  P3  88W：保留原有記錄，w88_backfill 回查並重結算受變動記錄
+  已結算記錄即使重評唔合格都保留作歷史，唔再刪除。
   P4  精選8s 回測庫：fw8s_backtest.py --reset 全量重建（另一個 db，唔阻主庫）
-  P5  8X 回測庫：tools/fw8x_backtest_2026.py 全量重建
+  P5  8X 回測庫：預設 2026 專用表；--full 另寫全歷史表，兩者唔混算
   P6  對比報告：各表重算前後計數＋命中率變化 → 重算對比報告_<日期>.md
 
 進度寫 logs/requalify_state.json 俾 app 掣輪詢。
@@ -28,7 +29,9 @@ import traceback
 WS = os.path.dirname(os.path.abspath(__file__))          # screen_app/
 BASE = os.path.dirname(WS)                                # 工作區根
 DB = os.environ.get('DB_PATH') or os.path.join(BASE, 'football.db')
-STATE = os.path.join(BASE, 'logs', 'requalify_state.json')
+STATE = os.environ.get('REQUALIFY_STATE') or os.path.join(
+    BASE, 'logs', 'requalify_state.json')
+REPORT_DIR = os.environ.get('REQUALIFY_REPORT_DIR') or BASE
 TODAY = time.strftime('%Y%m%d')
 
 sys.path.insert(0, WS)
@@ -52,14 +55,16 @@ def state(**kw):
     d = {}
     if os.path.exists(STATE):
         try:
-            d = json.load(open(STATE, encoding='utf-8'))
+            with open(STATE, encoding='utf-8') as fp:
+                d = json.load(fp)
         except Exception:
             pass
     d.update(kw)
     d['updated'] = time.strftime('%Y-%m-%d %H:%M:%S')
     os.makedirs(os.path.dirname(STATE), exist_ok=True)
     tmp = STATE + '.tmp'
-    json.dump(d, open(tmp, 'w', encoding='utf-8'), ensure_ascii=False)
+    with open(tmp, 'w', encoding='utf-8') as fp:
+        json.dump(d, fp, ensure_ascii=False)
     os.replace(tmp, STATE)
     return d
 
@@ -142,6 +147,33 @@ def _tgt_pick_line(conn, t, mid):
     return _pick_line(conn, mid)
 
 
+def _resettle_pick(conn, table, mid, grid=None):
+    """重評後按新方向及落注盤重結算，保留該歷史記錄。"""
+    try:
+        from .fw8x import pick_result
+    except ImportError:
+        from fw8x import pick_result
+    key = 'grid=? AND match_id=?' if grid is not None else 'match_id=?'
+    args = (grid, mid) if grid is not None else (mid,)
+    row = conn.execute(
+        'SELECT t.direction,t.hc,t.giver,m.home_score,m.away_score,t.result '
+        'FROM %s t JOIN matches m ON m.id=t.match_id WHERE %s' % (table, key),
+        args).fetchone()
+    if not row:
+        return False
+    direction, hc, giver, hs, aws, old = row
+    result = pick_result(hc, giver, hs, aws)
+    if result is None:
+        return False
+    result = ('P' if result == 'P' else
+              ('W' if (result == 'A') == (direction == 'up') else 'L'))
+    if direction not in ('up', 'down') or result == old:
+        return False
+    conn.execute('UPDATE %s SET result=?,settled_at=? WHERE %s' % (table, key),
+                 (result, time.strftime('%Y-%m-%d %H:%M:%S')) + args)
+    return True
+
+
 # ---------------- P1 featured 家族逐場重評 ----------------
 def phase_p1(limit=None):
     import screen_engine
@@ -152,18 +184,13 @@ def phase_p1(limit=None):
     _migrate_pick_line_cols(conn)
     v2_engine.load_v2_pool(conn)
     v3_engine.load_v3_pool(conn)
-    # 重評範圍（準確性×可行性平衡，2026-10-21 實測全庫逐場要 25 小時）：
-    #   (a) 五個 featured 表現有入選列嘅場次（要檢查踢走）
-    #   (b) 補數新攞到 asian 嘅場次（crawl16_state asian='ok'，要檢查加入）
-    #   --full 先會全庫 45,271 場逐場（人口池變動理論上影響全部，但 1.4%
-    #   新增人口實務上極少拗方向；要最嚴謹就用 --full）
+    # 日常預設只重評現有入選及補數場次；--full 重評全部有 closing 亞盤嘅完場記錄。
     if '--full' in sys.argv:
         sql = ("SELECT m.id FROM matches m "
                "JOIN odds_asian oc ON oc.match_id=m.id "
                "AND oc.label='closing' AND oc.company_id=12 "
                "AND oc.handicap IS NOT NULL "
-               "WHERE m.home_score IS NOT NULL AND m.kickoff>='2024-01-01' "
-               "ORDER BY m.kickoff")
+               "WHERE m.home_score IS NOT NULL ORDER BY m.kickoff")
         rows = [r[0] for r in conn.execute(sql).fetchall()]
     else:
         ids = set()
@@ -214,7 +241,7 @@ def phase_p1(limit=None):
                     'giver=excluded.giver',
                     (mid, d, meta, now, phc, pgv))
                 acted = True
-            elif row:
+            elif row and row[0] is None:
                 conn.execute('DELETE FROM featured WHERE match_id=?', (mid,))
                 st['out'] += 1
                 acted = True
@@ -229,7 +256,7 @@ def phase_p1(limit=None):
                     'giver=excluded.giver',
                     (mid, dz, meta, now, phc, pgv))
                 acted = True
-            elif rowz:
+            elif rowz and rowz[0] is None:
                 conn.execute('DELETE FROM featured_z WHERE match_id=?', (mid,))
                 st['out'] += 1
                 acted = True
@@ -244,7 +271,7 @@ def phase_p1(limit=None):
                     'hc=excluded.hc, giver=excluded.giver',
                     (mid, d, now, phc, pgv))
                 acted = True
-            elif row:
+            elif row and row[0] is None:
                 conn.execute('DELETE FROM v1_featured WHERE match_id=?', (mid,))
                 st['out'] += 1
                 acted = True
@@ -258,7 +285,7 @@ def phase_p1(limit=None):
                     'hc=excluded.hc, giver=excluded.giver',
                     (mid, dz, now, phc, pgv))
                 acted = True
-            elif rowz:
+            elif rowz and rowz[0] is None:
                 conn.execute('DELETE FROM v1_featured_z WHERE match_id=?', (mid,))
                 st['out'] += 1
                 acted = True
@@ -276,11 +303,14 @@ def phase_p1(limit=None):
                     'giver=excluded.giver',
                     (mid, fw['direction'], det, now, phc, pgv))
                 acted = True
-            elif row:
+            elif row and row[0] is None:
                 conn.execute('DELETE FROM v3_featured WHERE match_id=?', (mid,))
                 st['out'] += 1
                 acted = True
             if acted:
+                for table in ('featured', 'featured_z', 'v1_featured',
+                              'v1_featured_z', 'v3_featured'):
+                    _resettle_pick(conn, table, mid)
                 st['in'] += 1
         except Exception:
             st['err'] += 1
@@ -305,18 +335,25 @@ def phase_p1b(limit=None):
     conn = sqlite3.connect(DB, timeout=180)
     conn.execute('PRAGMA busy_timeout=180000')
     _migrate_pick_line_cols(conn)
-    # 受影響 = 補數觸及（crawl16 asian 成功）+ 原有入選格（+雲端：近期窗口）
-    try:
-        affected = set(r[0] for r in conn.execute(
-            "SELECT match_id FROM crawl16_state WHERE asian='ok'"))
-    except sqlite3.OperationalError:
+    if '--full' in sys.argv:
+        affected = [r[0] for r in conn.execute(
+            'SELECT m.id FROM matches m JOIN odds_asian oc ON oc.match_id=m.id '
+            "AND oc.label='closing' AND oc.company_id=12 "
+            'AND oc.handicap IS NOT NULL WHERE m.home_score IS NOT NULL '
+            'ORDER BY m.kickoff')]
+    else:
         affected = set()
-    for g in ('7', '8', '12', '8s'):
-        affected.update(r[0] for r in conn.execute(
-            'SELECT match_id FROM fw_grid_featured WHERE grid=?', (g,)))
-    if CLOUD:
-        affected.update(r[0] for r in conn.execute(RECENT_WINDOW_SQL))
-    affected = sorted(affected)
+        try:
+            affected.update(r[0] for r in conn.execute(
+                "SELECT match_id FROM crawl16_state WHERE asian='ok'"))
+        except sqlite3.OperationalError:
+            pass
+        for g in ('7', '8', '12', '8s'):
+            affected.update(r[0] for r in conn.execute(
+                'SELECT match_id FROM fw_grid_featured WHERE grid=?', (g,)))
+        if CLOUD:
+            affected.update(r[0] for r in conn.execute(RECENT_WINDOW_SQL))
+        affected = sorted(affected)
     if limit:
         affected = affected[:limit]
     total = len(affected)
@@ -345,8 +382,9 @@ def phase_p1b(limit=None):
                         'direction=excluded.direction, detail=excluded.detail, '
                         'hc=excluded.hc, giver=excluded.giver',
                         (g, mid, rep['direction'], meta, now, phc, pgv))
+                    _resettle_pick(conn, 'fw_grid_featured', mid, g)
                     st['in'] += 1
-                elif row:
+                elif row and row[0] is None:
                     conn.execute(
                         'DELETE FROM fw_grid_featured WHERE grid=? AND match_id=?',
                         (g, mid))
@@ -366,53 +404,56 @@ def phase_p1b(limit=None):
 
 # ---------------- P2/P3 新精選 / 88W 全年重查 ----------------
 def _backfill(script, table, tag):
-    conn = sqlite3.connect(DB, timeout=180)
-    n = conn.execute("DELETE FROM %s WHERE added_at='%s'" % (table, tag)).rowcount
-    conn.commit()
-    conn.close()
-    print('[%s] 清走舊回查 %d 列' % (table, n), flush=True)
-    r = subprocess.run([sys.executable, os.path.join(WS, script)],
-                       cwd=WS, capture_output=True, text=True)
+    cmd = [sys.executable, os.path.join(WS, script)]
+    if '--full' in sys.argv:
+        cmd.append('--full')
+    r = subprocess.run(cmd, cwd=WS, capture_output=True, text=True,
+                       encoding='utf-8', errors='replace')
     out = (r.stdout or '')[-1500:]
     print(out, flush=True)
     if r.returncode != 0:
-        # stderr 可以係 None（子進程異常死亡），舊版直接 [-1500:] 會
-        # TypeError 冧成全個重算中途停低（2026-10-21 實跑中招）
         print((r.stderr or '')[-1500:], flush=True)
     state(**{script + '_rc': r.returncode})
+    return r.returncode
 
 
 def phase_p2():
     state(phase='P2')
-    _backfill('newjx_backfill.py', 'newjx_log', '2026回查')
+    return _backfill('newjx_backfill.py', 'newjx_log', '2026回查')
 
 
 def phase_p3():
     state(phase='P3')
-    _backfill('w88_backfill.py', 'w88_log', '2026回查')
+    return _backfill('w88_backfill.py', 'w88_log', '2026回查')
 
 
 # ---------------- P4/P5 回測庫重建 ----------------
 def phase_p4():
     state(phase='P4', note='fw8s_bt 全量重建中（獨立庫，約1-3小時）')
     r = subprocess.run([sys.executable, os.path.join(WS, 'fw8s_backtest.py'),
-                        '--reset'], cwd=WS, capture_output=True, text=True)
+                        '--reset'], cwd=WS, capture_output=True, text=True,
+                       encoding='utf-8', errors='replace')
     print((r.stdout or '')[-800:], flush=True)
     state(p4_rc=r.returncode)
     if r.returncode != 0:
         print((r.stderr or '')[-1500:], flush=True)
+    return r.returncode
 
 
 def phase_p5():
-    state(phase='P5', note='fw8x_bt2026 全量重建中')
-    r = subprocess.run([sys.executable,
-                        os.path.join(BASE, 'tools', 'fw8x_backtest_2026.py')],
-                       cwd=os.path.join(BASE, 'tools'),
-                       capture_output=True, text=True)
+    full = '--full' in sys.argv
+    state(phase='P5', note='fw8x 全歷史重建中' if full else 'fw8x_bt2026 重建中')
+    cmd = [sys.executable, os.path.join(BASE, 'tools', 'fw8x_backtest_2026.py')]
+    if full:
+        cmd.append('--full')
+    r = subprocess.run(cmd, cwd=os.path.join(BASE, 'tools'),
+                       capture_output=True, text=True,
+                       encoding='utf-8', errors='replace')
     print((r.stdout or '')[-800:], flush=True)
     state(p5_rc=r.returncode)
     if r.returncode != 0:
         print((r.stderr or '')[-1500:], flush=True)
+    return r.returncode
 
 
 # ---------------- P6 對比報告 ----------------
@@ -429,22 +470,30 @@ def phase_p6(before):
             after['hit'][t] = {'W': w, 'L': l, 'P': p}
         except Exception:
             pass
-    conn.close()
-    # fw8s_bt / fw8x_bt2026 統計（獨立庫/主庫）
-    bt_stat = {}
+    table = 'fw8x_bt_all' if '--full' in sys.argv else 'fw8x_bt2026'
     try:
-        b = sqlite3.connect(os.path.join(BASE, 'fw8s_bt.db'), timeout=60)
-        n = b.execute('SELECT COUNT(*) FROM fw8s_bt').fetchone()[0]
-        w = b.execute("SELECT COUNT(*) FROM fw8s_bt WHERE res='W'").fetchone()[0]
-        l = b.execute("SELECT COUNT(*) FROM fw8s_bt WHERE res='L'").fetchone()[0]
-        bt_stat['fw8s_bt'] = {'n': n, 'W': w, 'L': l}
+        bt_stat = {'fw8x': dict(zip(('n', 'W', 'L', 'P'), conn.execute(
+            'SELECT COUNT(*),SUM(result="W"),SUM(result="L"),SUM(result="P") '
+            'FROM %s' % table).fetchone()))}
+    finally:
+        conn.close()
+    bt_path = os.environ.get('FW8S_BT_DB_PATH') or os.path.join(BASE, 'fw8s_bt.db')
+    try:
+        b = sqlite3.connect(bt_path, timeout=60)
+        row = b.execute(
+            'SELECT COUNT(*),SUM(direction IS NOT NULL),'
+            'SUM(direction IS NOT NULL AND res<>"P" AND '
+            '((res="A" AND direction="up") OR (res="B" AND direction="down"))),'
+            'SUM(direction IS NOT NULL AND res="P") FROM fw8s_bt').fetchone()
+        n, selected, w, p = row
+        bt_stat['fw8s_bt'] = {'n': n, 'selected': selected or 0,
+                              'W': w or 0, 'L': (selected or 0) - (w or 0) - (p or 0),
+                              'P': p or 0}
         b.close()
     except Exception as e:
+        if not CLOUD:
+            raise
         bt_stat['fw8s_bt'] = str(e)
-    try:
-        n = conn.execute('SELECT COUNT(*) FROM fw8x_bt2026').fetchone()[0] if False else None
-    except Exception:
-        pass
     lines = ['# 重算對比報告（%s）' % time.strftime('%Y-%m-%d %H:%M'), '',
              '## 各表入選場數（前 → 後）', '',
              '| 表 | 重算前 | 重算後 |', '|---|---|---|']
@@ -457,9 +506,11 @@ def phase_p6(before):
                      % (t, before['hit'][t], after['hit'].get(t, '?')))
     lines += ['', '## 回測庫（重建後）', '', '```json',
               json.dumps(bt_stat, ensure_ascii=False), '```']
-    path = os.path.join(BASE, '重算對比報告_%s.md' % TODAY)
-    open(path, 'w', encoding='utf-8').write('\n'.join(lines))
-    state(phase='DONE', report=path)
+    os.makedirs(REPORT_DIR, exist_ok=True)
+    path = os.path.join(REPORT_DIR, '重算對比報告_%s.md' % TODAY)
+    with open(path, 'w', encoding='utf-8') as fp:
+        fp.write('\n'.join(lines))
+    state(phase='P6', report=path)
     print('報告：' + path, flush=True)
 
 
@@ -475,39 +526,55 @@ def main():
     state(status='running', phase='START', error=None,
           mode=('cloud' if CLOUD else 'local'),
           before=json.dumps(before, ensure_ascii=False))
-    todo = [p for p in PHASES if only is None or p == only or (only == 'P1' and p == 'P1b' and False)]
+    failures = []
+    partial = bool(CLOUD and only in (None, 'P4', 'P5'))
     try:
         if only in (None, 'P1'):
             print('P1 featured 家族逐場重評…', flush=True)
             st = phase_p1(limit)
             print('P1 完成', st, flush=True)
+            if st.get('err'):
+                failures.append({'phase': 'P1', 'errors': st['err']})
         if only in (None, 'P1b'):
             print('P1b 格 7/8/12/8s 重評…', flush=True)
             st = phase_p1b(limit)
             print('P1b 完成', st, flush=True)
+            if st.get('err'):
+                failures.append({'phase': 'P1b', 'errors': st['err']})
         if only in (None, 'P2'):
-            phase_p2()
+            rc = phase_p2()
+            if rc:
+                failures.append({'phase': 'P2', 'rc': rc})
         if only in (None, 'P3'):
-            phase_p3()
+            rc = phase_p3()
+            if rc:
+                failures.append({'phase': 'P3', 'rc': rc})
         if only in (None, 'P4'):
             if CLOUD:
                 print('雲端模式：跳過 P4（fw8s_bt 全量重建要1-3小時，留俾本機）',
                       flush=True)
             else:
-                phase_p4()
+                rc = phase_p4()
+                if rc:
+                    failures.append({'phase': 'P4', 'rc': rc})
         if only in (None, 'P5'):
             if CLOUD:
                 print('雲端模式：跳過 P5（8X 回測庫重建留俾本機）', flush=True)
             else:
-                phase_p5()
+                rc = phase_p5()
+                if rc:
+                    failures.append({'phase': 'P5', 'rc': rc})
         if only in (None, 'P6'):
             phase_p6(before)
     except Exception:
         traceback.print_exc()
         state(status='error', error=traceback.format_exc(limit=3))
-        return
-    if only is None:
-        state(status='done', phase='DONE')
+        raise SystemExit(1)
+    if failures:
+        state(status='error', error='有階段未成功', failures=failures)
+        raise SystemExit(1)
+    state(status='partial' if partial else 'done', phase='DONE',
+          skipped=(['P4', 'P5'] if partial else []))
 
 
 if __name__ == '__main__':

@@ -247,28 +247,33 @@ def _lg_filter(methods):
     return 'AND (' + cond + ')', tuple(k + '%' for k in lgs)
 
 
-def scan(hours=48):
-    """未來 hours 小時已排程場次＋近 7 日已完場場次，逐場評方法。
-
-    回傳 {'upcoming': [...], 'played': [...], 'stats': {...}}；
-    played 卡多帶 half_home/half_away/home_score/away_score/cell/settle。
-    """
+def scan(hours=48, played_from=None, played_to=None, include_upcoming=True,
+         progress=None):
+    """按開賽時間評方法；played_from/to 可指定歷史範圍，預設近7日。
+    hours=None 代表全部未開賽；progress(done,total,row,status) 回報真實進度。"""
     methods, meta = load_methods()
     lg_sql, lg_args = _lg_filter(methods)
     conn = sqlite3.connect(DB, timeout=60)
     try:
-        up_rows = conn.execute(
-            'SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc '
-            'FROM matches m '
-            'JOIN seasons s ON s.id=m.season_id '
-            'JOIN competitions c ON c.titan_id=s.titan_id '
-            'JOIN teams ht ON ht.titan_id=m.home_id '
-            'JOIN teams at ON at.titan_id=m.away_id '
-            'WHERE m.home_score IS NULL '
-            "AND m.kickoff > datetime('now','+8 hours') "
-            "AND m.kickoff <= datetime('now','+8 hours', ?) " + lg_sql +
-            ' ORDER BY m.kickoff', ('+%d hours' % hours,) + lg_args).fetchall()
-        played_rows = conn.execute(
+        up_rows = []
+        if include_upcoming:
+            up_sql = (
+                'SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc '
+                'FROM matches m '
+                'JOIN seasons s ON s.id=m.season_id '
+                'JOIN competitions c ON c.titan_id=s.titan_id '
+                'JOIN teams ht ON ht.titan_id=m.home_id '
+                'JOIN teams at ON at.titan_id=m.away_id '
+                'WHERE m.home_score IS NULL '
+                "AND m.kickoff > datetime('now','+8 hours') ")
+            up_args = []
+            if hours is not None:
+                up_sql += "AND m.kickoff <= datetime('now','+8 hours', ?) "
+                up_args.append('+%d hours' % hours)
+            up_rows = conn.execute(
+                up_sql + lg_sql + ' ORDER BY m.kickoff',
+                tuple(up_args) + lg_args).fetchall()
+        played_sql = (
             'SELECT m.id, m.kickoff, c.req_name, ht.name_tc, at.name_tc, '
             'm.half_home, m.half_away, m.home_score, m.away_score '
             'FROM matches m '
@@ -276,15 +281,36 @@ def scan(hours=48):
             'JOIN competitions c ON c.titan_id=s.titan_id '
             'JOIN teams ht ON ht.titan_id=m.home_id '
             'JOIN teams at ON at.titan_id=m.away_id '
-            'WHERE m.home_score IS NOT NULL '
-            "AND m.kickoff >= datetime('now','+8 hours', ?) "
-            "AND m.kickoff < datetime('now','+8 hours') " + lg_sql +
-            ' ORDER BY m.kickoff DESC', ('-%d days' % PLAYED_DAYS,) + lg_args).fetchall()
+            'WHERE m.home_score IS NOT NULL ')
+        played_args = []
+        if played_from is None and played_to is None:
+            played_sql += "AND m.kickoff >= datetime('now','+8 hours', ?) "
+            played_args.append('-%d days' % PLAYED_DAYS)
+        else:
+            if played_from is not None:
+                played_sql += 'AND m.kickoff >= ? '
+                played_args.append(played_from)
+            if played_to is not None:
+                played_sql += 'AND m.kickoff < ? '
+                played_args.append(played_to)
+            else:
+                played_sql += "AND m.kickoff < datetime('now','+8 hours') "
+        played_sql += lg_sql + ' ORDER BY m.kickoff DESC'
+        played_rows = conn.execute(played_sql, tuple(played_args) + lg_args).fetchall()
         upcoming, played = [], []
-        w = l = 0
-        # 未開賽：逐場評；同一場多方法命中→按預計機會率（test_hit）高至低排，
-        # 最高嗰張標 predicted=True（「預計嗰一項」，2026-10-21 用戶要求）
+        w = l = errors = done = 0
+        total = len(up_rows) + len(played_rows)
         by_match = {}
+
+        def tick(row, status):
+            nonlocal done
+            done += 1
+            if progress:
+                try:
+                    progress(done, total, row, status)
+                except Exception:
+                    pass
+
         for row in up_rows:
             try:
                 snaps = snapshots(conn, row[0])
@@ -292,7 +318,10 @@ def scan(hours=48):
                 if hits:
                     by_match.setdefault(row[0], (row, []))[1].extend(hits)
             except Exception:
+                errors += 1
+                tick(row, '失敗')
                 continue
+            tick(row, '完成')
         for mid, (row, ms) in by_match.items():
             ms.sort(key=lambda m: -(m.get('test_hit') or 0))
             for j, m in enumerate(ms):
@@ -304,29 +333,30 @@ def scan(hours=48):
             try:
                 snaps = snapshots(conn, row[0])
                 hits, tail = eval_match(methods, row[2], snaps)
-                if not hits:
-                    continue
-                hh, ha, hs, aws = row[5], row[6], row[7], row[8]
-                c = cell(hh, ha, hs, aws)
-                for m in hits:
-                    card = build_card(row, m)
-                    card['half_home'] = hh
-                    card['half_away'] = ha
-                    card['home_score'] = hs
-                    card['away_score'] = aws
-                    card['cell'] = c
-                    st = '贏' if c in TARGETS[m['target']] else '輸'
-                    card['settle'] = st
-                    w += (st == '贏')
-                    l += (st == '輸')
-                    played.append(card)
+                if hits:
+                    hh, ha, hs, aws = row[5], row[6], row[7], row[8]
+                    c = cell(hh, ha, hs, aws)
+                    for m in hits:
+                        card = build_card(row, m)
+                        card['half_home'] = hh
+                        card['half_away'] = ha
+                        card['home_score'] = hs
+                        card['away_score'] = aws
+                        card['cell'] = c
+                        st = '贏' if c in TARGETS[m['target']] else '輸'
+                        card['settle'] = st
+                        w += (st == '贏')
+                        l += (st == '輸')
+                        played.append(card)
             except Exception:
+                errors += 1
+                tick(row, '失敗')
                 continue
-        stats = {'scanned': len(up_rows) + len(played_rows),
+            tick(row, '完成')
+        stats = {'scanned': total,
                  'upcoming': len(upcoming), 'played': len(played),
-                 'wins': w, 'losses': l,
+                 'wins': w, 'losses': l, 'errors': errors,
                  'hit_rate': (w / (w + l)) if (w + l) else None}
-        # 四項分佈（半場和局剔走）：全庫統計＋佔比最高項（2026-10-21）
         dist = {'HD': 0, 'HA': 0, 'AD': 0, 'AH': 0}
         tot = htnd = 0
         for hh, ha, hs, aws in conn.execute(

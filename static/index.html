@@ -40,7 +40,7 @@ a{color:var(--accent)}
 .gold-banner.bottom{bottom:0;border-top:2px solid #8a6d1a}
 /* ---- 頂部列 ---- */
 #topbar{
-  position:sticky; top:52px; z-index:40; margin:0 -10px;
+  position:sticky; top:52px; z-index:40; margin:0;
   background:var(--bg2); border-bottom:1px solid var(--line);
   display:flex; align-items:center; gap:8px; padding:6px 10px; flex-wrap:wrap;
 }
@@ -76,7 +76,7 @@ a{color:var(--accent)}
 .btn.gold{background:var(--gold); border-color:var(--gold); color:#3a2c05; font-weight:700}
 .btn:disabled{opacity:.45;cursor:default}
 .toolbar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin:8px 0}
-.toolbar select{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:14px}
+.toolbar select,.toolbar input{background:var(--card);color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:5px 8px;font-size:14px;max-width:100%}
 /* ---- 場次卡 ---- */
 .day-h{
   margin:14px 0 6px; padding:4px 10px; background:var(--bg2);
@@ -369,7 +369,6 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <button class="tab" data-pg="review">📋 事後回查</button>
     <button class="tab" data-pg="picks">🎯 我的選擇 <span id="pkCnt"></span></button>
     <button class="tab" data-pg="featlog">📜 過往紀錄</button>
-    <button class="tab" data-pg="feathourly">⏰ 每小時紀錄</button>
     <button class="tab" data-pg="oupred">📐 單場規律</button>
     <button class="tab" data-pg="ou">🎲 大小方法庫 <span id="ouCnt"></span></button>
     <button class="tab" data-pg="htftm">🧬 半全場方法 <span id="htftmCnt"></span></button>
@@ -386,20 +385,8 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   <!-- 主頁 -->
   <section class="pg on" id="pg-home">
     <div class="toolbar">
-      <select id="hoursSel">
-        <option value="24">未來24小時</option>
-        <option value="48" selected>未來48小時</option>
-        <option value="168">未來7天</option>
-        <option value="0">全部（不設上限）</option>
-      </select>
-      <button class="btn" id="btnReload">重新整理賽事</button>
-      <button class="btn" id="btnFetchAll" title="只係幫冇賠率嘅場次補爬（唔會重算資格）">補爬缺賠率場次</button>
-      <button class="btn gold" id="btnOddsNow" title="重爬最新讓球/大小/歐盤賠率（易胜博→皇冠後備）→ 自動重算 12 個工具資格（剔走唔合資格＋新加入）→ 結算 → 刷新工具頁。手機直爬模式：手機逐場核對，唔一致/缺失嘅場自動轉伺服器重抓＋重算（手機數據唔直接寫庫，本機為準）">⚡ 更新賠率＋重算資格</button>
-      <button class="btn gold" id="btnRegrab" title="重抓全部『缺盤口』缺口＋重算八個精選系統資格。同『更新賠率＋重算資格』分別：呢個補歷史缺口，嗰個更新現有盤">🔄 補缺口＋重算</button>
-      <button class="btn warn" id="btnUpdate">⟳ 更新賽事</button>
-      <button class="btn accent" id="btnWin24">⚡ 更新未來24</button>
-      <button class="btn accent" id="btnWin30">⚡ 更新未來30分鐘</button>
-      <button class="btn accent" id="btnWin10">⚡ 更新未來10分鐘</button>
+      <button class="btn gold" id="btnOddsNow" title="只更新未來48小時場次嘅盤口及賠率，不觸發重算">⚡ 更新賠率</button>
+      <button class="btn accent" id="btnRecalc" title="根據最後落庫盤口及賠率，重算所有工具未來48小時場次，不爬取">重算資格</button>
       <span class="hint" id="updInfo"></span>
     </div>
     <details id="workLogBox" open style="font-size:13px">
@@ -416,6 +403,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   <section class="pg" id="pg-featw">
     <div class="toolbar">
       <button class="btn accent" id="btnFwScan">🔍 重新掃描精選W</button>
+      <button class="btn tool-recompute" id="btnFwRecalc" data-tool="W">重算</button>
       <span class="hint" id="fwScanInfo"></span>
     </div>
     <div id="fwStats"></div>
@@ -435,6 +423,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   <section class="pg" id="pg-fw7">
     <div class="toolbar">
       <button class="btn accent" id="btnFw7Scan">🔍 重新掃描精選7</button>
+      <button class="btn tool-recompute" id="btnFw7Recalc" data-tool="F7">重算</button>
       <span class="hint" id="fw7ScanInfo"></span>
     </div>
     <div id="fw7Stats"></div>
@@ -443,6 +432,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   <section class="pg" id="pg-fw8">
     <div class="toolbar">
       <button class="btn accent" id="btnFw8Scan">🔍 重新掃描精選8</button>
+      <button class="btn tool-recompute" id="btnFw8Recalc" data-tool="F8">重算</button>
       <span class="hint" id="fw8ScanInfo"></span>
     </div>
     <div id="fw8Stats"></div>
@@ -451,6 +441,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   <section class="pg" id="pg-fw12">
     <div class="toolbar">
       <button class="btn accent" id="btnFw12Scan">🔍 重新掃描精選12</button>
+      <button class="btn tool-recompute" id="btnFw12Recalc" data-tool="F12">重算</button>
       <span class="hint" id="fw12ScanInfo"></span>
     </div>
     <div id="fw12Stats"></div>
@@ -494,6 +485,21 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <div class="toolbar">
       <span class="hint">精選W 一出現即自動紀錄（尾盤快照，永久保留，計一場）</span>
     </div>
+    <div class="toolbar" id="flFilters" aria-label="過往紀錄篩選及排序">
+      <label class="hint">賽事種類 <select id="flLeague"><option value="">全部賽事</option></select></label>
+      <label class="hint">由 <input type="date" id="flFrom" aria-label="開始日期"></label>
+      <label class="hint">至 <input type="date" id="flTo" aria-label="結束日期"></label>
+      <label class="hint">結果 <select id="flResult">
+        <option value="">全部結果</option><option value="W">命中</option>
+        <option value="L">不中</option><option value="P">走盤</option>
+        <option value="pending">未結算</option>
+      </select></label>
+      <label class="hint">日期排序 <select id="flSort">
+        <option value="desc">最新優先</option><option value="asc">最舊優先</option>
+      </select></label>
+      <button type="button" class="btn" id="flClear">清除篩選</button>
+      <span class="hint" id="flCount" aria-live="polite"></span>
+    </div>
     <div id="flStats"></div>
     <div id="flList"><div class="note">載入中…</div></div>
   </section>
@@ -505,15 +511,11 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <div id="opHist"><div class="note">載入中…</div></div>
   </section>
 
-  <!-- ⏰ 精選系列每小時自動紀錄 -->
-  <section class="pg" id="pg-feathourly">
-    <div id="fhBody"><div class="note">載入中…</div></div>
-  </section>
-
   <!-- 大小規則（分聯賽 O/U 規則版：規則命中先出手，已完場自動結算） -->
   <section class="pg" id="pg-ou">
     <div class="toolbar">
       <button class="btn accent" id="btnOuScan">🔍 重新掃描大小規則</button>
+      <button class="btn tool-recompute" id="btnOuRecalc" data-tool="OU">重算</button>
       <span class="hint" id="ouScanInfo"></span>
     </div>
     <div id="ouStats"></div>
@@ -524,6 +526,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   <section class="pg" id="pg-htftm">
     <div class="toolbar">
       <button class="btn accent" id="btnHtftmScan">🔍 重新掃描半全場方法</button>
+      <button class="btn tool-recompute" id="btnHtftmRecalc" data-tool="HTFT">重算</button>
       <span class="hint" id="htftmScanInfo"></span>
     </div>
     <div id="htftmStats"></div>
@@ -550,6 +553,8 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
     <div class="toolbar">
       <button class="btn accent" id="btnV1Scan">🔍 重新掃描 V1</button>
       <button class="btn accent" id="btnV2Scan">🔍 重新掃描 V2</button>
+      <button class="btn tool-recompute" id="btnV1Recalc" data-tool="V1">重算V1</button>
+      <button class="btn tool-recompute" id="btnV2Recalc" data-tool="V2">重算V2</button>
       <span class="hint" id="v1ScanInfo"></span>
     </div>
     <div class="day-h" style="background:#2a1a4a;border-left-color:#5b2ea6">⭐ Z 槽優先展示——V1Z／V2Z（同主隊字頭組合，獨立篩選獨立計命中；卡片有紫色「ⓩ Z 槽」標記）</div>
@@ -596,6 +601,7 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   <section class="pg" id="pg-x8">
     <div class="toolbar">
       <button class="btn accent" id="btnX8Scan">⟳ 重新整理（掃描＋結算）</button>
+      <button class="btn tool-recompute" id="btnX8Recalc" data-tool="X8">重算</button>
       <button class="btn" id="btnX8List">↻ 刷新列表</button>
       <span class="hint" id="x8Msg"></span>
     </div>
@@ -667,7 +673,8 @@ table.ck-table td.hl,table.ck-table tr.hl td{background:rgba(255,200,40,.30)}
   </div>
 </div>
 <script src="/static/phone_crawl.js?v=5.3.0"></script>
-<script src="/static/app.js?v=6.9.1"></script>
+<script src="/static/tool_results.js"></script>
+<script src="/static/app.js?v=6.9.4"></script>
 <script src="/static/crawlbtn.js?v=5.3.1"></script>
 </body>
 </html>

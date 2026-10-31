@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""擴充數據爬蟲：每場 15 項任務，支援暫停/繼續/停止與進度匯報。
+"""擴充數據爬蟲：每場 16 項任務，支援暫停/繼續/停止與進度匯報。
 
 每場任務（market）：
   ou            全場大小球七時點   vip changeDetail/overunder.aspx   易胜博(12)
@@ -18,7 +18,8 @@
   corners_stat  角球四項統計       bf.titan007.com/detail/{id}.htm
 
 香港馬會：主盤 line_idx=0；同場多盤（選擇2/3/4）逐條以 &l=1/2/3… 探取直至無數據。
-亞盤不是每場都有——無數據自動標記。半場賽果已存 matches half_home/half_away。
+亞盤不是每場都有——有效來源證明無盤才標無數據；網絡失敗保留待重試。
+半場賽果已存 matches half_home/half_away。
 
 控制：control.json {cmd: run|pause|stop}（GUI 寫入，引擎每個請求前讀取）
 狀態：status.json （引擎每 5 秒寫入，GUI 顯示；工作列標題同步）
@@ -26,6 +27,7 @@
 用法：
   python crawl_extra.py            正常續爬（補齊所有未完成任務）
   python crawl_extra.py --limit 3  只爬 3 場（測試）
+  python crawl_extra.py --reconcile-cloud  全庫對賬，重查 cloud_done 待辦
 """
 import datetime as dt
 import json
@@ -274,7 +276,7 @@ GOAL_TITLE_RE = re.compile(r"bf_img/\d+\.png' title='(入球|乌龙|点球)'")
 def _parse_live_goals_old(html):
     """舊版「详细事件」表：每列 5 格——主隊球員/主隊圖標/時間/客隊圖標/客隊球員，
     入球圖標喺主隊第2格或客隊第4格。無此表回傳 None；有表但無入球回傳 []。"""
-    mtab = re.search(r'<th[^>]*>\s*详细事件\s*</th>(.*?)</table>', html, re.S)
+    mtab = re.search(r'<th\b[^>]*>\s*详细事件\s*</th>(.*?)</table>', html, re.S)
     if not mtab:
         return None
     raw = []
@@ -282,7 +284,7 @@ def _parse_live_goals_old(html):
         cells = re.findall(r'<td[^>]*>(.*?)</td>', rowm.group(1), re.S)
         if len(cells) != 5:
             continue
-        mm = re.search(r'<b>\s*(\d+(?:\+\d+)?)\'?\s*</b>', cells[2])
+        mm = re.fullmatch(r"(\d+(?:\+\d+)?)'?", TAG_RE.sub('', cells[2]).strip())
         if not mm:
             continue
         minute = mm.group(1)
@@ -307,14 +309,34 @@ def task_goals(conn, fetcher, match_id, kickoff):
     """每場入球時間（第一球、第二球…）：live.titan007.com/detail/{id}cn.htm"""
     url = 'https://live.titan007.com/detail/%dcn.htm' % match_id
     html = fetcher.get(url, referer='https://live.titan007.com/')
-    if html is None:
+    if html is None or not html.strip():
         return False
     if html == 'NO_DATA':
         return 'NO_DATA'
     goals = parse_live_goals(html)
     if goals is None:
         return 'NO_DATA'
+    conn.execute('''CREATE TABLE IF NOT EXISTS match_goals_empty(
+        match_id INTEGER PRIMARY KEY, source TEXT, checked_at TEXT)''')
+    if not goals:
+        score = conn.execute(
+            'SELECT home_score,away_score FROM matches WHERE id=?',
+            (match_id,)).fetchone()
+        if not score or score[0] is None or score[1] is None or sum(score) > 0:
+            if score and score[0] is not None and score[1] is not None and sum(score) > 0:
+                conn.execute('DELETE FROM match_goals_empty WHERE match_id=?',
+                             (match_id,))
+                conn.commit()
+            return False
     conn.execute('DELETE FROM match_goals WHERE match_id=?', (match_id,))
+    if not goals:
+        conn.execute(
+            'INSERT OR REPLACE INTO match_goals_empty(match_id,source,checked_at) '
+            'VALUES(?,?,?)',
+            (match_id, 'live.titan007.com',
+             dt.datetime.now().isoformat(timespec='seconds')))
+    else:
+        conn.execute('DELETE FROM match_goals_empty WHERE match_id=?', (match_id,))
     for seq, (minute, period, side, gtype, player) in enumerate(goals, 1):
         conn.execute(
             'INSERT INTO match_goals(match_id,seq,minute,period,side,goal_type,'
@@ -348,13 +370,13 @@ def parse_1x2_html(html, kickoff):
 
 def parse_1x2d_js(text):
     """解析 1x2d.titan007.com/{id}.js。
-    回傳 (neutrality_or_None, [公司列...])；公司列 = 27 欄位 list。"""
+    回傳 (neutrality_or_None, [公司列...] 或 None)；公司列 = 27 欄位 list。"""
     m = re.search(r'neutrality="(\d)"', text)
     neutrality = int(m.group(1)) if m else None
     rows = []
     mg = re.search(r'game=Array\((.*?)\);', text, re.S)
     if not mg:
-        return neutrality, rows
+        return neutrality, None
     for item in re.findall(r'"((?:[^"\\]|\\.)*)"', mg.group(1)):
         f = item.split('|')
         rows.append(f)
@@ -444,6 +466,21 @@ def parse_bf_corners(html):
             out['ht_home'], out['ht_away'] = v1, v2
         else:
             out['ft_home'], out['ft_away'] = v1, v2
+    labels = {'角球', '角球次数', '角球次數', '半場角球', '半场角球',
+              '半場角球次数', '半场角球次数', '半場角球次數', '半场角球次數'}
+    for cells in rows_of(html):
+        for i, name in enumerate(cells):
+            if name not in labels or i == 0 or i + 1 >= len(cells):
+                continue
+            try:
+                v1, v2 = int(cells[i - 1]), int(cells[i + 1])
+            except ValueError:
+                continue
+            if '半' in name:
+                out['ht_home'], out['ht_away'] = v1, v2
+            else:
+                out['ft_home'], out['ft_away'] = v1, v2
+            break
     return out
 
 
@@ -845,16 +882,20 @@ def task_1x2all(conn, fetcher, match_id, kickoff):
     url = 'https://1x2d.titan007.com/%d.js' % match_id
     text = fetcher.get(url, encoding='utf-8-sig',
                        referer='https://1x2.titan007.com/')
-    if text is None:
+    if text is None or not text.strip():
         return False
     if text == 'NO_DATA' or len(text) < 200:
         return 'NO_DATA'
     neutrality, rows = parse_1x2d_js(text)
+    if rows is None:
+        return False
     if neutrality is not None:
         conn.execute('UPDATE matches SET is_neutral=? WHERE id=?',
                      (neutrality, match_id))
-    if rows:
-        save_1x2all(conn, match_id, rows)
+    if not rows:
+        return 'NO_DATA'
+    if save_1x2all(conn, match_id, rows) == 0:
+        return 'NO_DATA'
     conn.commit()
     return True
 
@@ -888,13 +929,21 @@ def task_asian(conn, fetcher, match_id, kickoff):
     """亞洲盤缺口補取：已有盤口（含曾確認無數據）的場次直接跳過，不發請求"""
     row = conn.execute('SELECT odds_done FROM matches WHERE id=?',
                        (match_id,)).fetchone()
-    if row and row[0] in (1, 2):
+    if row and row[0] == 1:
         return True
+    if row and row[0] == 2:
+        return 'NO_DATA'
     from crawler import crawl_odds_for_match
-    return crawl_odds_for_match(conn, fetcher, match_id,
-                                kickoff.strftime('%Y-%m-%d %H:%M'),
-                                COMPANY_12BET,
-                                fallback_company=COMPANY_CROWN)
+    result = crawl_odds_for_match(conn, fetcher, match_id,
+                                  kickoff.strftime('%Y-%m-%d %H:%M'),
+                                  COMPANY_12BET,
+                                  fallback_company=COMPANY_CROWN)
+    if result is True:
+        row = conn.execute('SELECT odds_done FROM matches WHERE id=?',
+                           (match_id,)).fetchone()
+        if row and row[0] == 2:
+            return 'NO_DATA'
+    return result
 
 
 TASK_FUNCS = {m: task_odds_page for m in
@@ -1029,7 +1078,8 @@ def enqueue_all(conn):
 # 1864 歐國聯、93 非洲盃、1964 中北美國家聯賽、114 歐青U21外圍賽——國家隊賽事首次收錄
 # 358 巴西乙、284 日乙(J2)、35 英格蘭乙組、240 烏拉圭甲（春/秋雙階段）——補回缺失季度
 BASE_LEAGUES = [178, 13, 436, 616, 774, 1029, 481, 1063, 1068, 1450, 520, 161,
-                1864, 93, 1964, 114, 358, 284, 35, 240, 72, 144]
+                1864, 93, 1964, 114, 358, 284, 35, 240, 72, 144,
+                83, 6, 153, 108, 224, 95, 192, 239]
 BASE_SEASONS_N = 7        # 每個聯賽補最近 7 個球季（之前6年+今年；杯賽季名如 2024-2025）
 # 指定聯賽額外補嘅舊季（list[:N] 唔夠位覆蓋嘅）：72 日聯杯要 2019 起；144 英錦標要 2019-2020 起
 BASE_EXTRA_SEASONS = {72: ['2019'], 144: ['2019-2020'],
@@ -1296,6 +1346,7 @@ def run(limit=None, only=None, threads_override=None, worker=1):
     write_control('run')
     cfg = json.load(open(os.path.join(BASE_DIR, 'config.json'), encoding='utf-8'))
     cfg.update(EXTRA_TUNE)
+    cfg['stop_on_rate_limit'] = True
     if threads_override:
         cfg['crawl_threads'] = threads_override
     main_lane = (worker == 1)
@@ -1394,6 +1445,38 @@ def _exec_retry(conn, sql, args=()):
     return None
 
 
+def _cloud_exclusion():
+    if '--reconcile-cloud' in sys.argv or os.environ.get('RECONCILE_CLOUD') == '1':
+        return ''
+    return ('AND NOT EXISTS(SELECT 1 FROM cloud_done cd WHERE '
+            'cd.match_id=t.match_id AND cd.market=t.market) ')
+
+
+def _record_failed_attempt(conn, fetcher, match_id, market, now):
+    if fetcher.last_outage:
+        _exec_retry(conn,
+                    'UPDATE extra_tasks SET status=0,updated_at=? '
+                    'WHERE match_id=? AND market=?', (now, match_id, market))
+        return
+    _exec_retry(conn,
+                'UPDATE extra_tasks SET status=0,attempts=attempts+1,'
+                'updated_at=? WHERE match_id=? AND market=?',
+                (now, match_id, market))
+    attrow = None
+    for _i in range(3):
+        try:
+            attrow = conn.execute(
+                'SELECT attempts FROM extra_tasks WHERE match_id=? '
+                'AND market=?', (match_id, market)).fetchone()
+            break
+        except sqlite3.OperationalError:
+            time.sleep(1)
+    att = attrow[0] if attrow else 0
+    if att >= 3:
+        log(conn, 'WARN', '場次%d %s 三次未取得，保留待重試而不標無數據'
+            % (match_id, market))
+
+
 def _claim_task(conn, only_sql, only_args, excl_sql, excl_args):
     """原子領任務：status 0→9（in-flight）。俾人搶咗就回 None 再搵下個。
     派序（2026-10-10 用戶定調）：attempts 插隊層 → 聯賽次序（_league_order，
@@ -1405,12 +1488,7 @@ def _claim_task(conn, only_sql, only_args, excl_sql, excl_args):
         try:
             row = conn.execute(
                 'SELECT match_id, market FROM extra_tasks t '
-                'WHERE status=0 ' + only_sql + excl_sql +
-                # 2026-10-12 分工：雲端節點（football-analysis/balltrend-api）
-                # 經佢哋自己 IP 爬咗嘅任務記喺 cloud_done——本機唔會重複爬
-                # （慳代理配額；手機 API 嗰邊已經即時有新數據）
-                'AND NOT EXISTS(SELECT 1 FROM cloud_done cd WHERE '
-                'cd.match_id=t.match_id AND cd.market=t.market) '
+                'WHERE status=0 ' + only_sql + excl_sql + _cloud_exclusion() +
                 'ORDER BY attempts, ord, season_label DESC, match_id DESC, '
                 'market_ord LIMIT 1',
                 only_args + excl_args).fetchone()
@@ -1463,8 +1541,9 @@ def _worker(cfg, only, only_key, wid, main_lane, t_start, n_start,
             # 唔阻住 alive 主機繼續做（舊版計全部 pending，誤入 waiting）
             try:
                 claimable = conn.execute(
-                    'SELECT COUNT(*) FROM extra_tasks WHERE status=0 ' +
-                    only_sql + excl_sql, only_args + excl_args).fetchone()[0]
+                    'SELECT COUNT(*) FROM extra_tasks t WHERE status=0 ' +
+                    only_sql + excl_sql + _cloud_exclusion(),
+                    only_args + excl_args).fetchone()[0]
             except sqlite3.OperationalError:
                 time.sleep(2)
                 continue
@@ -1543,10 +1622,12 @@ def _worker(cfg, only, only_key, wid, main_lane, t_start, n_start,
             continue
         if kickoff is None:
             conn.execute(
-                'UPDATE extra_tasks SET status=2,updated_at=? WHERE match_id=? '
-                'AND market=?',
+                'UPDATE extra_tasks SET status=0,attempts=attempts+1,updated_at=? '
+                'WHERE match_id=? AND market=?',
                 (dt.datetime.now().isoformat(), match_id, market))
             conn.commit()
+            log(conn, 'WARN', '場次%d %s 缺少開賽或賽事資料，保留待處理'
+                % (match_id, market))
             continue
 
         # 狀態匯報（worker 0 每 5 秒一次；I/O 抖動就跳過今次，唔死）
@@ -1598,35 +1679,7 @@ def _worker(cfg, only, only_key, wid, main_lane, t_start, n_start,
                         'updated_at=? WHERE match_id=? AND market=?',
                         (now, match_id, market))
         else:
-            if fetcher.last_outage:
-                # 主機斷線級別失敗：唔計次數、唔標無數據，
-                # status 打返 0 等冷卻期過後重派
-                _exec_retry(conn,
-                            'UPDATE extra_tasks SET status=0,updated_at=? '
-                            'WHERE match_id=? AND market=?',
-                            (now, match_id, market))
-            else:
-                _exec_retry(conn,
-                            'UPDATE extra_tasks SET status=0,attempts=attempts+1,'
-                            'updated_at=? WHERE match_id=? AND market=?',
-                            (now, match_id, market))
-                attrow = None
-                for _i in range(3):
-                    try:
-                        attrow = conn.execute(
-                            'SELECT attempts FROM extra_tasks WHERE match_id=? '
-                            'AND market=?', (match_id, market)).fetchone()
-                        break
-                    except sqlite3.OperationalError:
-                        time.sleep(1)
-                att = attrow[0] if attrow else 0
-                if att >= 3:
-                    _exec_retry(conn,
-                                'UPDATE extra_tasks SET status=2,updated_at=? '
-                                'WHERE match_id=? AND market=?',
-                                (now, match_id, market))
-                    log(conn, 'WARN', '場次%d %s 三次未取得，標記為無數據'
-                        % (match_id, market))
+            _record_failed_attempt(conn, fetcher, match_id, market, now)
 
         try:
             if only:

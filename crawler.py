@@ -58,6 +58,7 @@ def line_to_float(text):
     if not t:
         return None
     t = t.replace('受让', '受')          # 簡體頁用「受让」
+    t = t.replace('兩', '两')            # 2026-10-26：繁體保險（部分頁面/鏡像用繁體）
     recv = t.startswith('受') or t.startswith('*')
     if recv:
         t = t[1:]
@@ -73,10 +74,13 @@ def line_to_float(text):
         vals = []
         for p in parts:
             p = p.strip()
-            if p == '平手':
+            if p in ('平手', '平'):
                 vals.append(0.0)
                 continue
-            m = re.match(r'^([一二两三四五六七八九十])?(球半|半球|球)?$', p)
+            if p == '半':                  # 2026-10-26：『平/半』『半/一』嘅『半』part
+                vals.append(0.5)
+                continue
+            m = re.match(r'^([一二两兩三四五六七八九十])?(球半|半球|球)?$', p)
             if not m:
                 return None
             n = _CN_NUM.get(m.group(1), 0) if m.group(1) else 0
@@ -394,6 +398,25 @@ def _proxy_pool_path():
     return os.path.join(os.path.dirname(here), 'proxy_pool.json')
 
 
+def _response_encoding(response, encoding):
+    if (encoding or '').lower().replace('_', '-') not in (
+            'utf-8', 'utf8', 'utf-8-sig'):
+        return encoding
+    raw = response.content
+    if raw.startswith((b'\xff\xfe', b'\xfe\xff')):
+        return 'utf-16'
+    if len(raw) >= 4 and len(raw) % 2 == 0:
+        for candidate, offset in (('utf-16-le', 1), ('utf-16-be', 0)):
+            pairs = raw[offset:4096:2]
+            if pairs and pairs.count(0) * 4 >= len(pairs):
+                return candidate
+    try:
+        raw.decode(encoding or 'utf-8')
+    except UnicodeDecodeError:
+        return 'gb18030'
+    return encoding
+
+
 def _chrome_get(url, headers=None, timeout=DIRECT_TIMEOUT, proxies=None,
                 session=None):
     """以 Chrome TLS 指紋抓取（curl_cffi impersonate=chrome）。
@@ -572,7 +595,7 @@ class Fetcher:
                 r = self.s.get(relay.format(q=q), timeout=RELAY_TIMEOUT)
                 if r.status_code != 200:
                     continue
-                r.encoding = encoding
+                r.encoding = _response_encoding(r, encoding)
                 t = r.text
                 # 中繼錯誤回應（如 522 錯誤頁）好短，當失敗
                 if len(t) < 50 and ('jsData' in url or 'titan007' in url):
@@ -582,13 +605,22 @@ class Fetcher:
                 continue
         return None
 
+    def _stop_batch(self, status):
+        if not self.cfg.get('stop_on_rate_limit'):
+            return
+        path = os.environ.get('CRAWL_CONTROL_FILE') or os.path.join(
+            ROOT_DIR, 'control.json')
+        with open(path, 'w', encoding='utf-8') as fp:
+            json.dump({'cmd': 'stop', 'ts': time.time(),
+                       'reason': 'HTTP %s' % status}, fp)
+        raise RuntimeError('來源限制 HTTP %s，已停止全批爬取' % status)
+
     def _check_page(self, text, url, is_odds_page):
         """統一頁面檢查；回傳 (結果, 是否異常短)。"""
         if is_odds_page and ('頁面不存在' in text or '页面不存在' in text):
             return 'NO_DATA', False
         if is_odds_page and not text.strip():
-            # 盤口頁空回應 = 該公司無此盤（如馬會半場盤），屬正常無數據
-            return 'NO_DATA', False
+            return None, True
         if len(text) < 50 and ('jsData' in url or 'vip.titan007' in url):
             return None, True
         return text, False
@@ -714,7 +746,7 @@ class Fetcher:
                 continue
             if r.status_code != 200:
                 continue
-            r.encoding = encoding
+            r.encoding = _response_encoding(r, encoding)
             out, short = self._check_page(r.text, url, is_odds_page)
             if out is None or short:
                 # 回應異常過短（疑似被封）→ 停 6 分鐘
@@ -864,12 +896,13 @@ class Fetcher:
             if r.status_code != 200:
                 log(self.conn, 'WARN', f'HTTP {r.status_code}：{url}')
                 if r.status_code in (403, 429, 442):
+                    self._stop_batch(r.status_code)
                     self._rest(self.cfg['rest_minutes'], f'疑似被封（HTTP {r.status_code}）')
                     continue
                 self._note_fail(host, f'HTTP {r.status_code}')
                 return None
             self._note_ok(host)
-            r.encoding = encoding
+            r.encoding = _response_encoding(r, encoding)
             text = r.text
             out, short = self._check_page(text, url, is_odds_page)
             if short:
@@ -1163,12 +1196,13 @@ def save_with_sub_leagues(conn, fetcher, titan_id, season_label, is_current,
                 or 'jh[' not in sub_text):
             continue
         try:
-            _, n2 = save_season(conn, titan_id, season_label, is_current,
-                                parse_season_js(sub_text))
-            n += n2
+            save_season(conn, titan_id, season_label, is_current,
+                        parse_season_js(sub_text))
         except Exception:
             log(conn, 'ERROR', f'子聯賽檔解析失敗 s{titan_id}_{sub} {season_label}\n'
                 + traceback.format_exc())
+    n = conn.execute('SELECT COUNT(*) FROM matches WHERE season_id=?',
+                     (season_id,)).fetchone()[0]
     return season_id, n
 
 

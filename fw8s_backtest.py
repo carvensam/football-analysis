@@ -112,10 +112,21 @@ def main():
     if '--limit' in sys.argv:
         limit = int(sys.argv[sys.argv.index('--limit') + 1])
     import v3_engine
-    conn = sqlite3.connect(se.DB_PATH, timeout=30)
+    db_path = os.environ.get('DB_PATH') or se.DB_PATH
+    conn = sqlite3.connect(db_path, timeout=30)
     # 結果寫獨立庫：football.db 俾爬蟲長寫鎖住都唔會影響回測落庫
-    bt_path = os.path.join(os.path.dirname(se.DB_PATH), 'fw8s_bt.db')
+    bt_path = os.environ.get('FW8S_BT_DB_PATH') or os.path.join(
+        os.path.dirname(db_path), 'fw8s_bt.db')
     bt = sqlite3.connect(bt_path, timeout=30)
+    try:
+        _run(conn, bt, limit, reset)
+    finally:
+        conn.close()
+        bt.close()
+
+
+def _run(conn, bt, limit, reset):
+    import v3_engine
     if reset:
         for a in range(30):
             try:
@@ -126,6 +137,8 @@ def main():
             except sqlite3.OperationalError:
                 print('[bt] 清空被鎖，等 10s（%d/30）' % a, flush=True)
                 time.sleep(10)
+        else:
+            raise RuntimeError('fw8s_bt 未能清空，停止而不標示全量完成')
     t0 = time.time()
     df = v3_engine.load_v3_pool(conn)
     print('[bt] pool %d 場，載入 %.0fs' % (len(df), time.time() - t0), flush=True)
@@ -241,11 +254,10 @@ def main():
             except sqlite3.OperationalError:
                 print('[bt] 寫入被鎖，等 8s（%d/4）' % attempt, flush=True)
                 time.sleep(8)
-        print('[bt] 警告：本批 %d 場寫唔入，跳過（下輪會補）' % len(batch), flush=True)
-        batch.clear()
+        raise RuntimeError('fw8s_bt 批次寫入失敗，已保留待續跑')
 
     batch = []
-    done = kept = 0
+    done = kept = errors = 0
     t2 = time.time()
     order = np.nonzero(has_res)[0]
     if limit:
@@ -328,20 +340,23 @@ def main():
                           str(res_s[k])))
             if direction:
                 kept += 1
-        except Exception:
-            pass
+        except Exception as exc:
+            errors += 1
+            print('[bt] 場次 %s 評估失敗：%r' % (mid, exc), flush=True)
         done += 1
         if done % 1500 == 0:
             _flush()
         if done % 5000 == 0:
             el = time.time() - t2
-            print('[bt] %d/%d，%.0f 場/秒，kept=%d' % (
-                done, len(order), done / max(el, 0.1), kept), flush=True)
+            print('[bt] %d/%d，%.0f 場/秒，kept=%d，errors=%d' % (
+                done, len(order), done / max(el, 0.1), kept, errors), flush=True)
     _flush()
-    print('[bt] 完成：評估 %d 場，有共識 %d 場，回測耗時 %.0fs' % (
-        done, kept, time.time() - t2), flush=True)
+    print('[bt] 評估 %d 場，有共識 %d 場，錯誤 %d 場，耗時 %.0fs' % (
+        done, kept, errors, time.time() - t2), flush=True)
     print('[bt] 總計 %.0fs' % (time.time() - t0), flush=True)
     bt.close()
+    if errors:
+        raise RuntimeError('fw8s_bt 有 %d 場失敗，不可標示完成' % errors)
 
 
 if __name__ == '__main__':

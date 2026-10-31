@@ -274,7 +274,7 @@ GOAL_TITLE_RE = re.compile(r"bf_img/\d+\.png' title='(入球|乌龙|点球)'")
 def _parse_live_goals_old(html):
     """舊版「详细事件」表：每列 5 格——主隊球員/主隊圖標/時間/客隊圖標/客隊球員，
     入球圖標喺主隊第2格或客隊第4格。無此表回傳 None；有表但無入球回傳 []。"""
-    mtab = re.search(r'<th[^>]*>\s*详细事件\s*</th>(.*?)</table>', html, re.S)
+    mtab = re.search(r'<th\b[^>]*>\s*详细事件\s*</th>(.*?)</table>', html, re.S)
     if not mtab:
         return None
     raw = []
@@ -282,7 +282,7 @@ def _parse_live_goals_old(html):
         cells = re.findall(r'<td[^>]*>(.*?)</td>', rowm.group(1), re.S)
         if len(cells) != 5:
             continue
-        mm = re.search(r'<b>\s*(\d+(?:\+\d+)?)\'?\s*</b>', cells[2])
+        mm = re.fullmatch(r"(\d+(?:\+\d+)?)'?", TAG_RE.sub('', cells[2]).strip())
         if not mm:
             continue
         minute = mm.group(1)
@@ -307,14 +307,34 @@ def task_goals(conn, fetcher, match_id, kickoff):
     """每場入球時間（第一球、第二球…）：live.titan007.com/detail/{id}cn.htm"""
     url = 'https://live.titan007.com/detail/%dcn.htm' % match_id
     html = fetcher.get(url, referer='https://live.titan007.com/')
-    if html is None:
+    if html is None or not html.strip():
         return False
     if html == 'NO_DATA':
         return 'NO_DATA'
     goals = parse_live_goals(html)
     if goals is None:
         return 'NO_DATA'
+    conn.execute('''CREATE TABLE IF NOT EXISTS match_goals_empty(
+        match_id INTEGER PRIMARY KEY, source TEXT, checked_at TEXT)''')
+    if not goals:
+        score = conn.execute(
+            'SELECT home_score,away_score FROM matches WHERE id=?',
+            (match_id,)).fetchone()
+        if not score or score[0] is None or score[1] is None or sum(score) > 0:
+            if score and score[0] is not None and score[1] is not None and sum(score) > 0:
+                conn.execute('DELETE FROM match_goals_empty WHERE match_id=?',
+                             (match_id,))
+                conn.commit()
+            return False
     conn.execute('DELETE FROM match_goals WHERE match_id=?', (match_id,))
+    if not goals:
+        conn.execute(
+            'INSERT OR REPLACE INTO match_goals_empty(match_id,source,checked_at) '
+            'VALUES(?,?,?)',
+            (match_id, 'live.titan007.com',
+             dt.datetime.now().isoformat(timespec='seconds')))
+    else:
+        conn.execute('DELETE FROM match_goals_empty WHERE match_id=?', (match_id,))
     for seq, (minute, period, side, gtype, player) in enumerate(goals, 1):
         conn.execute(
             'INSERT INTO match_goals(match_id,seq,minute,period,side,goal_type,'
@@ -348,13 +368,13 @@ def parse_1x2_html(html, kickoff):
 
 def parse_1x2d_js(text):
     """解析 1x2d.titan007.com/{id}.js。
-    回傳 (neutrality_or_None, [公司列...])；公司列 = 27 欄位 list。"""
+    回傳 (neutrality_or_None, [公司列...] 或 None)；公司列 = 27 欄位 list。"""
     m = re.search(r'neutrality="(\d)"', text)
     neutrality = int(m.group(1)) if m else None
     rows = []
     mg = re.search(r'game=Array\((.*?)\);', text, re.S)
     if not mg:
-        return neutrality, rows
+        return neutrality, None
     for item in re.findall(r'"((?:[^"\\]|\\.)*)"', mg.group(1)):
         f = item.split('|')
         rows.append(f)
@@ -444,6 +464,21 @@ def parse_bf_corners(html):
             out['ht_home'], out['ht_away'] = v1, v2
         else:
             out['ft_home'], out['ft_away'] = v1, v2
+    labels = {'角球', '角球次数', '角球次數', '半場角球', '半场角球',
+              '半場角球次数', '半场角球次数', '半場角球次數', '半场角球次數'}
+    for cells in rows_of(html):
+        for i, name in enumerate(cells):
+            if name not in labels or i == 0 or i + 1 >= len(cells):
+                continue
+            try:
+                v1, v2 = int(cells[i - 1]), int(cells[i + 1])
+            except ValueError:
+                continue
+            if '半' in name:
+                out['ht_home'], out['ht_away'] = v1, v2
+            else:
+                out['ft_home'], out['ft_away'] = v1, v2
+            break
     return out
 
 
@@ -841,16 +876,20 @@ def task_1x2all(conn, fetcher, match_id, kickoff):
     url = 'https://1x2d.titan007.com/%d.js' % match_id
     text = fetcher.get(url, encoding='utf-8-sig',
                        referer='https://1x2.titan007.com/')
-    if text is None:
+    if text is None or not text.strip():
         return False
     if text == 'NO_DATA' or len(text) < 200:
         return 'NO_DATA'
     neutrality, rows = parse_1x2d_js(text)
+    if rows is None:
+        return False
     if neutrality is not None:
         conn.execute('UPDATE matches SET is_neutral=? WHERE id=?',
                      (neutrality, match_id))
-    if rows:
-        save_1x2all(conn, match_id, rows)
+    if not rows:
+        return 'NO_DATA'
+    if save_1x2all(conn, match_id, rows) == 0:
+        return 'NO_DATA'
     conn.commit()
     return True
 
@@ -884,13 +923,21 @@ def task_asian(conn, fetcher, match_id, kickoff):
     """亞洲盤缺口補取：已有盤口（含曾確認無數據）的場次直接跳過，不發請求"""
     row = conn.execute('SELECT odds_done FROM matches WHERE id=?',
                        (match_id,)).fetchone()
-    if row and row[0] in (1, 2):
+    if row and row[0] == 1:
         return True
+    if row and row[0] == 2:
+        return 'NO_DATA'
     from crawler import crawl_odds_for_match
-    return crawl_odds_for_match(conn, fetcher, match_id,
-                                kickoff.strftime('%Y-%m-%d %H:%M'),
-                                COMPANY_12BET,
-                                fallback_company=COMPANY_CROWN)
+    result = crawl_odds_for_match(conn, fetcher, match_id,
+                                  kickoff.strftime('%Y-%m-%d %H:%M'),
+                                  COMPANY_12BET,
+                                  fallback_company=COMPANY_CROWN)
+    if result is True:
+        row = conn.execute('SELECT odds_done FROM matches WHERE id=?',
+                           (match_id,)).fetchone()
+        if row and row[0] == 2:
+            return 'NO_DATA'
+    return result
 
 
 TASK_FUNCS = {m: task_odds_page for m in

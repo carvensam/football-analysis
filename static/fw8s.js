@@ -297,10 +297,47 @@
     loadTab();
   });
   hoursSel.addEventListener('change', function () { fullCache = null; loadFull(false); });
-  $('#btnReload').addEventListener('click', function () {
-    toast('重新掃描中…先重抓盤口賠率，再重新篩選（約 30-70 秒）');
-    fullCache = null;
-    loadFull(true).then(function () { toast('已更新'); });
-  });
+  async function postJob(path, button) {
+    button.disabled = true;
+    try {
+      const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tool: 'F8S'})});
+      const d = await r.json();
+      if (d.error) { toast(d.error); button.disabled = false; return; }
+      pollJob(button);
+    } catch (e) {
+      toast('重算失敗：' + e.message);
+      button.disabled = false;
+    }
+  }
+  function pollJob(button) {
+    jfetch('/api/scan-status?kind=f8s').then(function (d) {
+      status.textContent = d.running
+        ? `重算中 ${d.done || 0}/${d.total || 0}…`
+        : (d.error ? '重算失敗：' + d.error : `完成：新增 ${d.added || 0}・結算 ${d.settled || 0}`);
+      if (d.running) { setTimeout(function () { pollJob(button); }, 2000); return; }
+      button.disabled = false;
+      fullCache = null;
+      loadFull(false);
+    }).catch(function (e) {
+      status.textContent = '狀態讀取失敗：' + e.message;
+      button.disabled = false;
+    });
+  }
+  $('#btnScan').addEventListener('click', function () { postJob('/api/tool/scan', this); });
+  $('#btnRecalc').addEventListener('click', function () { postJob('/api/tool/recompute', this); });
+  function pollOpen() {
+    jfetch('/api/tool/open-status').then(function (d) {
+      status.textContent = d.stage === 'update48'
+        ? `更新48小時盤口 ${d.update.done || 0}/${d.update.total || 0}…`
+        : `全歷史重算 ${d.recompute.done || 0}/${d.recompute.total || 0}…`;
+      if (d.running) { setTimeout(pollOpen, 3000); return; }
+      if (d.error) status.textContent = '開啟更新失敗：' + d.error;
+      loadFull(false);
+    });
+  }
+  fetch('/api/tool/open', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({tool: 'fw8s'})}).then(function (r) { return r.json(); })
+    .then(function (d) { if (d.error) status.textContent = d.error; else pollOpen(); });
   loadFull(false);
 })();

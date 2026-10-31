@@ -79,17 +79,17 @@ def migrate(conn):
     have = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' "
         "AND name IN ('w88_log', 'k3_log')")}
-    if 'w88_log' in have:
-        return
-    conn.execute('''CREATE TABLE IF NOT EXISTS w88_log(
-        match_id INTEGER, market TEXT, conds TEXT, league TEXT, label TEXT,
-        ou_line REAL, hc REAL, giver TEXT,
-        added_at TEXT, result TEXT, settled_at TEXT,
-        PRIMARY KEY(match_id, market, conds))''')
-    conn.execute('''CREATE TABLE IF NOT EXISTS k3_log(
-        match_id INTEGER PRIMARY KEY, league TEXT, conds TEXT,
-        ou_line REAL, hc REAL, giver TEXT,
-        added_at TEXT, result TEXT, even INTEGER, settled_at TEXT)''')
+    if 'w88_log' not in have:
+        conn.execute('''CREATE TABLE IF NOT EXISTS w88_log(
+            match_id INTEGER, market TEXT, conds TEXT, league TEXT, label TEXT,
+            ou_line REAL, hc REAL, giver TEXT,
+            added_at TEXT, result TEXT, settled_at TEXT,
+            PRIMARY KEY(match_id, market, conds))''')
+    if 'k3_log' not in have:
+        conn.execute('''CREATE TABLE IF NOT EXISTS k3_log(
+            match_id INTEGER PRIMARY KEY, league TEXT, conds TEXT,
+            ou_line REAL, hc REAL, giver TEXT,
+            added_at TEXT, result TEXT, even INTEGER, settled_at TEXT)''')
     # 舊 k3_log（雙數和波）歷史一次性搬入 w88_log
     conn.execute(
         "INSERT OR IGNORE INTO w88_log "
@@ -394,7 +394,7 @@ def resolve_pending_conflicts(conn):
     return len(dels)
 
 
-def scan(conn, hours=168, grace_min=10):
+def scan(conn, hours=168, grace_min=10, progress=None):
     """賽前掃描：未來 hours 小時、聯賽有方法庫、條件全中 → 記入 w88_log。
     兩段式：先讀取＋計算（唔攞寫鎖），最後先一次過短事務寫入——
     爬蟲長寫入期間唔會長時間攞住寫鎖，鎖等待集中喺最後一刻。"""
@@ -411,12 +411,29 @@ def scan(conn, hours=168, grace_min=10):
         'AND c.req_name IN (%s) AND m.home_score IS NULL'
         % (grace_min, hours, ','.join('?' * len(rules))),
         tuple(rules.keys())).fetchall()
+
+    def report(index, mid, league, status):
+        if not progress:
+            return
+        try:
+            row = conn.execute(
+                'SELECT m.kickoff, ht.name_tc, at.name_tc FROM matches m '
+                'JOIN teams ht ON ht.titan_id=m.home_id '
+                'JOIN teams at ON at.titan_id=m.away_id WHERE m.id=?',
+                (mid,)).fetchone()
+            progress(index, len(rows), (mid, row[0], league, row[1], row[2]), status)
+        except Exception:
+            pass
+
     hits = []
-    for mid, lg in rows:
+    for index, (mid, lg) in enumerate(rows, 1):
         try:
             hits.extend(eval_match(conn, mid, lg))
         except Exception:
             traceback.print_exc()
+            report(index, mid, lg, '失敗')
+            continue
+        report(index, mid, lg, '完成')
     added = 0
     for key, vals in hits:
         cur = conn.execute(
@@ -469,6 +486,27 @@ def _settle_one(market, hs, aws, hc, giver, ou_line):
     return None
 
 
+def settle_k3(conn):
+    """按 migrate 的 draw 口徑補結算舊 K3，保留原有記錄。"""
+    migrate(conn)
+    rows = conn.execute(
+        'SELECT k.match_id, m.home_score, m.away_score FROM k3_log k '
+        'JOIN matches m ON m.id=k.match_id '
+        'WHERE k.result IS NULL AND m.home_score IS NOT NULL').fetchall()
+    now = time.strftime('%Y-%m-%d %H:%M:%S')
+    for mid, hs, aws in rows:
+        result = _settle_one('draw', hs, aws, None, None, None)
+        conn.execute('UPDATE k3_log SET result=?, settled_at=? WHERE match_id=?',
+                     (result, now, mid))
+        conn.execute(
+            'UPDATE w88_log SET result=?, settled_at=? WHERE match_id=? '
+            'AND market="draw" AND label="K3開發雙數和波"',
+            (result, now, mid))
+    if rows:
+        conn.commit()
+    return len(rows)
+
+
 def settle(conn):
     """賽後結算 w88_log（兩段式：讀＋計算先行，短事務寫入）。"""
     migrate(conn)
@@ -502,7 +540,7 @@ def settle(conn):
                      'WHERE match_id=? AND market=?', (res, ts, mid, market))
     if todo:
         conn.commit()
-    return len(todo)
+    return len(todo) + settle_k3(conn)
 
 
 def _stats(conn):

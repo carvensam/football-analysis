@@ -108,6 +108,25 @@ def _json_list(value):
         return []
 
 
+def tool_progress(events):
+    states = {}
+    for event in events:
+        if event.get('kind') != 'recalc':
+            continue
+        for name in str(event.get('tool') or '全部工具').split('／'):
+            state = states.setdefault(name, {
+                'tool': name, 'done': 0, 'total': None,
+                'status': '等待', 'match': None, 'ts': None})
+            if event.get('done') is not None:
+                state['done'] = max(state['done'], event['done'])
+            if event.get('total') is not None:
+                state['total'] = event['total']
+            state['status'] = event.get('status') or state['status']
+            state['match'] = event.get('match_text')
+            state['ts'] = event.get('ts')
+    return list(states.values())
+
+
 def latest(conn):
     job_row = conn.execute(
         'SELECT id,source,started_at,ended_at,status FROM work_jobs '
@@ -115,10 +134,14 @@ def latest(conn):
     if not job_row:
         return {'job': None, 'events': []}
     job = dict(zip(('id', 'source', 'started_at', 'ended_at', 'status'), job_row))
+    job_rows = conn.execute(
+        'SELECT id,source,started_at,ended_at,status FROM work_jobs '
+        "WHERE status='running' OR id=? ORDER BY id DESC", (job['id'],)).fetchall()
+    ids = [row[0] for row in job_rows]
     rows = conn.execute(
         'SELECT id,ts,kind,league,match_text,tool,direction,done,total,'
-        'markets,pages,status,message FROM work_log WHERE job_id=? ORDER BY id',
-        (job['id'],)).fetchall()
+        'markets,pages,status,message FROM work_log WHERE job_id IN (%s) ORDER BY id'
+        % ','.join('?' * len(ids)), ids).fetchall()
     keys = ('id', 'ts', 'kind', 'league', 'match_text', 'tool', 'direction',
             'done', 'total', 'markets', 'pages', 'status', 'message')
     events = []
@@ -127,4 +150,7 @@ def latest(conn):
         item['markets'] = _json_list(item['markets'])
         item['pages'] = _json_list(item['pages'])
         events.append(item)
-    return {'job': job, 'events': events}
+    jobs = [dict(zip(('id', 'source', 'started_at', 'ended_at', 'status'), row))
+            for row in job_rows]
+    return {'job': job, 'jobs': jobs, 'events': events,
+            'tools': tool_progress(events)}

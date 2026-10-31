@@ -610,5 +610,95 @@
   "name_sc": "欧协联",
   "name_en": "UEFA ECL",
   "enabled": true
+ },
+ {
+  "req_name": "海灣盃",
+  "category": "杯賽",
+  "titan_id": 520,
+  "name_tc": "海灣錦標",
+  "name_sc": "海湾锦标",
+  "name_en": "GCC Champions League",
+  "enabled": true
+ },
+ {
+  "req_name": "意大利盃賽",
+  "category": "杯賽",
+  "titan_id": 83,
+  "name_tc": "意盃",
+  "name_sc": "意杯",
+  "name_en": "ITA Cup",
+  "enabled": true
+ },
+ {
+  "req_name": "波蘭超級聯賽",
+  "category": "聯賽",
+  "titan_id": 6,
+  "name_tc": "波蘭超",
+  "name_sc": "波兰超",
+  "name_en": "POL PR",
+  "enabled": true
+ },
+ {
+  "req_name": "俄羅斯盃",
+  "category": "杯賽",
+  "titan_id": 153,
+  "name_tc": "俄盃",
+  "name_sc": "俄杯",
+  "name_en": "RUS Cup",
+  "enabled": true
+ },
+ {
+  "req_name": "比利時盃",
+  "category": "杯賽",
+  "titan_id": 108,
+  "name_tc": "比利時盃",
+  "name_sc": "比利时杯",
+  "name_en": "BEL Cup",
+  "enabled": true
+ },
+ {
+  "req_name": "美洲國家盃",
+  "category": "杯賽",
+  "titan_id": 224,
+  "name_tc": "美洲盃",
+  "name_sc": "美洲杯",
+  "name_en": "AMEC",
+  "enabled": true
+ },
+ {
+  "req_name": "亞洲國家盃",
+  "category": "杯賽",
+  "titan_id": 95,
+  "name_tc": "亞洲盃",
+  "name_sc": "亚洲杯",
+  "name_en": "AFC",
+  "enabled": true
+ },
+ {
+  "req_name": "亞冠精英聯賽",
+  "category": "杯賽",
+  "titan_id": 192,
+  "name_tc": "亞冠精英",
+  "name_sc": "亚冠精英",
+  "name_en": "ACLE",
+  "enabled": true
+ },
+ {
+  "req_name": "非洲足球冠軍聯賽",
+  "category": "杯賽",
+  "titan_id": 239,
+  "name_tc": "非冠盃",
+  "name_sc": "非冠杯",
+  "name_en": "CAF CL",
+  "enabled": true
+ },
+ {
+  "req_name": "非洲國家盃",
+  "category": "杯賽",
+  "titan_id": 93,
+  "name_tc": "非國盃",
+  "name_sc": "非国杯",
+  "name_en": null,
+  "enabled": true
  }
 ]

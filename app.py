@@ -202,6 +202,9 @@ def _bump_data_epoch(tag=None):
             # 舊制 bump 就清晒，繁忙期 tools bump 每幾秒一次，report
             # 快取連環被誤殺（2026-10-26 實測 3/3 miss 捉到）。條目
             # 靠 TTL 檢查＋MAX 上限自然淘汰。
+        dynamic = globals().get('_DYNAMIC_HOME_CACHE')
+        if dynamic is not None:
+            dynamic.update(ts=0.0, data=None)
     except Exception:
         pass
 
@@ -247,7 +250,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.7.6'
+SERVER_VERSION = '5.7.8'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -528,13 +531,21 @@ _bg_scan_info = {}   # 2026-10-22：最近一次背景掃描結果（/api/scan-s
 
 
 def _bg_scan_public(kind):
-    """/api/scan-status 讀取：running＋最近一次 added/settled/錯誤/時間。
-    2026-10-22：running 兼容統一掃描（newjx/w88 掣行統一 job，進度寫入
-    _bg_scan_info，running 要跟 _unified_scan 走）。"""
-    t = _bg_scan_state.get(kind)
-    info = dict(_bg_scan_info.get(kind) or {})
+    """/api/scan-status 讀取：running＋最近一次 added/settled/錯誤/時間。"""
+    if kind == 'home48':
+        info = {key: _unified_scan.get(key)
+                for key in ('done', 'total', 'phase', 'added', 'removed',
+                            'kept', 'last', 'error')}
+        queued = any(q.get('tool') == '主頁48小時重算' for q in _SCAN_QUEUE)
+        info['running'] = bool(_unified_scan['running'] or queued)
+        info['queued'] = queued
+        return info
+    job_key = {'newjx': 'jx'}.get(kind, kind)
+    t = _bg_scan_state.get(job_key)
+    info = dict(_TOOL_JOBS.get(job_key) or _bg_scan_info.get(kind) or {})
     info['running'] = bool((t and t.is_alive())
-                           or _unified_scan['running'])
+                           or _unified_scan['running']
+                           or _TOOL_JOBS.get(job_key, {}).get('running', False))
     return info
 
 
@@ -605,10 +616,6 @@ def _start_bg_scan(kind):
 
 
 def _ensure_competitions(conn):
-    exists = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='competitions'").fetchone()
-    if exists and conn.execute('SELECT COUNT(*) FROM competitions').fetchone()[0]:
-        return 0
     conn.execute('''CREATE TABLE IF NOT EXISTS competitions(
         titan_id INTEGER PRIMARY KEY, req_name TEXT NOT NULL,
         name_tc TEXT, name_sc TEXT, name_en TEXT,
@@ -622,11 +629,12 @@ def _ensure_competitions(conn):
              lg.get('name_sc'), lg.get('name_en'), lg['category'],
              lg.get('sub_of'), 1 if lg.get('enabled', True) else 0)
             for lg in leagues]
+    before = conn.total_changes
     conn.executemany(
         'INSERT OR IGNORE INTO competitions(titan_id,req_name,name_tc,name_sc,'
         'name_en,category,sub_of,enabled) VALUES(?,?,?,?,?,?,?,?)', rows)
     conn.commit()
-    return len(rows)
+    return conn.total_changes - before
 
 
 def _migrate_db():
@@ -635,7 +643,7 @@ def _migrate_db():
     try:
         seeded = _ensure_competitions(conn)
         if seeded:
-            print('[boot] competitions 缺失／空白：已由 leagues.json 補 %d 個賽事' %
+            print('[boot] 賽事清單：新補 %d 個賽事' %
                   seeded, flush=True)
         cols = [r[1] for r in conn.execute('PRAGMA table_info(odds_asian)')]
         if 'fetched_at' not in cols:
@@ -1235,7 +1243,7 @@ def _del_removed_on_add(conn, mid, acts):
     conn.commit()
 
 
-def _eval_all(conn, ctx, light=False):
+def _eval_all(conn, ctx, light=False, allow_finished=False):
     """單場全系統評估＋寫表（12 張）：精選W、V1、V1Z、V2(letters 共用）、
     V2Z、格7/8/12/8s、8s紀錄、8X、88W、新精選。寫法＝upsert 合格／DELETE
     唔合格未結算列——同舊逐系統 scan 最終狀態一致。回傳動作列表。
@@ -1267,7 +1275,7 @@ def _eval_all(conn, ctx, light=False):
             _hk_now = (datetime.now(timezone.utc)
                        + timedelta(hours=8)).replace(tzinfo=None)
             if datetime.strptime(str(_ko)[:16], '%Y-%m-%d %H:%M') \
-                    < _hk_now - timedelta(minutes=10):
+                    < _hk_now - timedelta(minutes=10) and not allow_finished:
                 return acts
         except ValueError:
             pass
@@ -1796,7 +1804,18 @@ def _unified_candidates(conn, full):
     return out, sigs
 
 
-def _unified_scan_job(mids=None, full=False, light=False, tool=None):
+def _all_history_candidates(conn):
+    rows = conn.execute(
+        "SELECT m.id, oc.handicap, oc.giver, oc.home_odds, oc.away_odds "
+        "FROM matches m JOIN odds_asian oc ON oc.match_id=m.id "
+        "AND oc.label='closing' AND oc.company_id=12 "
+        'AND oc.handicap IS NOT NULL ORDER BY m.kickoff').fetchall()
+    return ([r[0] for r in rows],
+            {r[0]: '%s|%s|%s|%s' % tuple(r[1:]) for r in rows})
+
+
+def _unified_scan_job(mids=None, full=False, light=False, tool=None,
+                      full_history=False):
     """一場一次過評 12 表＋結算。各工具自家狀態 dict 同步更新——
     所有舊進度條／scan-status 接口照舊有得顯示，前端零改動。
     light=True（雲端 512MB）：淨做純 SQL 系統（8X/88W/新精選），
@@ -1806,7 +1825,8 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
     if st['running']:
         return False
     st.update(running=True, error=None, phase='準備中…', done=0,
-              added=0, removed=0, kept=0, full=full, stop=False)
+              added=0, removed=0, kept=0, full=full,
+              full_history=full_history, stop=False)
     st['triggered_by'] = tool or st.get('triggered_by') or '未知'
     _UNIFIED_RUNNING[0] = True
     _NOTIFY_N[0] = 0   # 本輪推送計數（>15 批量標讀防洗版）
@@ -1853,7 +1873,9 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
             _pin_pools()
             cands = list(mids) if mids is not None else None
             sigs = {}
-            if cands is None:
+            if cands is None and full_history:
+                cands, sigs = _all_history_candidates(conn)
+            elif cands is None:
                 cands, sigs = _unified_candidates(conn, full)
             elif not light:
                 # 外部指定場次：同樣記低簽名（之後先至跳得過佢）
@@ -1882,7 +1904,7 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
                 for _att in range(4):
                     try:
                         acts = _eval_all(conn, _EvalCtx(conn, mid),
-                                         light=light)
+                                         light=light, allow_finished=full_history)
                         break
                     except sqlite3.OperationalError:
                         time.sleep(4)
@@ -1953,6 +1975,28 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
                     settled = {}
             except Exception:
                 settled = {}
+            if full_history:
+                import tool_results
+                for key, cache in ((_ou_rules_cache, 'OU'),
+                                   (_htft_rules_cache, 'HTFT')):
+                    tool_name = home_tools._DEF_BY_KEY[key]['name']
+                    _work_recalc_stage(tool_name)
+                    data = tool_results.dynamic_recompute(
+                        conn, key, progress=_dynamic_worklog_progress(tool_name))
+                    _dynamic_log_changes(conn, tool_name, cache.get('data'), data)
+                    cache.update(ts=time.time(), data=data)
+                    if (data.get('stats') or {}).get('errors'):
+                        raise RuntimeError('%s 有 %d 場計算失敗' %
+                                           (tool_name, data['stats']['errors']))
+            else:
+                _work_recalc_stage('大小方法')
+                _ou_rules_scan_job()
+                if _ou_rules_scan.get('error'):
+                    raise RuntimeError(_ou_rules_scan['error'])
+                _work_recalc_stage('半全場方法')
+                _htft_rules_scan_job()
+                if _htft_rules_scan.get('error'):
+                    raise RuntimeError(_htft_rules_scan['error'])
             import v3_engine
             hk = v3_engine.hk_now_str()
             _LAST_UNIFIED[0] = hk
@@ -2009,9 +2053,11 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
         _bg_scan_info['newjx']['error'] = st['error']
         _bg_scan_info['w88']['error'] = st['error']
     finally:
-        # 2026-10-25：重爬重算補好波（本地；雲端 demand-driven 唔做）
         try:
-            if not DISABLE_UPDATE:
+            if full_history:
+                _work_recalc_stage('好波')
+                _hb_refresh_mids(cands or [], limit=None, allow_cloud=True)
+            elif not DISABLE_UPDATE:
                 _conn = db()
                 try:
                     _mids = [r[0] for r in _conn.execute(
@@ -2027,7 +2073,9 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None):
             # 2026-10-25 即時同步：重抓重算搞掂→即刻推上雲
             _sync_push_now(force=True)
         except Exception:
-            pass
+            traceback.print_exc(limit=3)
+            if full_history:
+                st['error'] = traceback.format_exc(limit=2)[-500:]
         if worklog.current_job_id() is not None:
             _log_conn = db()
             try:
@@ -2100,7 +2148,8 @@ def _drain_scan_queue():
         _unified_scan['triggered_by'] = req['tool']
         _t = threading.Thread(target=_unified_scan_job,
                               kwargs={'mids': req['mids'], 'full': req['full'],
-                                      'tool': req['tool']},
+                                      'tool': req['tool'],
+                                      'full_history': req.get('full_history', False)},
                               daemon=True)
         _JOB_THREADS['統一掃描'] = _t
         _t.start()
@@ -2116,19 +2165,22 @@ def _scan_meta_extra():
             'unified_done': _unified_scan['done'],
             'unified_total': _unified_scan['total']}
 
-def _start_unified_scan(mids=None, full=False, light=None, tool='未知'):
+def _start_unified_scan(mids=None, full=False, light=None, tool='未知',
+                        full_history=False):
     """所有「重新掃描」掣共用入口：得閒即開；行緊就入隊（2026-10-25 用戶
     規格——舊制繁忙時靜默丟棄，用戶以為掃描冇反應），跑完依家嗰輪自動接力，
     每個請求都記低邊個工具觸發，log 全程可見。"""
     if light is None:
-        # 2026-10-25：預設 full（付費 2GB 實例）；仍可按需要傳 light=True
         light = False
+    if any(job.get('running') for job in _TOOL_JOBS.values()):
+        return {'running': True, 'started': False,
+                'error': '獨立工具重算進行中，完成後請再按'}
     if _unified_scan['running']:
-        key = (tool, bool(full), bool(mids))
-        if not any((q['tool'], q['full'], q['mids'] is not None) == key
-                   for q in _SCAN_QUEUE):
+        key = (tool, bool(full), bool(mids), bool(full_history))
+        if not any((q['tool'], q['full'], q['mids'] is not None,
+                    q.get('full_history', False)) == key for q in _SCAN_QUEUE):
             _SCAN_QUEUE.append({'tool': tool, 'full': bool(full),
-                                'mids': mids,
+                                'mids': mids, 'full_history': bool(full_history),
                                 'ts': time.strftime('%H:%M:%S')})
             _save_scan_state()
             _scanlog('⏳ %s 掃描排隊緊（等依家嗰輪搞掂自動接力；前面仲有 %d 個）'
@@ -2138,7 +2190,7 @@ def _start_unified_scan(mids=None, full=False, light=None, tool='未知'):
     _save_scan_state()
     _t = threading.Thread(target=_unified_scan_job,
                           kwargs={'mids': mids, 'full': full, 'light': light,
-                                  'tool': tool},
+                                  'tool': tool, 'full_history': full_history},
                           daemon=True)
     _JOB_THREADS['統一掃描'] = _t
     _t.start()
@@ -2731,7 +2783,7 @@ _FBATCH_PEND = {'hours': None, 'ts': 0.0}
 _load_scan_state()   # 2026-10-25 根治：重啟讀返排隊＋熔斷登記（用戶指示 #4）
 
 
-def _fetch_batch_worker(hours, ids=None):
+def _fetch_batch_worker(hours, ids=None, recompute=True):
     """ids（2026-10-24）：手機直爬核對後，淨重抓『唔一致/本機缺失』嘅場——
     手機數據照舊唔直接寫庫（用戶 10-02 定調），由伺服器代理池重抓落庫，
     跟住行同一套資格重檢＋結算。hours 模式照舊＝成個時間窗。"""
@@ -2851,29 +2903,30 @@ def _fetch_batch_worker(hours, ids=None):
         # 資格重檢淨做「尾盤有重大變動」＋「從未評估過」嘅場——冇變動嘅
         # 場重評結果都一樣（規則確定性），慳返 sweep 上限名額俾真係要
         # 重檢嘅場（舊制 ok_mids 全上，48h 窗一爆 300 場 cap 就靜默甩尾）。
-        _fbatch_state['phase'] = '重檢各精選系統資格…'
-        try:
-            sweep_mids = list(changed_mids)
-            for mid in ok_mids:
-                if mid not in changed_mids and _never_evaluated(conn, mid):
-                    sweep_mids.append(mid)
-            _fbatch_state['reval'] = _requalify_sweep(sweep_mids)
-            print('[fbatch] 資格重檢（變盤%d＋新評估%d）：%s'
-                  % (len(changed_mids), len(sweep_mids) - len(changed_mids),
-                     _fbatch_state['reval']), flush=True)
-        except Exception:
-            traceback.print_exc(limit=3)
-            _fbatch_state['reval'] = None
+        if recompute:
+            _fbatch_state['phase'] = '重檢各精選系統資格…'
+            try:
+                sweep_mids = list(changed_mids)
+                for mid in ok_mids:
+                    if mid not in changed_mids and _never_evaluated(conn, mid):
+                        sweep_mids.append(mid)
+                _fbatch_state['reval'] = _requalify_sweep(sweep_mids)
+                print('[fbatch] 資格重檢（變盤%d＋新評估%d）：%s'
+                      % (len(changed_mids), len(sweep_mids) - len(changed_mids),
+                         _fbatch_state['reval']), flush=True)
+            except Exception:
+                traceback.print_exc(limit=3)
+                _fbatch_state['reval'] = None
         # 順手主動結算（完場場次嘅結果即刻寫入全部工具表）
         try:
             _settle_finished_tools_bg()
         except Exception:
             pass
-        # 2026-10-25：批量更新埋好波——變盤場次有 OU 線嘅即刻重算（快取保護）
-        try:
-            _hb_refresh_mids(changed_mids)
-        except Exception:
-            pass
+        if recompute:
+            try:
+                _hb_refresh_mids(changed_mids)
+            except Exception:
+                pass
         # 2026-10-25 即時同步：用戶撳嘅批量搞掂→即刻推上雲（唔使等 30 分鐘）
         _sync_push_now(force=True)
     except Exception:
@@ -2883,15 +2936,17 @@ def _fetch_batch_worker(hours, ids=None):
         worklog.end(conn, 'error' if _fbatch_state.get('error') else
                     ('stopped' if _fbatch_state.get('stop') else 'done'),
                     _fbatch_state.get('error') or
-                    '爬取 %d/%d・成功 %d・失敗 %d；重算及工具頁推送工序完結' %
-                    (_fbatch_state.get('done', 0), _fbatch_state.get('total', 0),
-                     _fbatch_state.get('ok', 0), _fbatch_state.get('fail', 0)))
+                    ('爬取 %d/%d・成功 %d・失敗 %d；%s' %
+                     (_fbatch_state.get('done', 0), _fbatch_state.get('total', 0),
+                      _fbatch_state.get('ok', 0), _fbatch_state.get('fail', 0),
+                      '重算及工具頁推送工序完結' if recompute else
+                      '只更新盤口賠率，未觸發資格重算')))
         conn.close()
         _fbatch_state['running'] = False
         _fbatch_state['phase'] = ''
 
 
-def do_fetch_batch(hours=0, ids=None):
+def do_fetch_batch(hours=0, ids=None, recompute=True):
     """人手撳『⚡ 即時更新全部』：可見場次全部重抓最新盤口賠率（後台線程）。
     2026-10-02 起雲端都用到：titan007 封嘅係 IP 段（屋企＋datacenter），
     代理池嘅公共代理任何來源都行得通——proxy_pool.json 隨映像焗入，
@@ -2916,10 +2971,263 @@ def do_fetch_batch(hours=0, ids=None):
                          done=0, total=0, reval=None, ou_ok=0, x2_ok=0,
                          stop=False)
     _t = threading.Thread(target=_fetch_batch_worker, daemon=True,
-                          args=(hours, ids))
+                          args=(hours, ids, recompute))
     _JOB_THREADS['即時更新批量'] = _t
     _t.start()
     return {'ok': True, 'started': True}
+
+
+def do_update_odds():
+    return do_fetch_batch(hours=48, recompute=False)
+
+
+def do_recompute(hours=48):
+    if int(hours) != 48:
+        raise ValueError('主頁重算只支援未來48小時')
+    conn = db()
+    try:
+        ids = [r[0] for r in conn.execute(
+            'SELECT id FROM matches WHERE home_score IS NULL '
+            "AND kickoff >= datetime('now','+8 hours') "
+            "AND kickoff <= datetime('now','+8 hours','+48 hours') "
+            'ORDER BY kickoff')]
+    finally:
+        conn.close()
+    if not ids:
+        return {'ok': True, 'started': False, 'running': False,
+                'total': 0, 'hours': 48}
+    started = _start_unified_scan(mids=ids, full=True, tool='主頁48小時重算')
+    return {'ok': True, 'started': started.get('started'), 'running': True,
+            'total': len(ids), 'hours': 48}
+
+
+def _next_48_ids():
+    conn = db()
+    try:
+        return [r[0] for r in conn.execute(
+            'SELECT id FROM matches WHERE home_score IS NULL '
+            "AND kickoff >= datetime('now','+8 hours') "
+            "AND kickoff <= datetime('now','+8 hours','+48 hours') "
+            'ORDER BY kickoff')]
+    finally:
+        conn.close()
+
+
+_TOOL_JOBS = {}
+_TOOL_KEYS = {'W', 'V1', 'V2', 'F7', 'F8', 'F12', 'F8S', 'S8',
+              'X8', 'W88', 'JX', 'HB', 'OU', 'HTFT'}
+
+
+def _tool_recompute_worker(tool, action):
+    key = tool.lower()
+    job = _TOOL_JOBS[key]
+    added = settled = 0
+    try:
+        log_conn = db()
+        try:
+            worklog.begin(log_conn, '獨立工具重算｜%s｜%s' % (tool, action))
+        finally:
+            log_conn.close()
+        if tool == 'W':
+            _v3_featured_scan_job()
+            added = _v3_scan.get('added', 0)
+        elif tool == 'V1':
+            _v1_scan_job()
+            added = _v1_scan.get('added', 0)
+        elif tool == 'V2':
+            _featured_scan_job()
+            added = _feat_scan.get('added', 0)
+        elif tool in ('F7', 'F8', 'F12', 'F8S'):
+            grid = '8s' if tool == 'F8S' else tool[1:]
+            _fw_grid_scan_job(grid)
+            added = _fw_grid_scan[grid].get('added', 0)
+        if tool in ('F8S', 'S8'):
+            import fw8s_engine
+            conn = db()
+            try:
+                picks, _watched, _stats = fw8s_engine.scan_upcoming(
+                    conn, 48, progress=_dynamic_worklog_progress('精選8s'))
+                fw8s_engine.log_picks(conn, picks)
+                settled = _fw8s_settle(conn)
+                added = len(picks)
+            finally:
+                conn.close()
+        elif tool == 'X8':
+            conn = db()
+            try:
+                added = fw8x.scan(conn, progress=_dynamic_worklog_progress('8X'))
+                settled = fw8x.settle(conn)
+            finally:
+                conn.close()
+        elif tool == 'W88':
+            conn = db()
+            try:
+                added = w88_engine.scan(
+                    conn, hours=48, progress=_dynamic_worklog_progress('88W'))
+                settled = w88_engine.settle(conn)
+            finally:
+                conn.close()
+        elif tool == 'JX':
+            conn = db()
+            try:
+                added = newjx_engine.scan(
+                    conn, hours=48, progress=_dynamic_worklog_progress('新精選'))
+                settled = newjx_engine.settle(conn)
+            finally:
+                conn.close()
+        elif tool == 'HB':
+            ids = _next_48_ids()
+            added = _hb_refresh_mids(ids, limit=None, allow_cloud=True)
+            job['total'] = len(ids)
+        elif tool == 'OU':
+            _ou_rules_scan_job()
+            added = _ou_rules_scan.get('added', 0)
+        elif tool == 'HTFT':
+            _htft_rules_scan_job()
+            added = _htft_rules_scan.get('added', 0)
+        if tool in ('F8S', 'S8'):
+            job['total'] = len(_next_48_ids())
+            if tool == 'F8S':
+                added += _fw_grid_scan['8s'].get('added', 0)
+        elif tool == 'W':
+            job['total'] = _v3_scan.get('total', 0)
+        elif tool == 'V1':
+            job['total'] = _v1_scan.get('total', 0)
+        elif tool == 'V2':
+            job['total'] = _feat_scan.get('total', 0)
+        elif tool in ('F7', 'F8', 'F12'):
+            job['total'] = _fw_grid_scan[tool[1:]].get('total', 0)
+        elif tool == 'OU':
+            job['total'] = _ou_rules_scan.get('total', 0)
+        elif tool == 'HTFT':
+            job['total'] = _htft_rules_scan.get('total', 0)
+        elif tool != 'HB':
+            job['total'] = len(_next_48_ids())
+        state = {'W': _v3_scan, 'V1': _v1_scan, 'V2': _feat_scan,
+                 'OU': _ou_rules_scan, 'HTFT': _htft_rules_scan}.get(tool)
+        if tool in ('F7', 'F8', 'F12', 'F8S'):
+            state = _fw_grid_scan['8s' if tool == 'F8S' else tool[1:]]
+        if state and state.get('error'):
+            raise RuntimeError(state['error'])
+        job.update(done=job.get('total', 0), added=added, settled=settled,
+                   last=time.strftime('%Y-%m-%d %H:%M:%S'), error=None)
+    except Exception:
+        job['error'] = traceback.format_exc(limit=2)[-500:]
+    finally:
+        if not job.get('error'):
+            job['done'] = job.get('total', job.get('done', 0))
+        job['running'] = False
+        if worklog.current_job_id() is not None:
+            log_conn = db()
+            try:
+                worklog.end(log_conn, 'error' if job.get('error') else 'done',
+                            job.get('error') or
+                            '%s：%d/%d，新增 %d，結算 %d' %
+                            (tool, job.get('done', 0), job.get('total', 0),
+                             added, settled))
+            finally:
+                log_conn.close()
+
+
+def do_tool_recompute(tool, action='scan'):
+    tool = str(tool or '').upper()
+    if tool not in _TOOL_KEYS:
+        raise ValueError('未知工具：%s' % tool)
+    key = tool.lower()
+    if _fbatch_state['running'] or _update_state['running'] or _win_state['running']:
+        return {'ok': False, 'running': True,
+                'error': '賠率更新進行中，完成後請再按'}
+    if _unified_scan['running'] or _TOOL_JOBS.get(key, {}).get('running'):
+        return {'ok': False, 'running': True,
+                'error': '重算進行中，完成後請再按'}
+    _TOOL_JOBS[key] = {'running': True, 'done': 0, 'total': 0,
+                       'added': 0, 'settled': 0, 'last': None,
+                       'error': None, 'action': action, 'tool': tool}
+    thread = threading.Thread(target=_tool_recompute_worker,
+                              args=(tool, action), daemon=True)
+    _bg_scan_state[key] = thread
+    thread.start()
+    return {'ok': True, 'started': True, 'running': True, 'tool': tool}
+
+
+_OPEN_JOB = {'running': False, 'stage': '', 'tool': None,
+             'last': None, 'error': None, 'signature': None}
+
+
+def _open_data_signature():
+    conn = db()
+    try:
+        row = conn.execute(
+            'SELECT (SELECT MAX(fetched_at) FROM odds_asian),'
+            ' (SELECT MAX(change_time) FROM odds_ou),'
+            ' (SELECT MAX(change_time) FROM odds_1x2_all),'
+            ' (SELECT MAX(updated_at) FROM matches)').fetchone()
+        return '|'.join(str(value or '') for value in row)
+    finally:
+        conn.close()
+
+
+def _open_job_worker():
+    try:
+        if not _fbatch_state['running']:
+            started = do_update_odds()
+            if started.get('error'):
+                raise RuntimeError(started['error'])
+        while _fbatch_state['running']:
+            time.sleep(1)
+        if _fbatch_state.get('error'):
+            raise RuntimeError(_fbatch_state['error'])
+        update_failures = _fbatch_state.get('fail', 0)
+        _OPEN_JOB['stage'] = 'full_history'
+        result = _start_unified_scan(full_history=True, tool='開啟工具全庫重算')
+        if result.get('error'):
+            raise RuntimeError(result['error'])
+        while True:
+            thread = _JOB_THREADS.get('統一掃描')
+            queued = any(q.get('full_history') for q in _SCAN_QUEUE)
+            if ((thread and thread.is_alive()) or _unified_scan['running'] or queued):
+                time.sleep(1)
+            else:
+                break
+        if _unified_scan.get('error'):
+            raise RuntimeError(_unified_scan['error'])
+        if update_failures:
+            raise RuntimeError(
+                '未來48小時有 %d 場賠率更新失敗；全庫重算已完成，但更新未完全'
+                % update_failures)
+        _OPEN_JOB['signature'] = _open_data_signature()
+    except Exception as exc:
+        _OPEN_JOB['error'] = str(exc)
+    finally:
+        _OPEN_JOB['running'] = False
+        _OPEN_JOB['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
+
+
+def do_open_tool(tool):
+    if _OPEN_JOB['running']:
+        return {'ok': True, 'started': False, 'running': True,
+                'reused': True, 'stage': _OPEN_JOB['stage']}
+    try:
+        signature = _open_data_signature()
+    except Exception as exc:
+        return {'ok': False, 'error': '讀取資料版本失敗：%s' % exc}
+    if (_OPEN_JOB.get('last') and not _OPEN_JOB.get('error')
+            and _OPEN_JOB.get('signature') == signature):
+        return {'ok': True, 'started': False, 'running': False,
+                'reused': True, 'stage': 'done'}
+    _OPEN_JOB.update(running=True, stage='update48', tool=str(tool or '')[:60],
+                     last=None, error=None)
+    thread = threading.Thread(target=_open_job_worker, daemon=True)
+    _JOB_THREADS['開啟工具'] = thread
+    thread.start()
+    return {'ok': True, 'started': True, 'running': True, 'stage': 'update48'}
+
+
+def do_open_status():
+    return dict(_OPEN_JOB, update=dict(_fbatch_state),
+                recompute={key: _unified_scan.get(key)
+                           for key in ('running', 'done', 'total', 'phase',
+                                      'full_history', 'error')})
 
 
 def fbatch_status():
@@ -3400,6 +3708,56 @@ def _work_recalc_stage(tool, match_text=None):
     _unified_scan['current_match'] = match_text
 
 
+def _dynamic_tool_key(tool):
+    return next(d['key'] for d in home_tools.TOOL_DEFS if d['name'] == tool)
+
+
+def _dynamic_worklog_progress(tool):
+    def report(done, total, row, status):
+        league = row[2]
+        match_text = '%s｜%s vs %s' % (league, row[3], row[4])
+        _work_recalc_stage(tool, match_text)
+        job = _TOOL_JOBS.get(_dynamic_tool_key(tool).lower())
+        if job:
+            job.update(done=done, total=total)
+        conn = db()
+        try:
+            worklog.event(conn, 'recalc', league=league, match_text=match_text,
+                          tool=tool, done=done, total=total, status=status,
+                          commit=True)
+        finally:
+            conn.close()
+    return report
+
+
+def _dynamic_log_changes(conn, tool, before, after):
+    def cards(data):
+        result = {}
+        for card in (data or {}).get('upcoming') or []:
+            mid = card.get('match_id', card.get('id'))
+            direction = (card.get('side') or card.get('target_name')
+                         or card.get('target') or '方向未記錄')
+            rule = card.get('rule_id') or card.get('method_id') or ''
+            result[(mid, direction, rule)] = card
+        return result
+
+    old, new = cards(before), cards(after)
+    changes = ([('new', key, new[key]) for key in new.keys() - old.keys()] +
+               [('removed', key, old[key]) for key in old.keys() - new.keys()])
+    if not changes:
+        return
+    page = home_tools._DEF_BY_KEY[_dynamic_tool_key(tool)]['page']
+    for kind, _key, card in changes:
+        league = card.get('league') or ''
+        match_text = '%s｜%s vs %s' % (league, card.get('home'), card.get('away'))
+        worklog.event(conn, kind, league=league, match_text=match_text,
+                      tool=tool, direction=_key[1],
+                      status='新場' if kind == 'new' else '剔走')
+        worklog.event(conn, 'push', league=league, match_text=match_text,
+                      tool=tool, pages=[page], status='已發出')
+    conn.commit()
+
+
 # 2026-10-27 用戶規格：入選/剔走推送標明預測方向。
 _ACT_DIR_TAB = (('W', 'v3_featured'), ('V2Z', 'featured_z'),
                 ('V2', 'featured'), ('V1Z', 'v1_featured_z'),
@@ -3575,66 +3933,72 @@ def _notify_tool(conn, mid, acts, pre=None):
 # ============ 2026-10-25 分聯賽/杯賽實測報表（用戶規格：全部工具頁頂部） ============
 # 每個工具一張表：2026 總成績（場/贏/輸/走/勝率）＋最近七日同口徑；聯賽以
 # 最近七日勝率最佳排先；2026<60% 且 近7日<60% 由前端 highlight（warn 旗標）。
-# 數據源＝各工具實測記錄表（結算 result 列），即時 SQL——賽事一結算下次
-# 請求即反映（冇快取＝冇 staleness 問題）。七日系 settled_at（結算時間）。
+# 數據源＝各工具實測記錄表（結算 result 列）。2026／最近七日均按賽事
+# kickoff（香港時間）劃分，不用 settled_at；舊賽事延遲結算不會混入近七日。
 _LG_REPORT = {
-    # tool:      (table,            extra_where,      settle_col, league_direct)
-    'w':   ('v3_featured',     None,              'settled_at', False),
-    'v1':  ('v1_featured',     None,              'settled_at', False),
-    'v1z': ('v1_featured_z',   None,              'settled_at', False),
-    'v2':  ('featured',        None,              'settled_at', False),
-    'v2z': ('featured_z',      None,              'settled_at', False),
-    'g7':  ('fw_grid_featured', "grid='7'",       'settled_at', False),
-    'g8':  ('fw_grid_featured', "grid='8'",       'settled_at', False),
-    'g12': ('fw_grid_featured', "grid='12'",      'settled_at', False),
-    '8s':  ('fw8s_log',        None,              'settled_at', True),
-    # fw8x_log 有 kickoff 欄；settled 好多行係 NULL（結算行 result 有值但
-    # settled 未填），2026/七日窗口行 kickoff（完場日≈結算日，語義一致）
-    '8x':  ('fw8x_log',        None,              'settled',    True),
-    '88w': ('w88_log',         None,              'settled_at', True),
-    'jx':  ('newjx_log',       None,              'settled_at', True),
-    'hb':  ('hb_pick_log',     None,              'settled_at', True),
+    # tool:      (table,            extra_where,      league_direct)
+    'w':   ('v3_featured',     None,              False),
+    'v1':  ('v1_featured',     None,              False),
+    'v1z': ('v1_featured_z',   None,              False),
+    'v2':  ('featured',        None,              False),
+    'v2z': ('featured_z',      None,              False),
+    'g7':  ('fw_grid_featured', "grid='7'",       False),
+    'g8':  ('fw_grid_featured', "grid='8'",       False),
+    'g12': ('fw_grid_featured', "grid='12'",      False),
+    'g8s': ('fw_grid_featured', "grid='8s'",      False),
+    '8s':  ('fw8s_log',        None,              True),
+    'k3':  ('k3_log',          None,              False),
+    '8x':  ('fw8x_log',        None,              True),
+    '88w': ('w88_log',         None,              True),
+    'jx':  ('newjx_log',       None,              True),
+    'hb':  ('hb_pick_log',     None,              True),
+    'ou': None,
+    'htft': None,
 }
 
 
 def api_league_report(tool):
-    """分聯賽實測報表：2026 總成績＋最近七日（結算口徑：勝率=贏÷(贏+輸)，走唔計）。
-    冇自己 league 欄嘅表（精選W/V1/V2/格）join matches→seasons→competitions
-    攞 req_name（同全庫歸組口徑一致）。"""
+    """2026 總成績及最近七日按賽事 kickoff 計，勝率=(W+0.5P)÷(W+L+P)。
+    聯賽歸組以 competitions.req_name 為準；未結算及未來場次不納入。"""
+    tool = str(tool or '').lower()
+    if tool in ('ou', 'htft'):
+        import tool_results
+        conn = db()
+        try:
+            return tool_results.dynamic_league_report(conn, tool)
+        finally:
+            conn.close()
     spec = _LG_REPORT.get(tool)
     if not spec:
         return {'error': 'unknown tool', 'tools': sorted(_LG_REPORT)}
-    table, extra, scol, direct = spec
+    table, extra, direct = spec
     conn = db()
     try:
         tabs = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         if table not in tabs:
             return {'ok': True, 'tool': tool, 'rows': []}
-        where = [("t.result IS NOT NULL"),
-                 ("t.kickoff >= '2026-01-01'" if table == 'fw8x_log'
-                  else "t.%s >= '2026-01-01'" % scol)]
+        where = ["t.result IN ('W','L','P')",
+                 "m.kickoff >= '2026-01-01'", "m.kickoff < '2027-01-01'",
+                 "m.kickoff <= datetime('now','+8 hours')"]
         if extra:
             where.append(extra)
         wsql = ' AND '.join(where)
-        if direct:
-            lgsel = 't.league'
-        else:
-            lgsel = ("COALESCE(c.req_name, t.match_id || '')")
-        base = ("FROM %s t " % table) + ('' if direct else
+        lgsel = ("COALESCE(c.req_name, NULLIF(t.league,''), t.match_id || '')"
+                 if direct else "COALESCE(c.req_name, t.match_id || '')")
+        base = ("FROM %s t " % table) + (
                "JOIN matches m ON m.id=t.match_id "
                "JOIN seasons s ON s.id=m.season_id "
                "JOIN competitions c ON c.titan_id=s.titan_id ")
-        dcol = 'kickoff' if table == 'fw8x_log' else scol
         y = conn.execute(
             "SELECT %s, COUNT(*), SUM(t.result='W'), SUM(t.result='L'), "
             "SUM(t.result='P') %s WHERE %s GROUP BY 1" %
             (lgsel, base, wsql)).fetchall()
         d7 = conn.execute(
             "SELECT %s, COUNT(*), SUM(t.result='W'), SUM(t.result='L'), "
-            "SUM(t.result='P') %s WHERE %s AND t.%s >= "
-            "datetime('now','-7 days') GROUP BY 1" %
-            (lgsel, base, wsql, dcol)).fetchall()
+            "SUM(t.result='P') %s WHERE %s AND m.kickoff >= "
+            "datetime('now','+8 hours','-7 days') GROUP BY 1" %
+            (lgsel, base, wsql)).fetchall()
     finally:
         conn.close()
     y7 = {r[0]: r[1:] for r in d7}
@@ -3644,14 +4008,12 @@ def api_league_report(tool):
         w = w or 0
         l = l or 0
         p = p or 0
-        dec = w + l
-        hit = round(w / dec * 100, 1) if dec else None
+        hit = round((w + 0.5 * p) / n * 100, 1) if n else None
         r7 = y7.get(lg)
         n7 = w7 = l7 = p7 = hit7 = None
         if r7:
             n7, w7, l7, p7 = (r7[0] or 0), (r7[1] or 0), (r7[2] or 0), (r7[3] or 0)
-            dec7 = w7 + l7
-            hit7 = round(w7 / dec7 * 100, 1) if dec7 else None
+            hit7 = round((w7 + 0.5 * p7) / n7 * 100, 1) if n7 else None
         rows.append({'league': lg or '（未知）', 'n': n, 'w': w, 'l': l, 'p': p,
                      'hit': hit, 'n7': n7, 'w7': w7, 'l7': l7, 'p7': p7,
                      'hit7': hit7,
@@ -3662,6 +4024,15 @@ def api_league_report(tool):
                              -(r['hit'] or 0), r['league']))
     return {'ok': True, 'tool': tool, 'rows': rows,
             'now': time.strftime('%Y-%m-%d %H:%M')}
+
+
+def api_tool_results(tool, month='2026-10', offset=0, limit=50):
+    import tool_results
+    conn = db()
+    try:
+        return tool_results.result_page(conn, tool, month, offset, limit)
+    finally:
+        conn.close()
 
 
 # ============ 2026-10-24 「剔走」專頁（用戶規格） ============
@@ -6069,15 +6440,32 @@ def _attach_srcs(ms):
             m['srcs'] = sorted(s.keys())
 
 
-def api_v3_list(hours=48, fin_hours=120, fin_cat='all'):
-    """V3 主頁清單：即將開賽（唔設上限由前端 hours 控制）＋已開賽（預設 120h，
-    可用 fin_hours/fin_cat 回查）。每場附 state（scheduled/live/finished/unknown，
-    香港時間判定）；unknown＝開賽逾 26 小時仍無比分——用戶投訴已完場場次
-    滯留「進行中」，過期無比分一律唔再標進行中。"""
+_DYNAMIC_HOME_CACHE = {'ts': 0.0, 'data': None}
+
+
+def _home_dynamic_cards(conn):
+    if _DYNAMIC_HOME_CACHE['data'] is not None \
+            and time.time() - _DYNAMIC_HOME_CACHE['ts'] < 60:
+        return _DYNAMIC_HOME_CACHE['data']
+    import tool_results
+    dynamic, errors = {}, {}
+    for key in ('OU', 'HTFT'):
+        try:
+            dynamic[key] = tool_results.dynamic_home_cards(conn, key)
+        except Exception as exc:
+            dynamic[key] = []
+            errors[key] = str(exc)
+    data = {'cards': dynamic, 'errors': errors}
+    _DYNAMIC_HOME_CACHE.update(ts=time.time(), data=data)
+    return data
+
+
+def api_v3_list(hours=48, fin_hours=24, fin_cat='all'):
+    """主頁只顯示工具中選：未開賽、比賽中及完場24小時內。"""
     import v3_engine
     from datetime import datetime, timedelta
-    up = upcoming(hours)
-    pl = played(fin_hours, fin_cat)
+    up = upcoming(48)
+    pl = played(24, fin_cat)
     now = v3_engine.hk_now_str()
     stale = (datetime.now() + timedelta(hours=8 - _STALE_LIVE_HOURS)
              ).strftime('%Y-%m-%d %H:%M')
@@ -6088,10 +6476,19 @@ def api_v3_list(hours=48, fin_hours=120, fin_cat='all'):
             'unknown' if (m.get('kickoff') or '') <= stale else 'live')
     conn = db()
     try:
-        tool_defs = home_tools.attach_home_tools(conn, up + pl)
+        dynamic = _home_dynamic_cards(conn)
+        tool_defs = home_tools.attach_home_tools(
+            conn, up + pl, dynamic=dynamic['cards'])
+        tool_errors = dynamic['errors']
     finally:
         conn.close()
-    return {'upcoming': up, 'played': pl, 'now': now, 'tools': tool_defs}
+    cutoff = (datetime.now() + timedelta(hours=8 - 24)).strftime(
+        '%Y-%m-%d %H:%M')
+    up = [m for m in up if m.get('tool_picks')]
+    pl = [m for m in pl if m.get('tool_picks')
+          and (m['state'] == 'live' or (m.get('kickoff') or '') >= cutoff)]
+    return {'upcoming': up, 'played': pl, 'now': now,
+            'tools': tool_defs, 'tool_errors': tool_errors}
 
 
 def api_v3_target(mid):
@@ -7297,10 +7694,19 @@ def _ou_rules_scan_job():
     st.update(running=True, error=None)
     try:
         import ou_rules_engine
-        data = ou_rules_engine.scan(48)
+        before = _ou_rules_cache.get('data')
+        data = ou_rules_engine.scan(
+            48, progress=_dynamic_worklog_progress('大小方法'))
         stats = data.get('stats') or {}
         st['done'] = st['total'] = stats.get('scanned', 0)
         st['added'] = stats.get('upcoming', 0)
+        if stats.get('errors'):
+            st['error'] = '大小方法有 %d 場計算失敗' % stats['errors']
+        log_conn = db()
+        try:
+            _dynamic_log_changes(log_conn, '大小方法', before, data)
+        finally:
+            log_conn.close()
         _ou_rules_cache.update(ts=time.time(), data=data)
         st['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
     except Exception:
@@ -7341,10 +7747,19 @@ def _htft_rules_scan_job():
     st.update(running=True, error=None)
     try:
         import htft_rules_engine
-        data = htft_rules_engine.scan(48)
+        before = _htft_rules_cache.get('data')
+        data = htft_rules_engine.scan(
+            48, progress=_dynamic_worklog_progress('半全場方法'))
         stats = data.get('stats') or {}
         st['done'] = st['total'] = stats.get('scanned', 0)
         st['added'] = stats.get('upcoming', 0)
+        if stats.get('errors'):
+            st['error'] = '半全場方法有 %d 場計算失敗' % stats['errors']
+        log_conn = db()
+        try:
+            _dynamic_log_changes(log_conn, '半全場方法', before, data)
+        finally:
+            log_conn.close()
         _htft_rules_cache.update(ts=time.time(), data=data)
         st['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
     except Exception:
@@ -8087,39 +8502,64 @@ def _hb_requalify():
     return removed
 
 
-def _hb_refresh_mids(mids, limit=150):
-    """2026-10-25 重爬重算補好波：crawl16/crawl_mk 補完缺口／批量更新後，對有
-    OU 尾盤嘅場次重算好波（api_hb_predict 自帶賠率 signature 快取——冇變嘅場
-    微秒過，變咗嘅先真計），完事 _hb_requalify 清走唔合資格。
-    背景：重算（requalify_after_backfill）淨做八個精選系統；而 crawl16/mk
-    舊版補完都冇 notify——好波兩頭都漏（用戶一問即中）。雲端唔做
-    （DISABLE_UPDATE）：手機開好波頁時按 signature 即場重算，慳 1C。"""
-    if DISABLE_UPDATE or not mids:
+_HB_PROGRESS = threading.local()
+
+
+def _hb_refresh_mids(mids, limit=150, allow_cloud=False):
+    """用已落庫盤口重算好波；全歷史重算可明確允許雲端執行。"""
+    if not mids or (DISABLE_UPDATE and not allow_cloud):
         return 0
+    ids = list(dict.fromkeys(mids))[:limit]
+    total = len(ids)
     n = 0
-    for mid in list(dict.fromkeys(mids))[:limit]:
-        try:
+    errors = []
+    _HB_PROGRESS.total = total
+    try:
+        for index, mid in enumerate(ids, 1):
+            _HB_PROGRESS.done = index
+            job = _TOOL_JOBS.get('hb')
+            if job and job.get('running'):
+                job.update(done=index, total=total)
             conn = db()
             try:
+                work_league, work_match = _work_match_info(conn, mid)
                 has = conn.execute(
                     "SELECT 1 FROM odds_ou WHERE match_id=? AND label='closing' "
                     'LIMIT 1', (mid,)).fetchone()
+                if not has:
+                    worklog.event(conn, 'recalc', league=work_league,
+                                  match_text=work_match, tool='好波', done=index,
+                                  total=total, status='略過（無大小尾盤）', commit=True)
+                    continue
+                result = api_hb_predict(mid)
+                if result and result.get('error'):
+                    raise RuntimeError(result['error'])
+                n += 1
+            except Exception as exc:
+                errors.append((mid, str(exc)))
+                try:
+                    worklog.event(conn, 'recalc', league=work_league,
+                                  match_text=work_match, tool='好波', done=index,
+                                  total=total, status='失敗：%s' % str(exc)[:100],
+                                  commit=True)
+                except Exception:
+                    pass
             finally:
                 conn.close()
-            if not has:
-                continue
-            api_hb_predict(mid)
-            n += 1
-        except Exception:
-            pass
-    try:
-        _hb_requalify()
-    except Exception:
-        pass
-    if n:
-        print('[hb-refresh] 重算好波 %d 場' % n, flush=True)
-        _scanlog('⚽ 重爬重算：好波重檢 %d 場' % n)
-    return n
+        try:
+            _hb_requalify()
+        except Exception as exc:
+            errors.append(('資格重檢', str(exc)))
+        if n:
+            print('[hb-refresh] 重算好波 %d 場' % n, flush=True)
+            _scanlog('⚽ 重爬重算：好波重檢 %d 場' % n)
+        if errors:
+            raise RuntimeError('好波有 %d/%d 項重算失敗；首項 %s：%s' %
+                               (len(errors), total, errors[0][0], errors[0][1]))
+        return n
+    finally:
+        _HB_PROGRESS.done = None
+        _HB_PROGRESS.total = None
 
 
 def api_hb_picks():
@@ -8416,7 +8856,9 @@ def _hb_log_pick(mid, lg, ou):
              pick.get('rule_label')))
         work_league, work_match = _work_match_info(conn, mid)
         worklog.event(conn, 'recalc', league=work_league,
-                      match_text=work_match, tool='好波', done=1, total=1,
+                      match_text=work_match, tool='好波',
+                      done=getattr(_HB_PROGRESS, 'done', None) or 1,
+                      total=getattr(_HB_PROGRESS, 'total', None) or 1,
                       status='完成')
         if notify_hb and info:
             worklog.event(conn, 'new', league=info[0],
@@ -9020,6 +9462,34 @@ def api_health():
                        'notify_date': _LINE12_NOTIFY['date']}}
 
 
+def _tool_job_counts(job):
+    if not job.get('running'):
+        return job.get('done'), job.get('total')
+    tool = job.get('tool')
+    state = {'W': _v3_scan, 'V1': _v1_scan, 'V2': _feat_scan,
+             'OU': _ou_rules_scan, 'HTFT': _htft_rules_scan}.get(tool)
+    if tool in ('F7', 'F8', 'F12'):
+        state = _fw_grid_scan[tool[1:]]
+    elif tool == 'F8S':
+        state = _fw_grid_scan['8s']
+    if state:
+        return state.get('done', 0), state.get('total', job.get('total'))
+    return job.get('done'), job.get('total')
+
+
+def _tool_status(state, tool):
+    out = dict(state)
+    job = _TOOL_JOBS.get(tool.lower())
+    if job:
+        out.update(done=job.get('done', 0), total=job.get('total', 0),
+                   added=job.get('added', 0), last=job.get('last'),
+                   error=job.get('error'))
+        out['running'] = bool(job.get('running'))
+    else:
+        out['running'] = bool(out.get('running') or _unified_scan['running'])
+    return out
+
+
 def api_worklog(limit=30):
     """最新一輪工作 LOG：該輪全部結構化事件，唔再截舊 crawl_log 30 條。"""
     conn = db()
@@ -9036,9 +9506,26 @@ def api_worklog(limit=30):
                       'done': state.get('done'), 'total': state.get('total'),
                       'ok': state.get('ok'), 'fail': state.get('fail')}
             break
+    progress = {p['tool']: p for p in data.pop('tools', [])}
+    for job in _TOOL_JOBS.values():
+        definition = home_tools._DEF_BY_KEY.get(
+            job.get('tool'), {'name': job.get('tool')})
+        name = definition['name']
+        done, total = _tool_job_counts(job)
+        progress[name] = {
+            'tool': name, 'done': done, 'total': total,
+            'status': ('錯誤：' + job['error']) if job.get('error')
+                      else ('進行中' if job.get('running') else '完成'),
+            'match': '獨立工具重算', 'triggered_by': job.get('action')}
+    current = _unified_scan.get('current_tool')
+    if _unified_scan.get('running') and current:
+        for name, state in progress.items():
+            if name == current or (name == '好波' and current == 'HB'):
+                state['status'] = '進行中'
     data.update({
         'ok': True,
         'active': active,
+        'tools': list(progress.values()),
         'recalc': {'running': bool(_unified_scan.get('running')),
                    'tool': _unified_scan.get('current_tool'),
                    'match': _unified_scan.get('current_match'),
@@ -9427,7 +9914,9 @@ def _attach_preds3(out):
                 f8s.setdefault(p.get('match_id'), 'up')
         if (not DISABLE_UPDATE
                 and time.time() - _FW8S_CACHE.get('ts', 0) > 600
-                and not _FW8S_WARMING.get('on')):
+                and not _FW8S_WARMING.get('on')
+                and not _scan_gate['busy']
+                and not _feat_hourly['running']):
             _FW8S_WARMING['on'] = True
 
             def _warm():
@@ -10929,11 +11418,27 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/lg_hit_rates':
             self._send(200, json.dumps(api_lg_hit_rates(), ensure_ascii=False))
             return
-        # 2026-10-25 分聯賽實測報表（全部工具頁頂部共用；即時 SQL 冇快取）
+        # 分聯賽實測報表（30 秒回應快取；結算事件即作廢）
         if u.path == '/api/league_report':
             q = parse_qs(u.query)
             self._send(200, json.dumps(
                 api_league_report(q.get('tool', [''])[0]), ensure_ascii=False))
+            return
+        if u.path == '/api/tool_results':
+            q = parse_qs(u.query)
+            try:
+                data = api_tool_results(
+                    q.get('tool', [''])[0],
+                    q.get('month', ['2026-10'])[0],
+                    int(q.get('offset', ['0'])[0]),
+                    int(q.get('limit', ['50'])[0]))
+                self._send(200, json.dumps(data, ensure_ascii=False))
+            except ValueError as exc:
+                self._send(400, json.dumps({'error': str(exc)}, ensure_ascii=False))
+            except Exception as exc:
+                import traceback
+                traceback.print_exc()
+                self._send(500, json.dumps({'error': str(exc)}, ensure_ascii=False))
             return
         if u.path == '/api/upcoming':
             q = parse_qs(u.query)
@@ -11003,14 +11508,12 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return
         if u.path == '/api/scan-status':
-            # 2026-10-22 通用掃描狀態（newjx／w88 背景作業真實進度）：
-            # ?kind=newjx|w88 → {running, added, settled, error, started_at}
             try:
                 q = parse_qs(u.query)
                 kind = str(q.get('kind', [''])[0])
-                if kind not in ('newjx', 'w88'):
+                if kind not in ('newjx', 'w88', 'x8', 'f8s', 's8', 'hb', 'home48'):
                     self._send(400, json.dumps(
-                        {'error': 'kind 只可以係 newjx / w88'}, ensure_ascii=False))
+                        {'error': '未知掃描類別'}, ensure_ascii=False))
                     return
                 self._send(200, json.dumps(_bg_scan_public(kind),
                                            ensure_ascii=False))
@@ -11083,14 +11586,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/featured/scan-status':
-            # 2026-10-25 附加掃描歸因＋排隊（前端進度條顯示「邊個觸發」用）；
-            # _feat_scan 原欄位不動，附加 key 向後兼容
-            _st = dict(_feat_scan)
-            _st['triggered_by'] = _unified_scan.get('triggered_by')
-            _st['queue'] = [q['tool'] for q in _SCAN_QUEUE]
-            _st['unified_running'] = _unified_scan['running']
-            _st['unified_done'] = _unified_scan['done']
-            _st['unified_total'] = _unified_scan['total']
+            _st = _tool_status(_feat_scan, 'V2')
+            _st.update(_scan_meta_extra())
             self._send(200, json.dumps(_st, ensure_ascii=False))
             return
         if u.path == '/api/v1/featured/full':
@@ -11104,7 +11601,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/v1/featured/scan-status':
-            _st = dict(_v1_scan)
+            _st = _tool_status(_v1_scan, 'V1')
             _st.update(_scan_meta_extra())
             self._send(200, json.dumps(_st, ensure_ascii=False))
             return
@@ -11243,7 +11740,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/v3/featured/scan-status':
-            self._send(200, json.dumps(_v3_scan, ensure_ascii=False))
+            self._send(200, json.dumps(_tool_status(_v3_scan, 'W'), ensure_ascii=False))
             return
         if u.path == '/api/v3/featlog':
             try:
@@ -11321,7 +11818,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/fwgrid/scan-status':
             q = parse_qs(u.query)
             g = q.get('g', ['7'])[0]
-            self._send(200, json.dumps(_fw_grid_scan.get(g, {}), ensure_ascii=False))
+            self._send(200, json.dumps(
+                _tool_status(_fw_grid_scan.get(g, {}),
+                             'F8S' if g == '8s' else 'F' + g), ensure_ascii=False))
             return
         if u.path == '/api/fwcheck/full':
             try:
@@ -11422,7 +11921,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/ou_rules/scan-status':
-            self._send(200, json.dumps(_ou_rules_scan, ensure_ascii=False))
+            self._send(200, json.dumps(_tool_status(_ou_rules_scan, 'OU'), ensure_ascii=False))
             return
         if u.path == '/api/htft_rules':
             try:
@@ -11434,7 +11933,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/htft_rules/scan-status':
-            self._send(200, json.dumps(_htft_rules_scan, ensure_ascii=False))
+            self._send(200, json.dumps(_tool_status(_htft_rules_scan, 'HTFT'), ensure_ascii=False))
             return
         if u.path == '/api/predstats':
             try:
@@ -11572,22 +12071,35 @@ class Handler(BaseHTTPRequestHandler):
                 traceback.print_exc()
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
-        if u.path == '/api/8x/scan':
+        if u.path == '/api/tool/open':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
             try:
-                if not fw8x:
-                    self._send(500, json.dumps({'error': 'fw8x 模組未載入'},
-                                               ensure_ascii=False))
-                    return
-                c = db()
-                a = fw8x.scan(c)
-                s = fw8x.settle(c)
-                c.close()
-                _scan_extras()   # 2026-10-22：順手爬進行中賽果＋主動全表結算
-                self._send(200, json.dumps({'added': a, 'settled': s},
+                self._send(200, json.dumps(do_open_tool(body.get('tool')),
                                            ensure_ascii=False))
             except Exception as e:
-                import traceback
-                traceback.print_exc()
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
+        if u.path == '/api/tool/open-status':
+            self._send(200, json.dumps(do_open_status(), ensure_ascii=False))
+            return
+        if u.path in ('/api/tool/scan', '/api/tool/recompute'):
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                action = 'recompute' if u.path.endswith('recompute') else 'scan'
+                self._send(200, json.dumps(
+                    do_tool_recompute(body.get('tool'), action), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
+        if u.path == '/api/8x/scan':
+            try:
+                self._send(200, json.dumps(do_tool_recompute('X8'),
+                                           ensure_ascii=False))
+            except Exception as e:
                 self._send(500, json.dumps({'error': str(e)}, ensure_ascii=False))
             return
         if u.path == '/api/w88/scan':
@@ -11598,8 +12110,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(500, json.dumps({'error': 'w88_engine 模組未載入'},
                                                ensure_ascii=False))
                     return
-                started = _start_unified_scan(tool='88W掃描掣')
-                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
+                started = do_tool_recompute('W88')
                 self._send(200, json.dumps(
                     {'running': True, 'started': started.get('started')},
                     ensure_ascii=False))
@@ -11615,8 +12126,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(500, json.dumps({'error': 'newjx_engine 模組未載入'},
                                                ensure_ascii=False))
                     return
-                started = _start_unified_scan(tool='新精選掃描掣')
-                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
+                started = do_tool_recompute('JX')
                 self._send(200, json.dumps(
                     {'running': True, 'started': started.get('started')},
                     ensure_ascii=False))
@@ -11690,6 +12200,24 @@ class Handler(BaseHTTPRequestHandler):
                 import traceback
                 traceback.print_exc()
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
+            return
+        if u.path == '/api/update-odds':
+            try:
+                self._send(200, json.dumps(do_update_odds(), ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
+            return
+        if u.path == '/api/recompute':
+            n = int(self.headers.get('Content-Length', 0))
+            body = json.loads(self.rfile.read(n) or b'{}')
+            try:
+                self._send(200, json.dumps(
+                    do_recompute(int(body.get('hours', 48) or 48)),
+                    ensure_ascii=False))
+            except Exception as e:
+                self._send(500, json.dumps({'ok': False, 'error': str(e)},
+                                           ensure_ascii=False))
             return
         if u.path == '/api/fetch-batch':
             n = int(self.headers.get('Content-Length', 0))
@@ -11780,16 +12308,13 @@ class Handler(BaseHTTPRequestHandler):
                 # （用戶規格：重跑資料庫所有賽事——已賽場次都逐場重評，純讀取
                 # 重算唔會改賽果；歷史紀錄 idempotent 補齊）。
                 _mids = body.get('mids')
-                _st = _start_unified_scan(
+                _st = (_start_unified_scan(
                     full=bool(body.get('full')),
                     mids=[int(x) for x in _mids] if _mids else None,
                     tool=body.get('tool') or 'V2/精選W掃描掣')
-                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
-                self._send(200, json.dumps(
-                    {'started': _st.get('started', False),
-                     'running': True,
-                     'reset': bool(body.get('reset'))},
-                    ensure_ascii=False))
+                    if body.get('full') or _mids else do_tool_recompute('V2'))
+                _st['reset'] = bool(body.get('reset'))
+                self._send(200, json.dumps(_st, ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
@@ -11797,7 +12322,6 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 if not _check_scan['running']:
                     _scan_thread(_check_scan_job)
-                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
                 self._send(200, json.dumps({'started': True, 'running': True},
                                            ensure_ascii=False))
             except Exception as e:
@@ -11814,13 +12338,9 @@ class Handler(BaseHTTPRequestHandler):
                     conn.commit()
                     conn.close()
                 # 2026-10-25：行緊都照樣 call——入面會排隊
-                _st = _start_unified_scan(tool=body.get('tool') or 'V1掃描掣')
-                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
-                self._send(200, json.dumps(
-                    {'started': _st.get('started', False),
-                     'running': True,
-                     'reset': bool(body.get('reset'))},
-                    ensure_ascii=False))
+                _st = do_tool_recompute('V1')
+                _st['reset'] = bool(body.get('reset'))
+                self._send(200, json.dumps(_st, ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return
@@ -11884,9 +12404,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 # 2026-10-25：行緊都照樣 call——入面會排隊
-                _start_unified_scan(tool='格%s掃描掣' % g)
-                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
-                self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
+                self._send(200, json.dumps(
+                    do_tool_recompute('F8S' if g == '8s' else 'F' + g),
+                    ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
                                            ensure_ascii=False))
@@ -11906,20 +12426,14 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == '/api/ou_rules/scan':
             try:
-                if not _ou_rules_scan['running']:
-                    _scan_thread(_ou_rules_scan_job)
-                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
-                self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
+                self._send(200, json.dumps(do_tool_recompute('OU'), ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
                                            ensure_ascii=False))
             return
         if u.path == '/api/htft_rules/scan':
             try:
-                if not _htft_rules_scan['running']:
-                    _scan_thread(_htft_rules_scan_job)
-                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
-                self._send(200, json.dumps({'ok': True}, ensure_ascii=False))
+                self._send(200, json.dumps(do_tool_recompute('HTFT'), ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)},
                                            ensure_ascii=False))
@@ -11960,12 +12474,9 @@ class Handler(BaseHTTPRequestHandler):
                                  '(SELECT id FROM matches WHERE home_score IS NULL)')
                     conn.commit()
                     conn.close()
-                # 2026-10-25：行緊都照樣 call——入面會排隊
-                _start_unified_scan(tool=body.get('tool') or '精選W掃描掣')
-                _scan_extras()   # 2026-10-22：爬進行中賽果＋主動全表結算
-                self._send(200, json.dumps({'started': True, 'running': True,
-                                            'reset': bool(body.get('reset'))},
-                                           ensure_ascii=False))
+                _st = do_tool_recompute('W')
+                _st['reset'] = bool(body.get('reset'))
+                self._send(200, json.dumps(_st, ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({'ok': False, 'error': str(e)}, ensure_ascii=False))
             return

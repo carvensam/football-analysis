@@ -417,7 +417,7 @@ def pick_result(hc, gv, hs, aws):
     return 'A' if mg > 0 else ('B' if mg < 0 else 'P')
 
 
-def scan(conn, hours=168, grace_min=10):
+def scan(conn, hours=168, grace_min=10, progress=None):
     """賽前掃描：未來 hours 小時內（開賽前 grace 分鐘起）嘅場次，
     聯賽有公式且條件全中→記錄。回傳新增場數。"""
     migrate(conn)
@@ -434,13 +434,33 @@ def scan(conn, hours=168, grace_min=10):
         'AND c.req_name IN (%s) AND m.home_score IS NULL'
         % (grace_min, hours, ','.join('?' * len(formulas))),
         tuple(formulas.keys())).fetchall()
+
+    def report(index, mid, league, status):
+        if not progress:
+            return
+        try:
+            row = conn.execute(
+                'SELECT m.kickoff, ht.name_tc, at.name_tc FROM matches m '
+                'JOIN teams ht ON ht.titan_id=m.home_id '
+                'JOIN teams at ON at.titan_id=m.away_id WHERE m.id=?',
+                (mid,)).fetchone()
+            progress(index, len(rows), (mid, row[0], league, row[1], row[2]), status)
+        except Exception:
+            pass
+
     added = 0
-    for mid, lg in rows:
+    for index, (mid, lg) in enumerate(rows, 1):
         if conn.execute('SELECT 1 FROM fw8x_log WHERE match_id=?',
                         (mid,)).fetchone():
+            report(index, mid, lg, '略過（已記錄）')
             continue
-        got = eval_match(conn, mid, lg)
+        try:
+            got = eval_match(conn, mid, lg)
+        except Exception:
+            report(index, mid, lg, '失敗')
+            raise
         if not got:
+            report(index, mid, lg, '完成')
             continue
         info, f = got
         conn.execute(
@@ -452,6 +472,7 @@ def scan(conn, hours=168, grace_min=10):
              f.get('hit'), f.get('n'), info['hc'], info['gv'],
              info['cho'], info['cao'], now, None, 0))
         added += 1
+        report(index, mid, lg, '完成')
     conn.commit()
     return added
 

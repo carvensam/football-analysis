@@ -94,11 +94,13 @@ table.lib th{color:var(--gold2);position:sticky;top:104px;background:var(--bg2)}
 <div id="topbar">
   <span id="status">載入緊…</span>
   <button class="btn gold" id="btnScan" onclick="doScan()">⚡ 一鍵掃描預測</button>
+  <button class="btn" id="btnRecalc" onclick="doRecompute()">重算</button>
   <button class="btn" onclick="location.href='/'">← 主頁</button>
   <button class="btn" onclick="load()">重新整理</button>
 </div>
-<div id="main">
-<script src="league7.js?v=4" data-tool="88w"></script>
+<div id="main" data-tools="W88,K3">
+<script src="/static/league7.js?v=5" data-tool="88w"></script>
+<script src="/static/league7.js?v=5" data-tool="k3"></script>
   <div class="sumbar" id="sum"></div>
   <div id="mktbar" style="margin:6px 0;display:flex;gap:6px;flex-wrap:wrap"></div>
   <div id="btbar"></div>
@@ -229,7 +231,7 @@ let _scanPoll = null;
 async function doScan(){
   const b = $('#btnScan');
   b.disabled = true;
-  $('#status').textContent = '啟動緊…（會先爬進行中賽事賽果＋補結算各精選表）';
+  $('#status').textContent = '掃描啟動中（只用落庫盤口）';
   try {
     const r = await fetch('/api/w88/scan', {method: 'POST'});
     const d = await r.json();
@@ -238,6 +240,23 @@ async function doScan(){
     return;
   } catch (e) {
     $('#status').textContent = '掃描失敗：' + (e.message || e);
+  }
+  b.disabled = false;
+}
+async function doRecompute(){
+  const b = $('#btnRecalc');
+  b.disabled = true;
+  $('#status').textContent = '重算啟動中（只用落庫盤口）';
+  try {
+    const r = await fetch('/api/tool/recompute', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tool: 'W88'})});
+    const d = await r.json();
+    if (!r.ok || d.error) throw new Error(d.error || r.status);
+    pollScan();
+    return;
+  } catch (e) {
+    $('#status').textContent = '重算失敗：' + (e.message || e);
   }
   b.disabled = false;
 }
@@ -259,9 +278,24 @@ async function pollScan(){
     ? '⚠ ' + s.error
     : `✅ 掃描完成：88W 新增 ${s.added || 0}・結算 ${s.settled || 0}｜8X 新增 ${s.added_8x || 0}・結算 ${s.settled_8x || 0}（${s.started_at || ''}）`;
   $('#btnScan').disabled = false;
+  $('#btnRecalc').disabled = false;
   load();
 }
+function pollOpen(){
+  fetch('/api/tool/open-status').then(r => r.json()).then(d => {
+    $('#status').textContent = d.stage === 'update48'
+      ? `更新48小時盤口 ${d.update.done || 0}/${d.update.total || 0}…`
+      : `全歷史重算 ${d.recompute.done || 0}/${d.recompute.total || 0}…`;
+    if (d.running) { setTimeout(pollOpen, 3000); return; }
+    if (d.error) $('#status').textContent = '開啟更新失敗：' + d.error;
+    load();
+  });
+}
+fetch('/api/tool/open', {method: 'POST', headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({tool: 'w88'})}).then(r => r.json())
+  .then(d => { if (d.error) $('#status').textContent = d.error; else pollOpen(); });
 load();
 </script>
+<script src="/static/tool_results.js"></script>
 </body>
 </html>

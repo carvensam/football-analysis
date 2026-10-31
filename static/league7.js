@@ -1,72 +1,68 @@
-/* 2026-10-25 分聯賽/杯賽實測報表（獨立工具頁共用）。
- * 用法（每頁一行）：<script src="league7.js" data-tool="88w"></script>
- * 放喺頁面內容頂部位置——script 會喺自己位置前插入報表卡。
- * 後端 /api/league_report 即時 SQL：賽事一結算，下次載入即反映。 */
 (function(){
-  var me = document.currentScript;
-  // 2026-10-26 iframe 內 currentScript 間中為 null（parser 時序）令報表卡唔插入——
-  // fallback 搵 script[data-tool] 標記，再唔得主動搵 main/body 頂。
-  if (!me) me = document.querySelector('script[data-tool]');
+  var me = document.currentScript || document.querySelector('script[data-tool]');
   var tool = (me && me.dataset) ? me.dataset.tool : '';
-  var UP = 'var(--up, #3fb950)', DOWN = 'var(--down, #f85149)', DIM = 'var(--dim, #8b94a3)';
-  var box = document.createElement('div');
+  var box = document.createElement('section');
+  box.setAttribute('aria-label', '分聯賽及杯賽實測');
   box.style.cssText = 'margin:10px auto;max-width:1000px;padding:0 10px';
-  // 2026-10-26：一律插去 #main 之前（body 層）——iframe 頁內 #main 內容會俾
-  // 頁面自己嘅重建邏輯成個換走（盒插喺 main 裏面會跟住被掟）；body 層冇人郁。
-  var mainEl = document.getElementById('main');
-  if (mainEl && mainEl.parentNode) mainEl.parentNode.insertBefore(box, mainEl);
+  var main = document.getElementById('main');
+  if (main && main.parentNode) main.parentNode.insertBefore(box, main);
   else if (me && me.parentNode) me.parentNode.insertBefore(box, me);
-  else if (document.body) document.body.insertBefore(box, document.body.firstChild);
+  else document.body.insertBefore(box, document.body.firstChild);
+  var loading = false;
   function esc(s){
     return String(s == null ? '' : s).replace(/[&<>"]/g,
       function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; });
   }
-  // 2026-10-26 v4：iframe 內 fetch 會俾 60s 自動刷新cut線／慢響應卡住——
-  // 加 8s 超時＋每 20s 重試，直到攞到數據先停；載入期間盒有最小高度。
-  box.innerHTML = '<div style="color:' + DIM + ';font-size:13px;padding:14px 4px">🏆 分聯賽/杯賽實測：⏳ 載入緊…</div>';
-  function loadTable(){
-    var ctl = null;
-    try { ctl = new AbortController(); setTimeout(function(){ ctl.abort(); }, 8000); } catch (e) {}
-    fetch('/api/league_report?tool=' + encodeURIComponent(tool), ctl ? {signal: ctl.signal} : {})
-    .then(function(r){ return r.json(); })
-    .then(function(d){
-      if (!d.rows || !d.rows.length){
-        box.innerHTML = '<div style="color:' + DIM + ';font-size:13px">🏆 分聯賽/杯賽實測：暫無 2026 已結算紀錄。</div>';
-        return;
-      }
-      if (!d.rows || !d.rows.length){
-        box.innerHTML = '<div style="color:' + DIM + ';font-size:13px">🏆 分聯賽/杯賽實測：暫無 2026 已結算紀錄。</div>';
-        return;
-      }
-      /* 2026-10-26 手機走哂位根因：5 欄 nowrap flex 闊過熒幕時右欄被裁、聯賽名被
-       * ellipsis 食晒（文字缺失）。改 display:table（欄位對齊、全字可見）＋外層橫掃。 */
-      var CELL = 'display:table-cell;white-space:nowrap;padding:4px 12px 4px 0;font-size:13px';
-      var h = '<div style="background:var(--card, #1a2230);border:1px solid var(--line, #2b3648);border-radius:10px;padding:10px 12px">' +
-        '<b>🏆 分聯賽/杯賽實測</b> <span style="color:' + DIM + ';font-size:12px">2026 總成績｜最近七日（結算即更新；近7日勝率排先；雙低於60%<span style="background:rgba(139,0,0,.16)">淺暗紅</span>；表格可橫掃）</span>' +
-        '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><div style="display:table;border-collapse:collapse">' +
-        '<div style="display:table-row">' +
-        '<span style="' + CELL + ';font-size:11px;color:' + DIM + '"></span>' +
-        '<span style="' + CELL + ';font-size:11px;color:' + DIM + '">2026 總成績</span>' +
-        '<span style="' + CELL + ';font-size:11px;color:' + DIM + ';padding:4px 0 4px 12px;text-align:right">勝率</span>' +
-        '<span style="' + CELL + ';font-size:11px;color:' + DIM + '">最近七日</span>' +
-        '<span style="' + CELL + ';font-size:11px;color:' + DIM + ';padding:4px 0 4px 12px;text-align:right">勝率</span></div>';
-      for (var i = 0; i < d.rows.length; i++){
-        var r = d.rows[i];
-        var hit = r.hit != null ? r.hit.toFixed(1) + '%' : '—';
-        var hit7 = r.hit7 != null ? r.hit7.toFixed(1) + '%' : '—';
-        h += '<div style="display:table-row;' + (r.warn ? 'background:rgba(139,0,0,.16);' : '') + '">' +
-          '<span style="' + CELL + '">' + esc(r.league) + '</span>' +
-          '<span style="' + CELL + ';color:' + DIM + '">' + r.n + '場｜<b style="color:' + UP + '">贏' + r.w + '</b>｜<b style="color:' + DOWN + '">輸' + r.l + '</b>' + (r.p ? '｜<span style="color:' + DIM + '">走' + r.p + '</span>' : '') + '</span>' +
-          '<b style="' + CELL + ';padding:4px 0 4px 12px;text-align:right;color:' + (r.hit != null && r.hit >= 50 ? UP : DOWN) + '">' + hit + '</b>' +
-          '<span style="' + CELL + ';color:' + DIM + '">' + (r.n7 != null ? r.n7 + '場｜<b style="color:' + UP + '">贏' + (r.w7 || 0) + '</b>｜<b style="color:' + DOWN + '">輸' + (r.l7 || 0) + '</b>' + (r.p7 ? '｜走' + r.p7 : '') : '—') + '</span>' +
-          '<b style="' + CELL + ';padding:4px 0 4px 12px;text-align:right;color:' + (r.hit7 != null ? (r.hit7 >= 50 ? UP : DOWN) : DIM) + '">' + hit7 + '</b></div>';
-      }
-      box.innerHTML = h + '</div></div></div>';
-    })
-    .catch(function(){
-      box.innerHTML = '<div style="color:' + DIM + ';font-size:13px">🏆 分聯賽/杯賽實測：⏳ 載入緊（重試中）…</div>';
-      setTimeout(loadTable, 20000);
-    });
+  function message(text, error){
+    box.innerHTML = '<div style="padding:12px;color:' + (error ? '#ff9d9d' : 'var(--dim,#8b94a3)') + '">' + esc(text) + '</div>';
   }
+  function render(rows){
+    var cell = 'white-space:nowrap;padding:5px 10px;border-bottom:1px solid var(--line,#2b3648);font-size:13px';
+    var h = '<div style="background:var(--card,#1a2230);border:1px solid var(--line,#2b3648);border-radius:10px;padding:10px 12px">' +
+      '<b>分聯賽／杯賽實測</b> <span style="color:var(--dim,#8b94a3);font-size:12px">2026 總成績｜最近七日（按賽事日期；每60秒更新；表格可橫掃）</span>' +
+      '<div style="overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch">' +
+      '<table class="league7-table" style="border-collapse:collapse;width:100%;min-width:680px;max-width:none"><thead><tr>' +
+      ['聯賽／杯賽', '2026 總成績', '勝率', '最近七日', '勝率'].map(function(x, i){
+        return '<th style="' + cell + ';text-align:' + (i === 2 || i === 4 ? 'right' : 'left') + ';color:var(--gold2,#f5d76e)">' + x + '</th>';
+      }).join('') + '</tr></thead><tbody>';
+    rows.forEach(function(r){
+      function hit(v){ return v == null ? '—' : Number(v).toFixed(1) + '%'; }
+      function color(v){ return v == null ? 'var(--dim,#8b94a3)' : (v >= 50 ? '#3fb950' : '#f85149'); }
+      h += '<tr' + (r.warn ? ' style="background:rgba(139,0,0,.16)"' : '') + '>' +
+        '<td style="' + cell + '">' + esc(r.league) + '</td>' +
+        '<td style="' + cell + '">' + r.n + '場｜贏' + r.w + '｜輸' + r.l + (r.p ? '｜走' + r.p : '') + '</td>' +
+        '<td style="' + cell + ';text-align:right;color:' + color(r.hit) + '"><b>' + hit(r.hit) + '</b></td>' +
+        '<td style="' + cell + '">' + (r.n7 == null ? '—' : r.n7 + '場｜贏' + (r.w7 || 0) + '｜輸' + (r.l7 || 0) + (r.p7 ? '｜走' + r.p7 : '')) + '</td>' +
+        '<td style="' + cell + ';text-align:right;color:' + color(r.hit7) + '"><b>' + hit(r.hit7) + '</b></td></tr>';
+    });
+    box.innerHTML = h + '</tbody></table></div></div>';
+  }
+  function loadTable(){
+    if (loading) return;
+    loading = true;
+    var ctl = new AbortController();
+    var timeout = setTimeout(function(){ ctl.abort(); }, 12000);
+    fetch('/api/league_report?tool=' + encodeURIComponent(tool), {signal: ctl.signal, cache: 'no-store'})
+      .then(function(r){
+        return r.json().then(function(d){
+          if (!r.ok || d.error) throw new Error(d.error || ('HTTP ' + r.status));
+          return d;
+        });
+      })
+      .then(function(d){
+        if (d.rows && d.rows.length) render(d.rows);
+        else message('分聯賽／杯賽實測：暫無 2026 已結算紀錄。');
+        if (d.errors) box.insertAdjacentHTML('beforeend',
+          '<div style="color:#ff9d9d;padding:8px">有 ' + Number(d.errors) + ' 場計算失敗，呢個報表未完整。</div>');
+      })
+      .catch(function(e){
+        message('分聯賽／杯賽實測：載入失敗，會自動重試（' + e.message + '）。', true);
+      })
+      .finally(function(){ clearTimeout(timeout); loading = false; });
+  }
+  message('分聯賽／杯賽實測：載入中…');
   loadTable();
+  setInterval(function(){ if (!document.hidden) loadTable(); }, 60000);
+  setInterval(function(){ if (!document.hidden && !box.querySelector('table')) loadTable(); }, 20000);
+  document.addEventListener('visibilitychange', function(){ if (!document.hidden) loadTable(); });
 })();

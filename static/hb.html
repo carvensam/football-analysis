@@ -34,7 +34,7 @@ a{color:var(--accent)}
 .gold-banner.top{top:0;border-bottom:2px solid #8a6d1a}
 .gold-banner.bottom{bottom:0;border-top:2px solid #8a6d1a;font-size:32px}
 #topbar{
-  position:sticky; top:52px; z-index:40; margin:0 -10px;
+  position:sticky; top:52px; z-index:40; margin:0;
   background:var(--bg2); border-bottom:1px solid var(--line);
   display:flex; align-items:center; gap:8px; padding:6px 10px; flex-wrap:wrap;
 }
@@ -140,16 +140,18 @@ table.rel th{background:var(--bg2);color:var(--gold2)}
     <option value="72">72小時</option>
     <option value="168">7天</option>
   </select>
-  <button class="btn gold" id="btnReload">⟳ 重新整理</button>
+  <button class="btn gold" id="btnScan">掃瞄</button>
+  <button class="btn" id="btnRecalc">重算</button>
 </header>
-<main id="main">
-<script src="league7.js?v=4" data-tool="hb"></script>
+<main id="main" data-tools="HB">
+<script src="/static/league7.js?v=5" data-tool="hb"></script>
   <div class="note">大小球＋半全場預測｜數據：易胜博(12BET) 尾盤為準｜撳場次展開預測<br><b style="color:var(--gold2)">2026-10-22 大細重建</b>：逐聯賽獨立挖掘篩選（歷史庫全部欄位——大小線各數值／初終盤變動／臨場變動／大小水位／聯賽場均／主客隊場均總入球／攻防／讓球方向／排名差），訓練期≤2024＋驗證期2025+ 兩邊 ≥82.5% 先收錄。<b>出「精選」要再過門檻：單條獨立 ≥88%，或 ≥2 條同向規則共識</b>；82.5-88% 單條只作『參考訊號』唔出精選。<b>唔場場預測——觀望係常態</b>；規則 live 表現腐化（n≥6 且 &lt;70%）自動停用。頂部「🎯 高機會精選」專區淨顯示有精選嘅場次。運行時全庫回測 88.4%（398 中 352）。51 項分析保留做參考詳情，唔再主導預測。</div>
   <div id="hbPicks" style="margin:8px 0"></div>
   <div id="list"><div class="note">載入中…</div></div>
 </main>
 <div class="gold-banner bottom">悶住贏</div>
 <div class="toast" id="toast"></div>
+<script src="/static/tool_results.js"></script>
 <script src="/static/hb.js?v=5.4.2"></script>
 <script src="/static/crawlbtn.js?v=5.3.1"></script>
 </body>

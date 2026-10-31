@@ -34,7 +34,7 @@ a{color:var(--accent)}
 .gold-banner.top{top:0;border-bottom:2px solid #8a6d1a}
 .gold-banner.bottom{bottom:0;border-top:2px solid #8a6d1a;font-size:32px}
 #topbar{
-  position:sticky; top:52px; z-index:40; margin:0 -10px;
+  position:sticky; top:52px; z-index:40; margin:0;
   background:var(--bg2); border-bottom:1px solid var(--line);
   display:flex; align-items:center; gap:8px; padding:6px 10px; flex-wrap:wrap;
 }
@@ -141,10 +141,12 @@ tr.mode-watch td:first-child{box-shadow:inset 3px 0 0 var(--dim)}
     <option value="72">72小時</option>
     <option value="168">7天</option>
   </select>
-  <button class="btn gold" id="btnReload">⟳ 重新整理</button>
+  <button class="btn gold" id="btnScan">掃瞄</button>
+  <button class="btn" id="btnRecalc">重算</button>
 </header>
-<main id="main">
-<script src="league7.js?v=4" data-tool="8s"></script>
+<main id="main" data-tools="F8S,S8">
+<script src="/static/league7.js?v=5" data-tool="8s"></script>
+<script src="/static/league7.js?v=5" data-tool="g8s"></script>
   <div class="note">專搵<b style="color:#7ee2a0">上盤</b>｜每個聯賽／杯賽獨立公式｜格共識方向為本＋歷史命中率過濾｜數據：易胜博(12BET) 尾盤為準</div>
   <div id="sumbar" class="sumbar"></div>
   <div id="tabs">
@@ -157,6 +159,7 @@ tr.mode-watch td:first-child{box-shadow:inset 3px 0 0 var(--dim)}
 </main>
 <div class="gold-banner bottom">專搵上盤</div>
 <div class="toast" id="toast"></div>
+<script src="/static/tool_results.js"></script>
 <script src="/static/fw8s.js?v=fw8s4"></script>
 <script src="/static/crawlbtn.js?v=5.3.1"></script>
 </body>

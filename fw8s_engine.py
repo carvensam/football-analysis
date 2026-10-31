@@ -177,7 +177,7 @@ def _hist_up_map(conn):
     return out
 
 
-def scan_upcoming(conn, hours=72):
+def scan_upcoming(conn, hours=72, progress=None):
     """掃描未來 hours 小時未開賽場次。
     入選＝6 個公式聯賽內 fw8s_report 通過（寫入 fw8s_log，INSERT OR IGNORE）；
     觀望＝格8共識方向上盤但公式未過（refine_miss）或非公式聯賽（watch）。
@@ -207,10 +207,25 @@ def scan_upcoming(conn, hours=72):
     if any(FORMULAS[ntc.get(rn, rn)]['type'] == 'grid' for _, rn in f_rows):
         v3_engine.load_v3_pool(conn)
     picks, watched = [], []
+    done = 0
+
+    def tick(mid, rn, target, status):
+        nonlocal done
+        done += 1
+        if progress:
+            try:
+                target = target or {}
+                progress(done, len(rows), (mid, target.get('kickoff', ''), rn,
+                                            target.get('home', ''), target.get('away', '')), status)
+            except Exception:
+                pass
+
     for mid, rn in f_rows:
+        t = None
         try:
             t = se.get_target(conn, mid)
             if not t:
+                tick(mid, rn, None, '略過（找不到場次）')
                 continue
             rep = fw8s_report(conn, t)
             oc = (t.get('odds') or {}).get('closing') or {}
@@ -243,15 +258,22 @@ def scan_upcoming(conn, hours=72):
                 watched.append(dict(
                     base, mode='refine_miss', conds=[f['desc']],
                     miss_conds=[rep.get('fail') or '公式未通過']))
+            tick(mid, rn, t, '完成')
         except Exception:
             traceback.print_exc()
+            tick(mid, rn, t, '失敗')
     # 非公式聯賽：格8共識上＋歷史未過 65% → watch
     for mid, rn in rows:
-        if ntc.get(rn, rn) in _active_formulas() or mid not in grid8_up:
+        if ntc.get(rn, rn) in _active_formulas():
             continue
+        if mid not in grid8_up:
+            tick(mid, rn, None, '略過（非上盤共識）')
+            continue
+        t = None
         try:
             t = se.get_target(conn, mid)
             if not t:
+                tick(mid, rn, None, '略過（找不到場次）')
                 continue
             oc = (t.get('odds') or {}).get('closing') or {}
             hu = hist.get(rn, {})
@@ -264,8 +286,10 @@ def scan_upcoming(conn, hours=72):
                 'odds': ('主{}/客{}'.format(oc.get('ho'), oc.get('ao'))
                          if oc.get('ho') is not None else None),
                 'hist_up_r': hu.get('up_r'), 'hist_n': hu.get('n')})
+            tick(mid, rn, t, '完成')
         except Exception:
             traceback.print_exc()
+            tick(mid, rn, t, '失敗')
     picks.sort(key=lambda r: r['kickoff'])
     watched.sort(key=lambda r: r['kickoff'])
     st = {'n': 0, 'w': 0, 'l': 0, 'p': 0}

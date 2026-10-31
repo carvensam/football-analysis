@@ -21,6 +21,8 @@ TOOL_DEFS = [
     {'key': 'JX', 'name': '新精選', 'page': '新精選頁'},
     {'key': 'HB', 'name': '好波', 'page': '好波頁'},
     {'key': 'K3', 'name': 'K3（舊紀錄）', 'page': '88W頁'},
+    {'key': 'OU', 'name': '大小方法', 'page': '大小方法頁'},
+    {'key': 'HTFT', 'name': '半全場方法', 'page': '半全場方法頁'},
 ]
 
 _SPECS = [
@@ -189,7 +191,19 @@ def _db_path(conn):
         return ''
 
 
-def _build_stats(conn, cutoff):
+def _dynamic_selection(key, card):
+    definition = _DEF_BY_KEY[key]
+    raw_dir = str(card.get('direction') or '')
+    filters = _strings(card.get('filter'))
+    return {'key': key, 'name': definition['name'], 'page': definition['page'],
+            'direction': _DIR.get(raw_dir, raw_dir),
+            'filter': '＋'.join(filters), 'result': card.get('result'),
+            '_signature': json.dumps([key, raw_dir, filters], ensure_ascii=False,
+                                     sort_keys=True, separators=(',', ':')),
+            '_card_id': card.get('id')}
+
+
+def _build_stats(conn, cutoff, dynamic=None):
     all_buckets = {}
     recent_buckets = {}
     for spec in _SPECS:
@@ -201,22 +215,32 @@ def _build_stats(conn, cutoff):
             if (row.get('kickoff') or '') >= cutoff:
                 _bump(recent_buckets.setdefault(sig, {'w': 0, 'l': 0, 'p': 0}),
                       row.get('result'))
+    for key, cards in (dynamic or {}).items():
+        for card in cards:
+            if card.get('result') not in ('W', 'L', 'P'):
+                continue
+            sig = _dynamic_selection(key, card)['_signature']
+            _bump(all_buckets.setdefault(sig, {'w': 0, 'l': 0, 'p': 0}),
+                  card['result'])
+            if (card.get('kickoff') or '') >= cutoff:
+                _bump(recent_buckets.setdefault(sig, {'w': 0, 'l': 0, 'p': 0}),
+                      card['result'])
     return {'all': all_buckets, 'recent': recent_buckets}
 
 
-def _stats(conn, cutoff, use_cache):
+def _stats(conn, cutoff, use_cache, dynamic=None):
     path = _db_path(conn)
     now = time.time()
     if use_cache and _CACHE['data'] is not None \
             and _CACHE['db'] == path and now - _CACHE['ts'] < _CACHE_TTL:
         return _CACHE['data']
-    data = _build_stats(conn, cutoff)
+    data = _build_stats(conn, cutoff, dynamic)
     if use_cache:
         _CACHE.update(ts=now, db=path, data=data)
     return data
 
 
-def attach_home_tools(conn, matches, now=None):
+def attach_home_tools(conn, matches, now=None, dynamic=None):
     ids = sorted({int(m['id']) for m in matches if m.get('id') is not None})
     if now is None:
         now = datetime.now(timezone.utc) + timedelta(hours=8)
@@ -224,7 +248,7 @@ def attach_home_tools(conn, matches, now=None):
     else:
         use_cache = False
     cutoff = (now - timedelta(days=14)).strftime('%Y-%m-%d %H:%M:%S')
-    stats = _stats(conn, cutoff, use_cache)
+    stats = _stats(conn, cutoff, use_cache, dynamic)
     grouped = {mid: [] for mid in ids}
     for spec in _SPECS:
         for start in range(0, len(ids), 300):
@@ -237,6 +261,21 @@ def attach_home_tools(conn, matches, now=None):
                 selection['recent14'] = _pack(stats['recent'].get(
                     sig, {'w': 0, 'l': 0, 'p': 0}))
                 grouped.setdefault(row['match_id'], []).append(selection)
+    for key, cards in (dynamic or {}).items():
+        for card in cards:
+            if not card.get('direction') or not card.get('filter'):
+                continue
+            mid = card.get('id')
+            if mid not in grouped:
+                continue
+            selection = _dynamic_selection(key, card)
+            sig = selection.pop('_signature')
+            selection.pop('_card_id', None)
+            selection['history'] = _pack(stats['all'].get(
+                sig, {'w': 0, 'l': 0, 'p': 0}))
+            selection['recent14'] = _pack(stats['recent'].get(
+                sig, {'w': 0, 'l': 0, 'p': 0}))
+            grouped[mid].append(selection)
     for match in matches:
         match['tool_picks'] = grouped.get(match.get('id'), [])
     return TOOL_DEFS

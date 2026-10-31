@@ -183,7 +183,7 @@ def eval_match(conn, mid, lg=None):
             ah.get('handicap'), ah.get('giver'), now)
 
 
-def scan(conn, hours=168, grace_min=10):
+def scan(conn, hours=168, grace_min=10, progress=None):
     """賽前掃描：未來 hours 小時、聯賽有新精選方法、條件全中 → 記入 newjx_log。"""
     migrate(conn)
     rules = load_rules()
@@ -198,15 +198,32 @@ def scan(conn, hours=168, grace_min=10):
         'AND c.req_name IN (%s) AND m.home_score IS NULL'
         % (grace_min, hours, ','.join('?' * len(rules))),
         tuple(rules.keys())).fetchall()
+
+    def report(index, mid, league, status):
+        if not progress:
+            return
+        try:
+            row = conn.execute(
+                'SELECT m.kickoff, ht.name_tc, at.name_tc FROM matches m '
+                'JOIN teams ht ON ht.titan_id=m.home_id '
+                'JOIN teams at ON at.titan_id=m.away_id WHERE m.id=?',
+                (mid,)).fetchone()
+            progress(index, len(rows), (mid, row[0], league, row[1], row[2]), status)
+        except Exception:
+            pass
+
     added = 0
     hits = []
-    for mid, lg in rows:
+    for index, (mid, lg) in enumerate(rows, 1):
         try:
             vals = eval_match(conn, mid, lg)
             if vals:
                 hits.append(vals)
         except Exception:
             traceback.print_exc()
+            report(index, mid, lg, '失敗')
+            continue
+        report(index, mid, lg, '完成')
     for vals in hits:
         cur = conn.execute(
             'INSERT OR IGNORE INTO newjx_log VALUES(?,?,?,?,?,?,?,?,?)',

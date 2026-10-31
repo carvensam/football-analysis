@@ -212,7 +212,11 @@ async function refreshWorkLog(){
     live += `<div class="wl-live">進行中：${esc(a.source || '')}｜${esc(a.phase || '')}｜` +
       `已爬取 ${a.done == null ? '—' : a.done}／總爬取 ${a.total == null ? '—' : a.total}</div>`;
   }
-  if (d.recalc && d.recalc.running) {
+  if (d.tools && d.tools.length) {
+    live += d.tools.map(t => `<div class="wl-live">重算｜${esc(t.tool)}｜` +
+      `${t.done == null ? '—' : t.done}/${t.total == null ? '—' : t.total}｜` +
+      `${esc(t.status || '')}${t.triggered_by ? '｜' + esc(t.triggered_by) : ''}</div>`).join('');
+  } else if (d.recalc && d.recalc.running) {
     const r = d.recalc;
     live += `<div class="wl-live">爬取後重算中：${esc(r.tool || '全部工具')}｜${esc(r.match || '')}｜` +
       `${r.done || 0}/${r.total || 0}｜觸發：${esc(r.triggered_by || '')}</div>`;
@@ -273,7 +277,6 @@ function goto(pg){
     picks: () => loadPicksPage(),
     featlog: () => loadFeatlog(),
     oupred: () => loadOupred(),
-    feathourly: () => loadFeatHourly(),
     ou: () => loadOuRules(),
     htftm: () => loadHtftRules(),
     pstat: () => loadPredStats(),
@@ -286,11 +289,13 @@ function goto(pg){
     },
     fw8s: () => {
       League7.mount('8s', $('#fw8sLg7Mount'));
+      League7.mount('g8s', $('#fw8sLg7Mount'));
       const f = $('#fw8sFrame');
       if (f && !f.src) f.src = '/fw8s';
     },
     w88: () => {
       League7.mount('88w', $('#w88Lg7Mount'));
+      League7.mount('k3', $('#w88Lg7Mount'));
       const f = $('#w88Frame');
       if (f && !f.src) f.src = '/88w';
     },
@@ -305,6 +310,8 @@ function goto(pg){
     removed: () => loadRemoved(),
     settings: () => loadSettings(),
     home: () => loadHome()}[pg] || (() => {}))();
+  startToolOpen(pg);
+  if (window.ToolResults) ToolResults.load(pg);
   window.scrollTo(0, 0);
 }
 $('#tabs').addEventListener('click', e => {
@@ -417,8 +424,7 @@ async function loadHtft(){
 /* ---------- 主頁 ---------- */
 let homeData = {upcoming: [], played: []};
 /* 已完賽回查篩選（2026-10-11，二選一或二選二，同半全場頁一樣玩法） */
-let playedHours = 120, playedCat = 'all';
-function playedSetHours(v){ playedHours = +v; loadHome(); }
+let playedHours = 24, playedCat = 'all';
 function playedSetCat(v){ playedCat = v; loadHome(); }
 /* 指定聯賽（2026-10-11 用戶規格：揀聯賽類可以再揀指定聯賽，例如英超）——
    聯賽清單由已載入數據提取，純 client-side 過濾，撳完即時變唔使等 fetch */
@@ -427,12 +433,8 @@ function playedSetLg(v){ playedLg = v; renderHome(); }
 async function loadHome(){
   $('#homeList').innerHTML = '<div class="note">⏳ 載入緊：賽事清單（即將開賽＋已完賽）…</div>';
   LoadX.show('載入賽事清單');
-  const hours = $('#hoursSel').value;
-  let q = '/api/v3/list?hours=' + hours;
-  if (playedHours !== 120 || playedCat !== 'all'){
-    q += '&fin_hours=' + playedHours;
-    if (playedCat !== 'all') q += '&fin_cat=' + encodeURIComponent(playedCat);
-  }
+  let q = '/api/v3/list?hours=48&fin_hours=24';
+  if (playedCat !== 'all') q += '&fin_cat=' + encodeURIComponent(playedCat);
   try {
     window._jfRetryHook = n => {
       $('#homeList').innerHTML = '<div class="note">⏳ 伺服器重啟緊／網絡不穩，自動重試中（第 '
@@ -1028,52 +1030,18 @@ function renderHome(){
     loadHome();
   });
 }
-$('#hoursSel').onchange = loadHome;
-$('#btnReload').onclick = loadHome;
-$('#btnFetchAll').onclick = async function(){
+$('#btnRecalc').onclick = async function(){
+  if (this.disabled) return;
   this.disabled = true;
   try {
-    const list = homeData.upcoming.filter(m => !m.has_odds);
-    if (!list.length) { toast('全部場次都已有賠率'); this.disabled = false; return; }
-    let ok = 0, fail = 0, cached = 0;
-    $('#updInfo').textContent = `獲取賠率中 0/${list.length}…`;
-    LoadX.show('補爬缺賠率場次', list.length);
-    for (const m of list) {
-      try {
-        const r = await jpost('/api/fetch', {id: m.id});
-        if (r.cached) cached++; else r.ok ? ok++ : fail++;
-      } catch (e) { fail++; }
-      $('#updInfo').textContent = `獲取賠率中 ${ok + fail + cached}/${list.length}…`;
-      LoadX.prog(ok + fail + cached, list.length);
-    }
-    LoadX.hide();
-    $('#updInfo').textContent = `獲取完成：成功 ${ok}｜失敗 ${fail}${cached ? `｜${cached} 場兩分鐘內已獲取過（限流，唔使重複）` : ''}`;
-  } finally {
-    this.disabled = false;
-    loadHome();
-  }
-};
-$('#btnUpdate').onclick = async function(){
-  this.disabled = true;
-  try {
-    const r = await jpost('/api/update', {});
-    if (r.error) toast(r.error);
-    pollUpdateLoop();
+    const r = await jpost('/api/recompute', {hours: 48, all_tools: true});
+    if (r.error) { toast(r.error); this.disabled = false; return; }
+    pollScanJob('home48', '/api/scan-status?kind=home48', this, '#updInfo', loadHome);
   } catch (e) {
-    toast('更新失敗：' + e.message);
+    toast('重算失敗：' + e.message);
     this.disabled = false;
   }
 };
-$('#btnWin24').onclick = () => winUpdate('24h');
-$('#btnWin30').onclick = () => winUpdate('30m');
-$('#btnWin10').onclick = () => winUpdate('10m');
-async function winUpdate(win){
-  try {
-    const r = await jpost('/api/update-window', {window: win});
-    if (r.error) toast(r.error);
-    pollUpdateLoop();
-  } catch (e) { toast('窗口更新失敗：' + e.message); }
-}
 /* ⚡ 一鍵即時更新：畫面上列出的場次全部強制重抓最新賠率同盤口。
    手機直爬模式（雲端伺服器＋Android APP）：由手機經原生接口逐場直爬 titan007；
    伺服器模式（本機）：伺服器端批量（代理池） */
@@ -1084,12 +1052,12 @@ function serverFetchBatch(btn, ids){
    * ids（2026-10-24）：手機直爬核對完，淨係重抓『同本機唔一致/本機缺失』
    * 嘅場——咁手機撳掣都真係更新到落庫＋重算，唔再係齋核對空殼。 */
   btn.disabled = true;
-  const body = {hours: +($('#hoursSel').value || 0)};
+  const body = {hours: 48};
   if (ids && ids.length) body.ids = ids;
-  jpost('/api/fetch-batch', body)
+  return jpost('/api/update-odds', body)
     .then(function(r){
       if (r.error && !r.running) { toast(r.error); btn.disabled = false; return; }
-      LoadX.show('更新賠率＋重算資格');
+      LoadX.show('更新賠率（未來48小時）');
       pollFbatch();
     })
     .catch(function(e){ toast('即時更新失敗：' + e.message); btn.disabled = false; });
@@ -1099,60 +1067,10 @@ $('#btnOddsNow').onclick = async function(){
   if (window.PhoneCrawl && PhoneCrawl.modeOn) { phoneBatchAll(this); return; }
   serverFetchBatch(this);
 };
-/* 🔄 重抓重算（2026-10-21）：重抓全部缺口盤口 → 重算八個精選系統資格
- * 2026-10-22 修復「撳完無反應」＋一撳即跑：
- * ① 唔用 confirm()——部分手機內嵌瀏覽器/WebView 會靜默封殺 confirm；
- *    亦唔要兩撳確認——用戶指示：手機一撳就 update（加入合資格／踢走唔合格）。
- * ② 後端錯誤唔再淨係一閃即逝嘅 toast，同時寫落 #updInfo 長駐顯示。
- * ③ 雲端真係跑到：雲端模式＝重算八個精選資格（歷史缺口重抓留俾本機）。 */
-$('#btnRegrab').onclick = async function(){
-  if (this.disabled) return;
-  this.disabled = true;
-  $('#updInfo').textContent = '🔄 重抓重算啟動中…';
-  const r = await fetch('/api/regrab-recompute', {method: 'POST'})
-    .then(x => x.json()).catch(() => null);
-  if (!r || !r.ok) {
-    const msg = (r && r.error) || '連線失敗';
-    toast(msg);
-    $('#updInfo').textContent = '🔄 重抓重算：' + msg;
-    this.disabled = false;
-    return;
-  }
-  if (r.mode === 'cloud')
-    $('#updInfo').textContent = '🔄 雲端重算緊：合資格加入／唔合資格踢走（新精選＋88W 全年回查都做埋）…';
-  LoadX.show('重抓缺口＋重算資格');
-  pollRegrab();
-};
-async function pollRegrab(){
-  const st = await fetch('/api/regrab-recompute').then(x => x.json()).catch(() => null);
-  if (!st) { setTimeout(pollRegrab, 8000); return; }
-  if (st.error) {
-    $('#updInfo').textContent = '🔄 重抓重算出錯：' + st.error;
-    $('#btnRegrab').disabled = false;
-    return;
-  }
-  LoadX.hide();
-  if (!st.running) {
-    if (!st.last) {
-      /* 從未跑過（或伺服器剛重啟、進行中狀態已流失）——唔好假報「完成」 */
-      $('#updInfo').textContent = '';
-      $('#btnRegrab').disabled = false;
-      return;
-    }
-    $('#updInfo').textContent = '🔄 重抓重算完成（' + st.last + '）——八個精選系統資格已重算';
-    $('#btnRegrab').disabled = false;
-    toast('🔄 重抓重算完成');
-    loadHome();
-    return;
-  }
-  $('#updInfo').textContent = '🔄 重抓重算進行中：' + (st.phase || '') +
-    (st.requalify && st.requalify.phase ? '（' + st.requalify.phase + '）' : '');
-  setTimeout(pollRegrab, 8000);
-}
 async function phoneBatchAll(btn){
   btn.disabled = true;
-  /* 即將開賽全部 ＋ 進行中（已開賽未有賽果）——後者尾盤即最新參考盤 */
-  const list = homeData.upcoming.concat(homeData.played.filter(m => !m.score));
+  const source = await jget('/api/upcoming?hours=48');
+  const list = (source.upcoming || []).concat((source.played || []).filter(m => !m.score));
   if (!list.length) { toast('冇可更新場次'); btn.disabled = false; return; }
   /* 開爬前網絡自測：WiFi IP 俾 titan007 封嗰陣，舊版會傻更更逐場白等 20 秒
    * 逾時爬成十幾分鐘先發現全滅（2026-10-11/12 連續兩日 ✗N 嘅元兇）。
@@ -1169,7 +1087,7 @@ async function phoneBatchAll(btn){
         `titan007 封咗你而家嘅網絡 IP）——自動改用伺服器通道更新…`;
       toast('手機直爬唔通，轉用伺服器通道');
       btn.disabled = false;
-      serverFetchBatch(btn);
+      return serverFetchBatch(btn);
       return;
     }
   }
@@ -1184,12 +1102,8 @@ async function phoneBatchAll(btn){
       LoadX.prog(st.done, list.length);
     }, m => m.line || null);
     LoadX.hide();
-    /* 2026-10-24 用戶規格「更新賠率＋重算資格 一鍵＝更新所有盤口及賠率
-     * 及所有工具重算」：舊制手機直爬淨係核對顯示（本機數據為準，唔寫庫），
-     * 撳完掣雲端賠率同工具資格零變動＝空殼。而家：直爬完→唔一致/本機缺失/
-     * 手機網絡錯嘅場，交俾伺服器代理池重抓落庫（手機數據依然唔直接寫
-     * 庫，遵守 10-02 定調）→ 自動行 12 工具資格重檢＋結算。全部一致先至
-     * 真係「唔使更新」。未開盤嘅場跳過（titan007 都係空頁，白燒配額）。 */
+    /* 手機直爬只作核對；差異交伺服器重抓。更新賠率與重算資格已拆開，
+     * 呢個按鈕唔再假稱會自動完成所有工具重算。 */
     if (!r.stopped && r.ok > 0) {
       const stale = list.filter(m => {
         const rr = PhoneCrawl.res[m.id];
@@ -1202,21 +1116,20 @@ async function phoneBatchAll(btn){
         }).length;
         $('#updInfo').textContent =
           `📱 直爬完成：${agreeN} 場一致｜${stale.length} 場唔一致/本機缺失/` +
-          `手機爬唔到——伺服器緊重抓+重算…`;
-        serverFetchBatch(btn, stale.map(m => m.id));
-        return;
+          `手機爬唔到——伺服器緊重抓賠率（不觸發重算）…`;
+        return serverFetchBatch(btn, stale.map(m => m.id));
       }
       $('#updInfo').textContent =
         `📱 直爬完成：全部 ${r.ok} 場同伺服器一致——賠率已係最新，` +
-        `12 工具資格不變（裝置 ${PhoneCrawl.device}）`;
+        `未觸發資格重算（裝置 ${PhoneCrawl.device}）`;
       loadHome();
       refreshCurrentTool();
       return;
     }
     let msg = r.stopped
       ? `📱 手機直爬已按要求停止（做到 ${r.done} 場：✓${r.ok} ✗${r.fail}）`
-      : `📱 手機直爬完成：更新 ${r.ok}｜失敗 ${r.fail}｜未開盤 ${r.noOdds}——` +
-        `已即時顯示＋同步雲端（裝置 ${PhoneCrawl.device}）`;
+      : `📱 手機直爬完成：成功核對 ${r.ok}｜失敗 ${r.fail}｜未開盤 ${r.noOdds}——` +
+        `未觸發資格重算（裝置 ${PhoneCrawl.device}）`;
     if (r.fail > 0) {
       msg += `｜錯誤範例：${(r.errs || []).join('；') || '無回應'}` +
         '。全部場次都失敗＝手機而家嘅網絡連唔到 titan007（多數係 WiFi IP 俾封）——轉用流動數據再撳一次；盤口會繼續用伺服器數據顯示。';
@@ -1228,7 +1141,7 @@ async function phoneBatchAll(btn){
      * 唔使用戶白撳（2026-10-12） */
     if (!r.stopped && r.ok === 0 && r.fail > 0) {
       toast('手機直爬全部失敗，自動改用伺服器通道');
-      serverFetchBatch(btn);
+      return serverFetchBatch(btn);
     }
   } finally {
     btn.disabled = false;
@@ -1259,7 +1172,7 @@ async function pollFbatch(){
       msg += `｜資格重檢 ${rv.checked} 場：保留 ${rv.kept}・剔走唔合資格 ${rv.removed}・新加入 ${rv.added}` +
              (rv.capped ? `（另有 ${rv.capped} 場下輪補）` : '');
     }
-    msg += '，各精選工具已一齊更新';
+    msg += '，未觸發資格重算（需要時請撳「重算資格」）';
     $('#updInfo').textContent = msg;
     loadHome();
     refreshCurrentTool();
@@ -1276,7 +1189,7 @@ function refreshCurrentTool(){
       check: () => loadCheckPage(),
       review: () => loadReview(), htft: () => loadHtft(),
       picks: () => loadPicksPage(), featlog: () => loadFeatlog(),
-      oupred: () => loadOupred(), feathourly: () => loadFeatHourly(),
+      oupred: () => loadOupred(),
       ou: () => loadOuRules(), htftm: () => loadHtftRules(),
       pstat: () => loadPredStats(), x8: () => loadX8(),
       fw12lib: () => loadFw12Lib(), v1: () => loadV1(),
@@ -1658,10 +1571,12 @@ async function loadPicksPage(){
     try {
       const form = b.closest('.bet-form');
       const r = await jpost('/api/bets/delete', {bet_id: +form.dataset.betid});
-      if (r.ok && r.deleted === 1) {
-        toast('已刪除該場待確認注單'); loadPicksPage(); refreshPicksMap();
+      if (r.ok) {
+        await Promise.all([loadPicksPage(), refreshPicksMap()]);
+        toast(r.deleted === 1 ? '已刪除該場待確認注單'
+                              : '該場已不在待確認列，已更新列表');
       } else {
-        toast(r.error || '找不到待確認注單，可能已確認或已刪除');
+        toast(r.error || '刪除失敗，請稍後重試');
       }
     } catch (e) { toast('刪除失敗：' + e.message); } finally { b.disabled = false; }
   });
@@ -2314,7 +2229,8 @@ function fwShareText(p, ud){
 $('#btnFwScan').onclick = async function(){
   this.disabled = true;
   try {
-    await jpost('/api/v3/featured/scan', {tool: '精選W掃描掣'});
+    const r = await jpost('/api/v3/featured/scan', {tool: '精選W掃描掣'});
+    if (r.error) throw new Error(r.error);
     pollScanJob('fw', '/api/v3/featured/scan-status', '#btnFwScan', '#fwScanInfo', loadFeaturedW);
   } catch (e) {
     toast('掃描失敗：' + e.message);
@@ -2459,7 +2375,8 @@ async function loadFwGrid(g){
   $('#btnFw' + g + 'Scan').onclick = async function(){
     this.disabled = true;
     try {
-      await jpost('/api/fwgrid/scan', {g});
+      const r = await jpost('/api/fwgrid/scan', {g});
+      if (r.error) throw new Error(r.error);
       pollScanJob('fwg' + g, '/api/fwgrid/scan-status?g=' + g,
                   '#btnFw' + g + 'Scan', '#fw' + g + 'ScanInfo', () => loadFwGrid(g));
     } catch (e) {
@@ -2526,6 +2443,7 @@ async function loadOuRules(){
     <span>輸 <b class="r-down">${s.losses || 0}</b></span>
     <span>命中率 <b>${pct(s.hit_rate)}</b>（贏÷(贏+輸)）</span></div>
     <div class="note">出手邏輯：命中規則同方向先出，方向衝突或無規則＝觀望唔出。已完場場次按尾線自動結算（贏／走／輸），近 7 日保留。規則卡更新：${esc(d.rules_updated || '—')}。</div>`;
+  League7.mount('ou', $('#ouStats'));
   const scan = d.scan || {};
   $('#ouScanInfo').textContent = scan.running
     ? '掃描中…'
@@ -2549,7 +2467,8 @@ async function loadOuRules(){
 $('#btnOuScan').onclick = async function(){
   this.disabled = true;
   try {
-    await jpost('/api/ou_rules/scan', {});
+    const r = await jpost('/api/ou_rules/scan', {});
+    if (r.error) throw new Error(r.error);
     pollScanJob('ou', '/api/ou_rules/scan-status',
                 '#btnOuScan', '#ouScanInfo', () => loadOuRules(),
                 x => `完成${x.error ? '｜錯誤：' + x.error : ''}`);
@@ -2626,6 +2545,7 @@ async function loadHtftRules(){
         return `<span>${esc(e.name)} <b>${e.w}中${dec}</b>${r==null?'':` ${(r*100).toFixed(1)}%`}<small style="color:var(--dim)"> n=${e.n}</small></span>`;
       }).join('｜') + '</div>');
   }
+  League7.mount('htft', $('#htftmStats'));
   const scan = d.scan || {};
   $('#htftmScanInfo').textContent = scan.running
     ? '掃描中…'
@@ -2649,7 +2569,8 @@ async function loadHtftRules(){
 $('#btnHtftmScan').onclick = async function(){
   this.disabled = true;
   try {
-    await jpost('/api/htft_rules/scan', {});
+    const r = await jpost('/api/htft_rules/scan', {});
+    if (r.error) throw new Error(r.error);
     pollScanJob('htftm', '/api/htft_rules/scan-status',
                 '#btnHtftmScan', '#htftmScanInfo', () => loadHtftRules(),
                 x => `完成${x.error ? '｜錯誤：' + x.error : ''}`);
@@ -2964,17 +2885,29 @@ async function loadReview(){
 }
 
 /* ---------- 過往紀錄（V3 精選W 自動紀錄） ---------- */
-async function loadFeatlog(){
-  $('#flList').innerHTML = '<div class="note">⏳ 載入緊：過往紀錄…</div>';
-  let d;
-  try { d = await jget('/api/v3/featlog'); }
-  catch (e) { $('#flList').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>'; return; }
+let _featlogData = null;
+let _featlogSeq = 0;
+function renderFeatlog(){
+  const d = _featlogData;
+  if (!d) return;
+  const league = $('#flLeague').value;
+  const from = $('#flFrom').value;
+  const to = $('#flTo').value;
+  const result = $('#flResult').value;
+  const asc = $('#flSort').value === 'asc';
+  const rows = [...d.pending, ...d.played].filter(p => {
+    const day = (p.kickoff || '').slice(0, 10);
+    return (!league || p.league === league) && (!from || day >= from) &&
+      (!to || day <= to) && (!result || (p.result || 'pending') === result);
+  }).sort((a, b) => ((a.kickoff || '').localeCompare(b.kickoff || '') ||
+                     ((a.id || 0) - (b.id || 0))) * (asc ? 1 : -1));
   const s = d.stats;
   $('#flStats').innerHTML = `<div class="statbar">
     <span>總紀錄 <b>${s.total}</b></span><span>未開賽 <b>${s.pending}</b></span>
     <span>已完場 <b>${s.played}</b></span>
     <span>贏 <b class="r-up">${s.wins}</b></span><span>輸 <b class="r-down">${s.losses}</b></span>
     <span>命中率 <b>${pct(s.hit_rate)}</b></span></div>`;
+  $('#flCount').textContent = `顯示 ${rows.length}／${s.total} 場（各項篩選同時生效）`;
   const card = p => {
     const res = !p.played ? '<span style="color:var(--dim)">未開賽</span>'
       : p.result === 'W' ? '<b class="r-up">✅ 命中</b>'
@@ -2982,7 +2915,7 @@ async function loadFeatlog(){
       : p.result === 'P' ? '<b>➖ 走</b>' : '<span style="color:var(--dim)">待結算</span>';
     const ud = _fwUD(p);
     return `<div class="mrow" data-mid="${p.id}">
-      <span class="ko">${esc((p.kickoff || '').slice(5, 16))}</span>
+      <span class="ko">${esc((p.kickoff || '').slice(0, 16))}</span>
       <span class="lg">${esc(p.league)}</span>
       <span class="tm">${esc(p.home)} <span class="r">vs</span> ${esc(p.away)}　<span class="r">上盤＝${esc(ud.up)}｜下盤＝${esc(ud.down)}</span></span>
       ${p.score ? `<span class="sc">${esc(p.score)}</span>` : ''}
@@ -2990,13 +2923,35 @@ async function loadFeatlog(){
       <span>${res}</span>
       <span class="ln">${esc(p.line || '')}<br>${esc(p.odds || '')}<br><span style="color:var(--dim)">紀錄 ${esc((p.added_at || '').slice(5, 16))}</span></span></div>`;
   };
-  let h = '';
-  if (d.pending.length) h += `<div class="day-h">🔜 未開賽（${d.pending.length}）</div>` + d.pending.map(card).join('');
-  if (d.played.length) h += `<div class="day-h">📼 已完場（${d.played.length}・最新排先）</div>` + d.played.map(card).join('');
-  if (!h) h = '<div class="note">暫無紀錄。精選W場次一出現會自動紀錄喺度（尾盤快照，計一場）。</div>';
-  $('#flList').innerHTML = h;
+  $('#flList').innerHTML = rows.length ? rows.map(card).join('') :
+    '<div class="note">沒有符合目前篩選條件的紀錄。</div>';
   $$('#flList .mrow').forEach(r => r.onclick = () => openDetail(+r.dataset.mid));
 }
+async function loadFeatlog(){
+  const seq = ++_featlogSeq;
+  $('#flList').innerHTML = '<div class="note">⏳ 載入緊：過往紀錄…</div>';
+  try {
+    const d = await jget('/api/v3/featlog');
+    if (seq !== _featlogSeq) return;
+    _featlogData = d;
+    const selected = $('#flLeague').value;
+    const leagues = [...new Set([...d.pending, ...d.played].map(p => p.league).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b, 'zh-Hant'));
+    $('#flLeague').innerHTML = '<option value="">全部賽事</option>' +
+      leagues.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
+    $('#flLeague').value = leagues.includes(selected) ? selected : '';
+    renderFeatlog();
+  } catch (e) {
+    if (seq === _featlogSeq)
+      $('#flList').innerHTML = '<div class="err">載入失敗：' + esc(String(e)) + '</div>';
+  }
+}
+$('#flFilters').addEventListener('change', renderFeatlog);
+$('#flClear').addEventListener('click', () => {
+  ['flLeague', 'flFrom', 'flTo', 'flResult'].forEach(id => { $('#' + id).value = ''; });
+  $('#flSort').value = 'desc';
+  renderFeatlog();
+});
 
 /* ---------- 舊版本（V1 版面・V1 規則號同 V3 完全隔離） ---------- */
 const V1_MAP_NOTE = `<div class="note">「舊版本」保留 V1 嘅精選及精選Z（V1 規則號①⑤⑧⑫⑮⑱⑭⑰同 V3 項目號係兩套唔同嘅編號，唔可以混）。
@@ -3121,12 +3076,19 @@ async function loadV1(){
   $('#v1zStats').innerHTML = _v1StatsBar(dz.stats, true, 'V1精選Z');
   League7.mount('v1', $('#v1Stats'));
   League7.mount('v1z', $('#v1zStats'));
-  const render = (dd, el, z, tag, refreshUrl) => {
+  const render = (dd, el, z, tag, refreshUrl, limit = 100) => {
+    const pending = dd.pending.slice(0, limit);
+    const played = dd.played.slice(0, limit);
     let h = '';
-    if (dd.pending.length) h += `<div class="day-h">🔜 ${tag}${z ? '精選Z' : '精選'}・未開賽（${dd.pending.length} 場・順開賽時間）</div>` + dd.pending.map(p => _v1Card(p, z, tag)).join('');
-    if (dd.played.length) h += `<div class="day-h">📼 ${tag}${z ? '精選Z' : '精選'}・已完場（${dd.played.length} 場・最新排先，永久保留）</div>` + dd.played.map(p => _v1Card(p, z, tag)).join('');
+    if (pending.length) h += `<div class="day-h">🔜 ${tag}${z ? '精選Z' : '精選'}・未開賽（${dd.pending.length} 場・顯示 ${pending.length}・順開賽時間）</div>` + pending.map(p => _v1Card(p, z, tag)).join('');
+    if (played.length) h += `<div class="day-h">📼 ${tag}${z ? '精選Z' : '精選'}・已完場（${dd.played.length} 場・顯示 ${played.length}・最新排先，永久保留）</div>` + played.map(p => _v1Card(p, z, tag)).join('');
     if (!h) h = `<div class="note">暫無 ${tag}${z ? '精選Z' : '精選'}場次。撳「🔍 重新掃描」即刻篩過。</div>`;
+    const shown = pending.length + played.length;
+    const total = dd.pending.length + dd.played.length;
+    if (shown < total) h += `<button type="button" class="btn v1-more">顯示更多（${shown}/${total} 場）</button>`;
     el.innerHTML = h;
+    const more = el.querySelector('.v1-more');
+    if (more) more.onclick = () => render(dd, el, z, tag, refreshUrl, limit + 100);
     _fillLgSlots();
     [...el.querySelectorAll('.fcard')].forEach(c => {
       const mid = +c.dataset.mid;
@@ -3179,7 +3141,8 @@ function v1ShareText(p, z){
 $('#btnV1Scan').onclick = async function(){
   this.disabled = true;
   try {
-    await jpost('/api/v1/featured/scan', {tool: 'V1掃描掣'});
+    const r = await jpost('/api/v1/featured/scan', {tool: 'V1掃描掣'});
+    if (r.error) throw new Error(r.error);
     pollScanJob('v1', '/api/v1/featured/scan-status', '#btnV1Scan', '#v1ScanInfo', loadV1,
       s => `完成｜新增 ${s.added || 0}（Z ${s.added_z || 0}）${s.error ? '｜錯誤：' + s.error : ''}`);
   } catch (e) {
@@ -3190,7 +3153,8 @@ $('#btnV1Scan').onclick = async function(){
 $('#btnV2Scan').onclick = async function(){
   this.disabled = true;
   try {
-    await jpost('/api/featured/scan', {tool: 'V2掃描掣'});
+    const r = await jpost('/api/featured/scan', {tool: 'V2掃描掣'});
+    if (r.error) throw new Error(r.error);
     pollScanJob('v2', '/api/featured/scan-status', '#btnV2Scan', '#v1ScanInfo', loadV1);
   } catch (e) {
     toast('掃描失敗：' + e.message);
@@ -3223,6 +3187,68 @@ async function pollScanJob(key, url, btnSel, infoSel, onDone, fmtDone){
   if (b) b.disabled = false;
   info.textContent = (fmtDone || (x => `完成｜新增 ${x.added || 0}${x.error ? '｜錯誤：' + x.error : ''}`))(s);
   onDone();
+}
+
+const TOOL_RECOMPUTE_STATUS = {
+  W: ['#fwScanInfo', '/api/v3/featured/scan-status', loadFeaturedW],
+  V1: ['#v1ScanInfo', '/api/v1/featured/scan-status', loadV1],
+  V2: ['#v1ScanInfo', '/api/featured/scan-status', loadV1],
+  F7: ['#fw7ScanInfo', '/api/fwgrid/scan-status?g=7', () => loadFwGrid('7')],
+  F8: ['#fw8ScanInfo', '/api/fwgrid/scan-status?g=8', () => loadFwGrid('8')],
+  F12: ['#fw12ScanInfo', '/api/fwgrid/scan-status?g=12', () => loadFwGrid('12')],
+  F8S: ['#updInfo', '/api/scan-status?kind=f8s', refreshCurrentTool],
+  S8: ['#updInfo', '/api/scan-status?kind=s8', refreshCurrentTool],
+  X8: ['#x8Msg', '/api/scan-status?kind=x8', loadX8],
+  W88: ['#updInfo', '/api/scan-status?kind=w88', refreshCurrentTool],
+  JX: ['#updInfo', '/api/scan-status?kind=newjx', refreshCurrentTool],
+  HB: ['#updInfo', '/api/scan-status?kind=hb', refreshCurrentTool],
+  OU: ['#ouScanInfo', '/api/ou_rules/scan-status', loadOuRules],
+  HTFT: ['#htftmScanInfo', '/api/htft_rules/scan-status', loadHtftRules],
+};
+async function toolRecompute(tool, button){
+  if (button.disabled) return;
+  button.disabled = true;
+  try {
+    const r = await jpost('/api/tool/recompute', {tool});
+    if (r.error) { toast(r.error); button.disabled = false; return; }
+    const cfg = TOOL_RECOMPUTE_STATUS[tool];
+    pollScanJob('tool-' + tool, cfg[1], '#' + button.id, cfg[0], cfg[2]);
+  } catch (e) {
+    toast('重算失敗：' + e.message);
+    button.disabled = false;
+  }
+}
+$$('.tool-recompute').forEach(button => {
+  button.onclick = () => toolRecompute(button.dataset.tool, button);
+});
+
+const OPEN_TOOL_PAGES = new Set([
+  'featw', 'fw7', 'fw8', 'fw12', 'fw8s', 'x8', 'w88', 'newjx',
+  'haobao', 'v1', 'ou', 'htftm',
+]);
+async function startToolOpen(pg){
+  if (!OPEN_TOOL_PAGES.has(pg)) return;
+  try {
+    const r = await jpost('/api/tool/open', {tool: pg});
+    if (r.error) { toast(r.error); return; }
+    pollToolOpen(pg);
+  } catch (e) { toast('開啟工具更新失敗：' + e.message); }
+}
+async function pollToolOpen(pg){
+  try {
+    const d = await jget('/api/tool/open-status');
+    const text = d.stage === 'update48'
+      ? `更新未來48小時盤口：${d.update.done || 0}/${d.update.total || 0}`
+      : `全歷史重算：${d.recompute.done || 0}/${d.recompute.total || 0}`;
+    const info = $('#updInfo');
+    if (info) info.textContent = text;
+    if (d.running) { setTimeout(() => pollToolOpen(pg), 4000); return; }
+    if (d.error) toast(d.error);
+    refreshCurrentTool();
+  } catch (e) {
+    const info = $('#updInfo');
+    if (info) info.textContent = '開啟工作狀態讀取失敗：' + e.message;
+  }
 }
 
 /* ---------- 🗑 剔走專頁（2026-10-24：邊個工具剔走咗邊場＋實際命中率） ---------- */
@@ -3426,98 +3452,6 @@ async function loadOupred(){
   }
 }
 
-/* ---------- ⏰ 精選系列每小時紀錄頁（2026-10-05） ---------- */
-/* ---------- ⏰ 每兩小時自動紀錄：精選W／7／8／12 資格時間線＋尾盤盤口賠率 ---------- */
-let fhPeriod = 'all', fhCat = 'all';
-function fhSetPeriod(v){ fhPeriod = v; loadFeatHourly(); }
-function fhSetCat(v){ fhCat = v; loadFeatHourly(); }
-function _fhLocalDate(offDays){
-  const d = new Date(Date.now() - (offDays || 0) * 864e5);
-  const p = n => String(n).padStart(2, '0');
-  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
-}
-function _fhPeriodOk(ko){
-  if (fhPeriod === 'all') return true;
-  const d = (ko || '').slice(0, 10);
-  if (!d) return false;
-  if (fhPeriod === 'today') return d === _fhLocalDate(0);
-  if (fhPeriod === 'yesterday') return d === _fhLocalDate(1);
-  return d >= _fhLocalDate(parseInt(fhPeriod, 10));
-}
-function _fhSnapTxt(sp){
-  if (!sp) return '';
-  const parts = [];
-  if (sp.ahc != null){
-    parts.push('亞盤 ' + (sp.ahc === 0 ? '平手'
-      : fmtLine(sp.agv === 'home' ? -sp.ahc : sp.ahc))
-      + ' ' + (sp.aho ?? '–') + '/' + (sp.aaw ?? '–'));
-  }
-  if (sp.oul != null){
-    parts.push('大小 ' + sp.oul + ' ' + (sp.ouo ?? '–') + '/' + (sp.ouu ?? '–'));
-  }
-  return parts.length
-    ? ' <span class="tag dim" title="每兩小時紀錄嘅尾盤快照（易勝博 closing）">'
-      + parts.join('｜') + '</span>' : '';
-}
-async function loadFeatHourly(){
-  $('#fhBody').innerHTML = '<div class="note">⏳ 載入緊：每小時紀錄…</div>';
-  try {
-    const d = await jget('/api/feathourly');
-    let h = '';
-    const scan = d.scan || {};
-    h += `<div class="statbar">每兩小時自動紀錄：上次 <b>${esc(scan.last || '未行過')}</b>
-      ｜已行 <b>${scan.runs || 0}</b> 次${scan.running ? '｜⏳ 行緊' : ''}
-      ${scan.error ? '｜<span class="err">錯誤：' + esc(scan.error) + '</span>' : ''}
-      <button class="btn" style="margin-left:auto" onclick="loadFeatHourly()">⟳ 重新整理</button></div>`;
-    /* 2026-10-10：Period／聯賽杯賽類 Filter——兩個獨立可疊加（二選一或二選二） */
-    h += `<div class="statbar">回查篩選：Period
-      <select onchange="fhSetPeriod(this.value)">
-        <option value="all"${fhPeriod==='all'?' selected':''}>全部</option>
-        <option value="today"${fhPeriod==='today'?' selected':''}>今日</option>
-        <option value="yesterday"${fhPeriod==='yesterday'?' selected':''}>昨日</option>
-        <option value="3"${fhPeriod==='3'?' selected':''}>近3日</option>
-        <option value="7"${fhPeriod==='7'?' selected':''}>近7日</option>
-        <option value="30"${fhPeriod==='30'?' selected':''}>近30日</option>
-      </select>
-      ｜類型
-      <select onchange="fhSetCat(this.value)">
-        <option value="all"${fhCat==='all'?' selected':''}>全部</option>
-        <option value="聯賽"${fhCat==='聯賽'?' selected':''}>聯賽</option>
-        <option value="杯賽"${fhCat==='杯賽'?' selected':''}>杯賽</option>
-      </select></div>`;
-    for (const kind of ['W', '7', '8', '12']) {
-      const K = d.kinds[kind];
-      if (!K) continue;
-      const s = K.stats;
-      const list = K.matches.filter(M =>
-        _fhPeriodOk(M.kickoff) && (fhCat === 'all' || M.cat === fhCat));
-      h += `<div class="day-h">★ ${esc(K.name)}：追蹤中 ${s.tracked}｜而家合資格 ${s.now_eligible}｜曾合資格 ${s.ever_eligible}｜最後不合資格 ${s.dropped_final}｜已賽 ${s.played}（W${s.wins}/L${s.losses}/P${s.pushes}）${s.hit_r != null ? '｜命中率 <b style="color:var(--gold2)">' + s.hit_r + '%</b>' : ''}${list.length !== s.tracked ? `｜篩選後 ${list.length} 場` : ''}</div>`;
-      for (const M of list) {
-        const badges = M.hist.map(x => x.elig
-          ? '<span style="color:var(--up)">✓</span>'
-          : '<span style="color:var(--down)">✗</span>').join(' ');
-        let tags = '';
-        if (M.now_elig) tags += '<span class="tag up">合資格</span> ';
-        if (M.final_eligible === 0) tags += '<span class="tag down" title="曾合資格，但尾盤重算唔再合資格">最後不合資格</span> ';
-        if (M.result === 'W') tags += '<span class="tag up">中</span>';
-        else if (M.result === 'L') tags += '<span class="tag down">錯</span>';
-        else if (M.result === 'P') tags += '<span class="tag dim">走</span>';
-        h += `<div class="fcard"><div class="f-top">
-          <span class="f-time">${esc((M.kickoff || '').slice(5, 16))}</span>
-          <span class="lg" style="color:var(--gold2);font-size:12px">${esc(M.league)}</span>
-          <span class="f-teams">${esc(M.home)} vs ${esc(M.away)}</span>
-          ${M.direction ? '<span class="tag dim">' + (M.direction === 'up' ? '上' : '下') + '</span>' : ''}
-          ${_fhSnapTxt(M.snap)}
-          ${tags}<span class="hint">每兩小時資格：${badges}（${M.snaps} 次）</span></div></div>`;
-      }
-      if (!list.length) h += '<div class="note">篩選條件下暫無紀錄。</div>';
-    }
-    $('#fhBody').innerHTML = h;
-  } catch (e) {
-    $('#fhBody').innerHTML = '<div class="err">載入失敗：' + esc(e) + '</div>';
-  }
-}
-
 /* ---------- 2026-10-25 分聯賽/杯賽實測報表（用戶規格：全部工具頁頂部） ----------
  * 後端 /api/league_report?tool=X 即時 SQL（賽事一結算，下次請求即反映——冇快取
  * staleness 問題）。每張表：2026 總成績（場/贏/輸/走/勝率）＋最近七日同口徑；
@@ -3531,58 +3465,67 @@ const League7 = {
     this._c[tool] = {ts: Date.now(), data: d};
     return d;
   },
-  /* 2026-10-26 手機走哂位根因：呢個表 5 欄全部 nowrap，闊過熒幕時右邊兩欄被裁、
-   * 聯賽名被 ellipsis 食晒（用戶：大量文字缺失）。改做 display:table——欄位按內容
-   * 對齊、任何闊度都完整顯示，外層 .lg7scroll overflow-x:auto 手指橫掃。 */
+  _mounted: [],
+  _timer: null,
   rowHtml(r){
     const hit = r.hit != null ? r.hit.toFixed(1) + '%' : '—';
     const hit7 = r.hit7 != null ? r.hit7.toFixed(1) + '%' : '—';
     const c7 = r.hit7 != null ? (r.hit7 >= 50 ? '#3fb950' : '#f85149') : 'var(--dim)';
-    return `<div style="display:table-row;${r.warn ? 'background:rgba(139,0,0,.16);' : ''}">` +
-      `<span style="display:table-cell;white-space:nowrap;padding:4px 12px 4px 0;font-size:13px">${esc(r.league)}</span>` +
-      `<span style="display:table-cell;white-space:nowrap;padding:4px 12px 4px 0;font-size:13px;color:var(--dim)">${r.n}場｜<b style="color:#3fb950">贏${r.w}</b>｜<b style="color:#f85149">輸${r.l}</b>${r.p ? '｜<span style="color:var(--dim)">走' + r.p + '</span>' : ''}</span>` +
-      `<b class="num" style="display:table-cell;white-space:nowrap;padding:4px 0 4px 12px;text-align:right;font-size:13px;color:${r.hit != null && r.hit >= 50 ? '#3fb950' : '#f85149'}">${hit}</b>` +
-      `<span style="display:table-cell;white-space:nowrap;padding:4px 12px;font-size:13px;color:var(--dim)">${r.n7 != null ? r.n7 + '場｜<b style="color:#3fb950">贏' + (r.w7 || 0) + '</b>｜<b style="color:#f85149">輸' + (r.l7 || 0) + '</b>' + (r.p7 ? '｜<span style="color:var(--dim)">走' + r.p7 + '</span>' : '') : '—'}</span>` +
-      `<b class="num" style="display:table-cell;white-space:nowrap;padding:4px 0 4px 12px;text-align:right;font-size:13px;color:${c7}">${hit7}</b></div>`;
+    const cell = 'white-space:nowrap;padding:5px 10px;border-bottom:1px solid var(--line);font-size:13px';
+    return `<tr${r.warn ? ' style="background:rgba(139,0,0,.16)"' : ''}>` +
+      `<td style="${cell}">${esc(r.league)}</td>` +
+      `<td style="${cell};color:var(--dim)">${r.n}場｜<b style="color:#3fb950">贏${r.w}</b>｜<b style="color:#f85149">輸${r.l}</b>${r.p ? '｜走' + r.p : ''}</td>` +
+      `<td style="${cell};text-align:right;color:${r.hit != null && r.hit >= 50 ? '#3fb950' : '#f85149'}"><b>${hit}</b></td>` +
+      `<td style="${cell};color:var(--dim)">${r.n7 != null ? r.n7 + '場｜<b style="color:#3fb950">贏' + (r.w7 || 0) + '</b>｜<b style="color:#f85149">輸' + (r.l7 || 0) + '</b>' + (r.p7 ? '｜走' + r.p7 : '') : '—'}</td>` +
+      `<td style="${cell};text-align:right;color:${c7}"><b>${hit7}</b></td></tr>`;
   },
-  headerHtml(){
-    const c = 'display:table-cell;white-space:nowrap;padding:4px 12px 4px 0;font-size:11px;color:var(--dim);font-weight:400';
-    return `<div style="display:table-row">` +
-      `<span style="${c}"></span>` +
-      `<span style="${c}">2026 總成績</span>` +
-      `<span style="${c};padding:4px 0 4px 12px;text-align:right">勝率</span>` +
-      `<span style="${c}">最近七日</span>` +
-      `<span style="${c};padding:4px 0 4px 12px;text-align:right">勝率</span></div>`;
+  tableHtml(rows){
+    const th = 'white-space:nowrap;padding:5px 10px;text-align:left;font-size:12px;color:var(--gold2)';
+    return '<table class="lg7table" style="border-collapse:collapse;width:100%;min-width:680px;max-width:none">' +
+      `<thead><tr><th style="${th}">聯賽／杯賽</th><th style="${th}">2026 總成績</th>` +
+      `<th style="${th};text-align:right">勝率</th><th style="${th}">最近七日</th>` +
+      `<th style="${th};text-align:right">勝率</th></tr></thead><tbody>` +
+      rows.map(r => this.rowHtml(r)).join('') + '</tbody></table>';
   },
   async renderInto(tool, el){
     try {
       const d = await this.get(tool);
-      el.innerHTML = (d.rows && d.rows.length)
-        ? this.headerHtml() + d.rows.map(r => this.rowHtml(r)).join('')
-        : '<div class="note">暫無 2026 已結算紀錄。</div>';
+      el.innerHTML = ((d.rows && d.rows.length) ? this.tableHtml(d.rows) :
+        '<div class="note">暫無 2026 已結算紀錄。</div>') +
+        (d.errors ? `<div class="err">有 ${d.errors} 場計算失敗，呢個報表未完整。</div>` : '');
     } catch (e) {
       el.innerHTML = '<div class="err">報表載入失敗：' + esc(String(e)) + '</div>';
     }
   },
-  /* 喺容器頂部掛報表卡。注意：容器 innerHTML 全部 set 完之後先 call——
-   * mount 會 prepend，下次 reload 會重建，唔會疊。 */
+  refresh(){
+    this._mounted = this._mounted.filter(m => m.card.isConnected);
+    if (document.hidden) return;
+    for (const m of this._mounted) {
+      if (m.card.offsetParent !== null) this.renderInto(m.tool, m.card.querySelector('.lg7body'));
+    }
+  },
   mount(tool, container){
     if (!container) return;
-    let card = container.querySelector(':scope > .lg7card');
+    let card = container.querySelector(':scope > .lg7card[data-tool="' + tool + '"]');
     if (!card){
       card = document.createElement('div');
       card.className = 'fcard lg7card';
+      card.dataset.tool = tool;
       card.style.margin = '8px 0';
       card.innerHTML = '<div class="f-top" style="flex-wrap:wrap;gap:8px"><b>🏆 分聯賽/杯賽實測</b>' +
-        '<span style="color:var(--dim);font-size:12px">2026 總成績｜最近七日（結算即更新；近7日勝率排先；雙低於60%<span style="background:rgba(139,0,0,.16)">淺暗紅</span>；表格可橫掃）</span></div>' +
-        /* 橫掃容器：表格闊過熒幕時手指掃，唔再裁字（2026-10-26） */
-        '<div style="overflow-x:auto;-webkit-overflow-scrolling:touch">' +
-        '<div class="lg7body" style="display:table;border-collapse:collapse"><div class="note">⏳ 載入緊…</div></div></div>';
+        '<span style="color:var(--dim);font-size:12px">2026 總成績｜最近七日（按賽事日期；每60秒更新；雙低於60%<span style="background:rgba(139,0,0,.16)">淺暗紅</span>；表格可橫掃）</span></div>' +
+        '<div style="overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch">' +
+        '<div class="lg7body"><div class="note">⏳ 載入緊…</div></div></div>';
       container.prepend(card);
     }
+    if (!this._mounted.some(m => m.card === card)) this._mounted.push({tool, card});
     this.renderInto(tool, card.querySelector('.lg7body'));
+    if (!this._timer) this._timer = setInterval(() => this.refresh(), 60000);
   }
 };
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) League7.refresh();
+});
 
 /* ---------- 🧪 8X：66 條優化公式賽前記錄＋賽後自動結算 ---------- */
 let _x8Badge = 0;
@@ -3625,13 +3568,10 @@ async function loadX8(){
         <span>命中率 <b style="color:${bHr != null && bHr >= 0.5 ? '#3fb950' : '#f85149'};font-size:1.2em">${bHr == null ? '—' : (bHr * 100).toFixed(1) + '%'}</b>${bDec ? `（${B.w}/${bDec}）` : ''}</span>
         <span style="color:var(--dim);font-size:12px">更新於 ${esc(B.updated_at || '')}</span></div>
         ${B.excl && B.excl.total ? `<div class="sub" style="margin-top:2px;color:var(--dim)">🚫 已剔除命中率&lt;50%：${B.excl.leagues.map(e => esc(e.league) + ' ' + e.hit_rate + '%').join('、')} → 餘下 <b>${B.excl.total}</b> 場，命中率 <b style="color:#3fb950;font-size:1.1em">${B.excl.hit_rate}%</b></div>` : ''}
-        ${(B.by_league || []).length ? (() => {
+        ${(window._lg7x && window._lg7x.rows || []).length ? (() => {
           /* 2026-10-25 用戶規格：同一表內加最近七日戰果（實測 fw8x_log 結算），
            * 聯賽以近7日勝率最佳排先；2026<60% 且 近7日<60% 淺暗紅 highlight。 */
-          const r7map = {};
-          if (window._lg7x && window._lg7x.rows)
-            for (const r of window._lg7x.rows) r7map[r.league] = r;
-          const merged = B.by_league.map(L => ({L, r7: r7map[L.league] || null}));
+          const merged = (window._lg7x && window._lg7x.rows || []).map(L => ({L, r7: L}));
           merged.sort((a, b) => {
             const h7a = a.r7 && a.r7.hit7 != null ? a.r7.hit7 : -1;
             const h7b = b.r7 && b.r7.hit7 != null ? b.r7.hit7 : -1;
@@ -3646,7 +3586,7 @@ async function loadX8(){
           return `<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><div style="display:table;border-collapse:collapse">` +
             `<div style="display:table-row"><span style="${c8};font-size:11px;color:var(--dim)"></span><span style="${c8};font-size:11px;color:var(--dim)">2026 總成績</span><span style="${c8};font-size:11px;color:var(--dim);padding:4px 0 4px 12px;text-align:right">勝率</span><span style="${c8};font-size:11px;color:var(--dim)">最近七日</span><span style="${c8};font-size:11px;color:var(--dim);padding:4px 0 4px 12px;text-align:right">勝率</span></div>` +
             merged.map(({L, r7}) => {
-            const dec = L.w + L.l, r2 = dec ? L.w / dec : null;
+            const r2 = L.hit == null ? null : L.hit / 100;
             const warn = r7 && r7.warn;
             const hit7t = r7 ? (r7.hit7 != null ? r7.hit7.toFixed(1) + '%' : '—') : '—';
             const d7t = r7 ? (r7.n7 != null ? `${r7.n7}場｜<b style="color:#3fb950">贏${r7.w7 || 0}</b>｜<b style="color:#f85149">輸${r7.l7 || 0}</b>${r7.p7 ? '｜<span style="color:var(--dim)">走' + r7.p7 + '</span>' : ''}` : '—') : '—';
@@ -3671,6 +3611,7 @@ async function loadX8(){
       h += '</div></div>';
     }
     $('#x8Stats').innerHTML = h;
+    if (!d.bt || !d.bt.total) League7.mount('8x', $('#x8Stats'));
     /* 2026-10-21：上/下盤方向細分：幾中幾＋% */
     if ((d.by_dir || []).length){
       $('#x8Stats').insertAdjacentHTML('afterbegin', '<div class="fcard" style="margin:8px 0"><div class="f-top" style="flex-wrap:wrap;gap:6px"><b>方向細分</b>　' +
@@ -3709,14 +3650,7 @@ async function loadX8(){
   }
 }
 async function x8DoScan(){
-  const btn = $('#btnX8Scan');
-  btn.disabled = true; $('#x8Msg').textContent = '掃描緊…';
-  try {
-    const r = await jpost('/api/8x/scan');
-    toast(`8X：新增 ${r.added} 場・結算 ${r.settled} 場`);
-    await loadX8();
-  } catch (e) { toast('8X 掃描失敗：' + e); }
-  btn.disabled = false;
+  await toolRecompute('X8', $('#btnX8Scan'));
 }
 function _x8Beep(){
   try {

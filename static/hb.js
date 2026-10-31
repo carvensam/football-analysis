@@ -465,11 +465,48 @@
   }
 
   /* ---------- 事件 ---------- */
-  $('#btnReload').addEventListener('click', function () {
-    toast('重新整理緊…');
-    loadList();
-  });
+  async function postJob(path, button) {
+    button.disabled = true;
+    try {
+      const r = await fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({tool: 'HB'})});
+      const d = await r.json();
+      if (d.error) { toast(d.error); button.disabled = false; return; }
+      pollJob(button);
+    } catch (e) {
+      toast('重算失敗：' + e.message);
+      button.disabled = false;
+    }
+  }
+  function pollJob(button) {
+    fetch('/api/scan-status?kind=hb').then(function (r) { return r.json(); }).then(function (d) {
+      statusEl.textContent = d.running
+        ? `重算中 ${d.done || 0}/${d.total || 0}…`
+        : (d.error ? '重算失敗：' + d.error : `完成：重算 ${d.added || 0} 場`);
+      if (d.running) { setTimeout(function () { pollJob(button); }, 2000); return; }
+      button.disabled = false;
+      loadList();
+    }).catch(function (e) {
+      statusEl.textContent = '狀態讀取失敗：' + e.message;
+      button.disabled = false;
+    });
+  }
+  $('#btnScan').addEventListener('click', function () { postJob('/api/tool/scan', this); });
+  $('#btnRecalc').addEventListener('click', function () { postJob('/api/tool/recompute', this); });
   $('#hoursSel').addEventListener('change', loadList);
 
+  function pollOpen() {
+    fetch('/api/tool/open-status').then(function (r) { return r.json(); }).then(function (d) {
+      statusEl.textContent = d.stage === 'update48'
+        ? `更新48小時盤口 ${d.update.done || 0}/${d.update.total || 0}…`
+        : `全歷史重算 ${d.recompute.done || 0}/${d.recompute.total || 0}…`;
+      if (d.running) { setTimeout(pollOpen, 3000); return; }
+      if (d.error) statusEl.textContent = '開啟更新失敗：' + d.error;
+      loadList();
+    });
+  }
+  fetch('/api/tool/open', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({tool: 'haobao'})}).then(function (r) { return r.json(); })
+    .then(function (d) { if (d.error) statusEl.textContent = d.error; else pollOpen(); });
   loadList();
 })();
