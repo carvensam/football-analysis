@@ -250,7 +250,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.7.9'
+SERVER_VERSION = '5.7.10'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -2021,42 +2021,6 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None,
             except Exception:
                 pass
     return True
-
-
-_LAST_FULL_DATE = [None]   # 2026-10-26：全量掃描每晚一次（凌晨窗）
-
-
-def _unified_loop():
-    """每 20 分鐘統一掃描（變動跳過）；每 18 次（約 6 小時）做一次全量，
-    兜實排名變化等冇盤口訊號嘅資格變動。雲端（DISABLE_UPDATE）永久行
-    light 模式：淨做純 SQL 系統——512MB 預熱數據池會 OOM。"""
-    time.sleep(180)
-    while True:
-        try:
-            # 2026-10-25：2GB/1C 付費版——雲端統一掃描行 full（512MB 限制已過時）
-            # 2026-10-26 效能（用戶「太慢」優化 #3）：全量限定凌晨 03:00–06:00
-            # （HKT）一晚一次——日間全量同爬取/頁面請求搶 1C CPU；日間變動
-            # 由簽名跳過＋20 秒轉盤 watcher 兜住。
-            light = False
-            full = False
-            try:
-                from datetime import datetime as _dt, timedelta as _td,                     timezone as _tz
-                _hk = _dt.now(_tz.utc) + _td(hours=8)
-                if _hk.hour in (3, 4, 5):
-                    _d = _hk.strftime('%Y-%m-%d')
-                    if _LAST_FULL_DATE[0] != _d:
-                        full = True
-                        _LAST_FULL_DATE[0] = _d
-            except Exception:
-                pass
-            _unified_scan_job(full=full, light=light, tool='5分鐘定時循環')
-        except Exception:
-            traceback.print_exc(limit=3)
-        # 2026-10-24：20 分鐘→5 分鐘——爬蟲直接寫新盤唔會即刻通知
-        # APP（after_odds_update 只有 APP 通道先掛），工具表滯後最多
-        # 20 分鐘；增量 pass 有變動簽名跳過（成本秒級～分鐘級），
-        # 5 分鐘將工具表滯後縮到 ≤5 分鐘。full 照舊每 18 pass。
-        time.sleep(300)
 
 
 def _drain_scan_queue():
@@ -13003,12 +12967,6 @@ if __name__ == '__main__':
         except Exception:
             pass
     threading.Thread(target=_db_selfheal_boot, daemon=True).start()
-    # 2026-10-22 統一循環（本機＋雲端都開）：取代 8X／88W／新精選三個各自
-    # 獨立循環——一場一次過評全部系統（共享計算）＋變動跳過，約 6 小時一次
-    # 全量。冇佢嘅話手機版 8X/88W/新精選永遠唔會自動有預測。
-    threading.Thread(target=_unified_loop, daemon=True).start()
-    print('[boot] 統一背景循環已啟動（每 20 分鐘變動掃描＋全表結算）',
-          flush=True)
 
     # 2026-10-25 效能修正（深層審計#42）：oupred 模型表冷啟動 rebuild 要幾分鐘
     # （3 次全庫掃描），開機後第一擊主頁 v3/list 會卡喺 45 秒單飛閘後 429。
