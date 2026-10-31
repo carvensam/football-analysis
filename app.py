@@ -11418,6 +11418,9 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == '/api/lg_hit_rates':
             self._send(200, json.dumps(api_lg_hit_rates(), ensure_ascii=False))
             return
+        if u.path == '/api/tool/open-status':
+            self._send(200, json.dumps(do_open_status(), ensure_ascii=False))
+            return
         # 分聯賽實測報表（30 秒回應快取；結算事件即作廢）
         if u.path == '/api/league_report':
             q = parse_qs(u.query)
