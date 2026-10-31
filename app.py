@@ -250,7 +250,7 @@ def _scan_thread(fn, *args):
 _fetch_lock = threading.Lock()
 _last_fetch = {}          # match_id -> ts
 _local = threading.local()
-SERVER_VERSION = '5.7.8'
+SERVER_VERSION = '5.7.9'
 
 # ---------------------------------------------------------------- 爬取控制
 # 「停止／繼續爬」掣（2026-10-12 用戶指示：每個版面都要有位停止掣）：
@@ -855,97 +855,9 @@ def do_fetch(mid, force=False):
         return {'ok': False, 'error': err}
 
 
-# ============ 2026-10-20 尾盤變動 → 該場精選資格自動重檢 ============
-# 背景：用戶 10-20 投訴「尾盤無更新到，合唔合乎資格都有待商榷」——雲端（Render）
-# 凌晨 00–12 點冇排程爬蟲，尾盤停舊；就算重抓咗新尾盤，精選資格都仲係用舊線
-# 判定（do_fetch 從來唔觸發重算，只有 do_update 會）。呢組函數喺任何渠道寫入
-# 新盤口之後，若尾盤有重大變動（讓球±0.25／讓球方轉向／水位±0.15），背景線程
-# 用新線重算該場所有未結算精選資格：仍合 → 更新 detail＋快照；唔合 → 移出。
-_LINE_MOVE_H = 0.25   # 讓球變動門檻（淺/深一檔）
-_LINE_MOVE_W = 0.15   # 水位變動門檻（2026-10-25 起只用喺批量「變盤場次」
-                      # 統計；重算本身已改為無條件）
-
-
-# 2026-10-25 有限並發重檢池：line-move watcher 舊制每場開一條線程（一批
-# 40 場＝40 條 full eval 同時搶 RAM/數據池，部機即刻窒息，掃描亦被拖慢）；
-# 舊制 watcher/批量通道每場開一條線程。而家共用細池排隊：本機 2 線、雲端 1。
-_REVAL_POOL = None
-
-
-def _reval_pool():
-    global _REVAL_POOL
-    if _REVAL_POOL is None:
-        import concurrent.futures as _cf
-        _REVAL_POOL = _cf.ThreadPoolExecutor(
-            max_workers=1 if DISABLE_UPDATE else 2,
-            thread_name_prefix='reval')
-    return _REVAL_POOL
-
-
-def _reval_submit(mid, tag='line-move'):
-    """排隊做單場資格重檢（冇任何節流/讓路——任何變動即時入隊）。
-    2026-10-25 加埋好波：OU 線轉都屬「盤口轉/賠率轉」——12 工具重檢完順手
-    重算好波（api_hb_predict 自帶賠率 signature 快取＋淨係規則命中先記低，
-    唔會污染 hb_pick_log；兩邊都做（雲端 2GB 夠行））。"""
-    def _job():
-        start_conn = db()
-        try:
-            worklog.begin(start_conn, '盤口變動後重算｜%s｜場次%s' % (tag, mid))
-        finally:
-            start_conn.close()
-        error = None
-        try:
-            for _att in range(3):
-                try:
-                    conn = db()
-                    try:
-                        acts = _pick_revalidate(conn, mid)
-                        conn.commit()
-                    finally:
-                        conn.close()
-                    if acts:
-                        print('[%s] 場次%s 轉盤→重算：%s'
-                              % (tag, mid, ','.join(acts)), flush=True)
-                    try:
-                        conn = db()
-                        try:
-                            has_ou = conn.execute(
-                                "SELECT 1 FROM odds_ou WHERE match_id=? "
-                                "AND label='closing' LIMIT 1", (mid,)).fetchone()
-                        finally:
-                            conn.close()
-                        if has_ou:
-                            api_hb_predict(mid)
-                            log_conn = db()
-                            try:
-                                work_league, work_match = _work_match_info(log_conn, mid)
-                                worklog.event(log_conn, 'recalc', league=work_league,
-                                              match_text=work_match, tool='好波',
-                                              done=1, total=1, status='完成',
-                                              commit=True)
-                            finally:
-                                log_conn.close()
-                    except Exception:
-                        pass
-                    return
-                except sqlite3.OperationalError as exc:
-                    error = str(exc)
-                    time.sleep(4)
-                except Exception:
-                    error = traceback.format_exc(limit=2)
-                    traceback.print_exc(limit=2)
-                    return
-        finally:
-            log_conn = db()
-            try:
-                worklog.end(log_conn, 'error' if error else 'done',
-                            error or '盤口變動後全部工具重算完成')
-            finally:
-                log_conn.close()
-    try:
-        _reval_pool().submit(_job)
-    except RuntimeError:
-        pass
+# 盤口變動比較只供歷史顯示及統計。爬取只落庫，不得自動觸發資格重算。
+_LINE_MOVE_H = 0.25
+_LINE_MOVE_W = 0.15
 
 
 def _closing_now(conn, mid):
@@ -1243,7 +1155,7 @@ def _del_removed_on_add(conn, mid, acts):
     conn.commit()
 
 
-def _eval_all(conn, ctx, light=False, allow_finished=False):
+def _eval_all(conn, ctx, light=False, allow_finished=False, progress=None):
     """單場全系統評估＋寫表（12 張）：精選W、V1、V1Z、V2(letters 共用）、
     V2Z、格7/8/12/8s、8s紀錄、8X、88W、新精選。寫法＝upsert 合格／DELETE
     唔合格未結算列——同舊逐系統 scan 最終狀態一致。回傳動作列表。
@@ -1558,12 +1470,9 @@ def _eval_all(conn, ctx, light=False, allow_finished=False):
             traceback.print_exc(limit=3)
     work_tools = ('8X／88W／新精選' if light else
                   '精選W／精V1／精V1Z／精V2／精V2Z／精選7／精選8／精選12／格8s／精選8s／8X／88W／新精選')
+    done, total = progress or (1, 1)
     worklog.event(conn, 'recalc', league=work_league, match_text=work_match,
-                  tool=work_tools,
-                  done=(_unified_scan.get('done', 0) + 1)
-                  if _unified_scan.get('running') else 1,
-                  total=_unified_scan.get('total')
-                  if _unified_scan.get('running') else 1,
+                  tool=work_tools, done=done, total=total,
                   status='完成', message='；'.join(acts) or '資格不變')
     # 2026-10-22 用戶規格：入選/剔走即時推送＋清顯示快取（剔走 100% 唔殘留）
     if any(('新增' in a or '移出' in a) for a in acts):
@@ -1792,8 +1701,8 @@ def _unified_candidates(conn, full):
     if full or not _LAST_UNIFIED[0]:
         return ([r[0] for r in rows],
                 {r[0]: _sig(r[2], r[3], r[4], r[5]) for r in rows})
-    from datetime import datetime, timedelta
-    soon = (datetime.now() + timedelta(hours=8 + 4)
+    from datetime import datetime, timedelta, timezone
+    soon = (datetime.now(timezone.utc) + timedelta(hours=8 + 4)
             ).strftime('%Y-%m-%d %H:%M')
     out, sigs = [], {}
     for mid, ko, hc, gv, ho, ao in rows:
@@ -1862,6 +1771,7 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None,
         conn = db()
         if worklog.current_job_id() is None:
             worklog.begin(conn, '統一重算｜' + str(st['triggered_by']))
+        st['worklog_job_id'] = worklog.current_job_id()
         try:
             # 開工前預熱三座池並釘住——掃描期間爬蟲寫盤口唔會觸發重建
             import screen_engine
@@ -1890,6 +1800,8 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None,
             for d in tools:
                 d['total'] = len(cands)
             cnt = {}
+            failed_mids = []
+            completed_mids = []
             # 2026-10-25 提速＋解鎖：逐場獨立 commit（舊制 20 場先 commit
             # 一次＝寫鎖一拎 2 分鐘，掃描期間成個 APP 冇反應——單場 commit
             # 將寫鎖縮到秒級，爬蟲/頁面請求穿插到行）。注意 _eval_all 每場
@@ -1897,18 +1809,21 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None,
             for i, mid in enumerate(cands):
                 if st.get('stop'):
                     _scanlog('🛑 收到停止指令——完成手頭呢場後收工'
-                             '（已搞 %d/%d 場）' % (i, len(cands)))
+                             '（已搞 %d/%d 場）' % (len(completed_mids), len(cands)))
                     break
                 st['phase'] = '統一掃描 %d/%d' % (i + 1, len(cands))
                 acts = None
                 for _att in range(4):
                     try:
                         acts = _eval_all(conn, _EvalCtx(conn, mid),
-                                         light=light, allow_finished=full_history)
+                                         light=light, allow_finished=full_history,
+                                         progress=(i + 1, len(cands)))
                         break
                     except sqlite3.OperationalError:
                         time.sleep(4)
                 if acts is None:
+                    failed_mids.append(mid)
+                    conn.rollback()
                     continue
                 _committed = False
                 for _att in range(4):
@@ -1920,8 +1835,9 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None,
                     except sqlite3.OperationalError:
                         time.sleep(4)   # 爬蟲/頁面寫撞鎖——等 4 秒重試
                 if not _committed:
-                    print('[scan] ⚠️ 場次 %d commit 4 次重試後仍鎖死——'
-                          '簽名未寫，下輪會補評' % mid, flush=True)
+                    failed_mids.append(mid)
+                    conn.rollback()
+                    continue
                 _s = sigs.get(mid)
                 if _s:
                     _snap_done = False
@@ -1939,8 +1855,7 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None,
                         except sqlite3.OperationalError:
                             time.sleep(4)   # 2026-10-26：無重試會成個 pass 炸冧
                     if not _snap_done:
-                        # 2026-10-26 實彈：2962699 簽名靜默漏寫——之後永遠
-                        # 被簽名跳過。必須留聲（下輪冇簽名=會補評，但要知道發生過）
+                        failed_mids.append(mid)
                         print('[scan] ⚠️ 場次 %d 簽名 4 次重試後仍鎖死' % mid,
                               flush=True)
                 for a in acts:
@@ -1953,12 +1868,16 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None,
                     b = _act_bucket(a)
                     if b and '新增' in a:
                         cnt[b] = cnt.get(b, 0) + 1
-                st['done'] = i + 1
+                completed_mids.append(mid)
+                st['done'] = len(completed_mids)
                 for d in tools:
-                    d['done'] = i + 1
+                    d['done'] = len(completed_mids)
                 if (i + 1) % 10 == 0:
                     _pin_pools()   # 爬蟲可能喺上一批之間 invalidate 咗池
                 time.sleep(0.1)   # 讓 GIL 俾 HTTP 線程
+            if st.get('stop') and len(completed_mids) < len(cands):
+                raise RuntimeError('已停止：完成 %d/%d 場，未完成場次保留待補' %
+                                   (len(completed_mids), len(cands)))
             conn.commit()
             _scanlog('🧮 篩描完成 %d 場：新增 %d・剔走 %d——而家結算已完場結果…'
                      % (len(cands), st['added'], st['removed']))
@@ -1977,7 +1896,7 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None,
                 settled = {}
             if full_history:
                 import tool_results
-                for key, cache in ((_ou_rules_cache, 'OU'),
+                for cache, key in ((_ou_rules_cache, 'OU'),
                                    (_htft_rules_cache, 'HTFT')):
                     tool_name = home_tools._DEF_BY_KEY[key]['name']
                     _work_recalc_stage(tool_name)
@@ -1997,6 +1916,9 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None,
                 _htft_rules_scan_job()
                 if _htft_rules_scan.get('error'):
                     raise RuntimeError(_htft_rules_scan['error'])
+            if failed_mids:
+                raise RuntimeError('有 %d 場重算或簽名寫入失敗，未完成：%s' %
+                                   (len(failed_mids), failed_mids[:20]))
             import v3_engine
             hk = v3_engine.hk_now_str()
             _LAST_UNIFIED[0] = hk
@@ -2056,7 +1978,7 @@ def _unified_scan_job(mids=None, full=False, light=False, tool=None,
         try:
             if full_history:
                 _work_recalc_stage('好波')
-                _hb_refresh_mids(cands or [], limit=None, allow_cloud=True)
+                _hb_refresh_mids(completed_mids, limit=None, allow_cloud=True)
             elif not DISABLE_UPDATE:
                 _conn = db()
                 try:
@@ -2445,9 +2367,7 @@ def _crawl_live_scores(limit_leagues=6, budget=50):
 
 
 def _scan_extras():
-    """所有「重新掃描」掣嘅公共尾巴（2026-10-22 用戶規格）：
-    ①先即時爬進行中賽事賽果 ②主動結算全部精選表已完場列。
-    背景執行、best-effort——唔阻掃描本身，唔會令掣冇反應。"""
+    """舊賽果補抓及結算入口；現行掃瞄／重算按鈕不會呼叫。"""
     def _bg():
         try:
             _crawl_live_scores()
@@ -2610,16 +2530,12 @@ def _update_worker():
         _update_state['running'] = False
         _update_state['phase'] = ''
         _update_state['last_done'] = time.time()
-    if ok:
+    if ok and worklog.current_job_id() is not None:
+        _log_conn = db()
         try:
-            _recompute_featured_after_update()
+            worklog.end(_log_conn, 'done', '全量爬取完成，未觸發資格重算')
         finally:
-            if worklog.current_job_id() is not None:
-                _log_conn = db()
-                try:
-                    worklog.end(_log_conn, 'done', '全量爬取、重算及工具頁推送完成')
-                finally:
-                    _log_conn.close()
+            _log_conn.close()
 
 
 def do_update(auto=False):
@@ -2783,10 +2699,8 @@ _FBATCH_PEND = {'hours': None, 'ts': 0.0}
 _load_scan_state()   # 2026-10-25 根治：重啟讀返排隊＋熔斷登記（用戶指示 #4）
 
 
-def _fetch_batch_worker(hours, ids=None, recompute=True):
-    """ids（2026-10-24）：手機直爬核對後，淨重抓『唔一致/本機缺失』嘅場——
-    手機數據照舊唔直接寫庫（用戶 10-02 定調），由伺服器代理池重抓落庫，
-    跟住行同一套資格重檢＋結算。hours 模式照舊＝成個時間窗。"""
+def _fetch_batch_worker(hours, ids=None):
+    """只更新指定場次或時間窗嘅盤口賠率，不執行工具重算。"""
     import crawler
     with open(os.path.join(crawler.BASE_DIR, 'config.json'), encoding='utf-8') as f:
         cfg = json.load(f)
@@ -2820,8 +2734,6 @@ def _fetch_batch_worker(hours, ids=None, recompute=True):
                 'ORDER BY m.kickoff', args).fetchall()
         _fbatch_state.update(total=len(todo), done=0, ok=0, fail=0)
         fetcher = crawler.Fetcher(conn, cfg)
-        ok_mids = []
-        changed_mids = []
         fail_streak = 0
         for i, (mid, ko) in enumerate(todo):
             if _fbatch_state.get('stop'):
@@ -2831,7 +2743,6 @@ def _fetch_batch_worker(hours, ids=None, recompute=True):
             _fbatch_state['phase'] = f'即時更新盤口及賠率 {i + 1}/{len(todo)}'
             got = False
             try:
-                before = _closing_now(conn, mid)
                 if crawler.crawl_odds_for_match(conn, fetcher, mid, ko, 12):
                     got = True
                 elif not conn.execute(
@@ -2843,10 +2754,7 @@ def _fetch_batch_worker(hours, ids=None, recompute=True):
                 got = False
             if got:
                 _fbatch_state['ok'] += 1
-                ok_mids.append(mid)
                 fail_streak = 0
-                # （2026-10-25 after_odds_update 已刪除：門檻後備路徑零價值；
-                #  watcher 無條件覆蓋每次成功爬取）
                 # 2026-10-24 用戶規格「更新所有盤口」：讓球搞掂→順手重抓
                 # 大小+歐盤（同一 changeDetail 家族頁、同一 Fetcher；失敗
                 # 唔影響讓球結果，唔計入 fail——兩個市場獨立計數顯示）
@@ -2863,8 +2771,6 @@ def _fetch_batch_worker(hours, ids=None, recompute=True):
                             pass
                 except Exception:
                     pass
-                if _line_changed(before, _closing_now(conn, mid)):
-                    changed_mids.append(mid)
             else:
                 _fbatch_state['fail'] += 1
                 fail_streak += 1
@@ -2890,7 +2796,10 @@ def _fetch_batch_worker(hours, ids=None, recompute=True):
                 break
         _fbatch_state['last'] = time.strftime('%Y-%m-%d %H:%M:%S')
         if fail_streak < 5:
-            _fbatch_state['error'] = None
+            _fbatch_state['error'] = (
+                '更新未完全：成功 %d 場、失敗 %d 場，未完成的場次保留待補' %
+                (_fbatch_state['ok'], _fbatch_state['fail'])
+                if _fbatch_state['fail'] else None)
             print(f"[fbatch] 完成：{_fbatch_state['ok']} 成 / "
                   f"{_fbatch_state['fail']} 敗 / 共 {len(todo)} 場", flush=True)
         else:
@@ -2899,34 +2808,6 @@ def _fetch_batch_worker(hours, ids=None, recompute=True):
             print('[fbatch] 熔斷收工：%d 成 / %d 敗（總 %d）——已登記補跑'
                   % (_fbatch_state['ok'], _fbatch_state['fail'], len(todo)),
                   flush=True)
-        # 2026-10-22 用戶規格「更新後要有動作同反應」＋2026-10-24 收窄：
-        # 資格重檢淨做「尾盤有重大變動」＋「從未評估過」嘅場——冇變動嘅
-        # 場重評結果都一樣（規則確定性），慳返 sweep 上限名額俾真係要
-        # 重檢嘅場（舊制 ok_mids 全上，48h 窗一爆 300 場 cap 就靜默甩尾）。
-        if recompute:
-            _fbatch_state['phase'] = '重檢各精選系統資格…'
-            try:
-                sweep_mids = list(changed_mids)
-                for mid in ok_mids:
-                    if mid not in changed_mids and _never_evaluated(conn, mid):
-                        sweep_mids.append(mid)
-                _fbatch_state['reval'] = _requalify_sweep(sweep_mids)
-                print('[fbatch] 資格重檢（變盤%d＋新評估%d）：%s'
-                      % (len(changed_mids), len(sweep_mids) - len(changed_mids),
-                         _fbatch_state['reval']), flush=True)
-            except Exception:
-                traceback.print_exc(limit=3)
-                _fbatch_state['reval'] = None
-        # 順手主動結算（完場場次嘅結果即刻寫入全部工具表）
-        try:
-            _settle_finished_tools_bg()
-        except Exception:
-            pass
-        if recompute:
-            try:
-                _hb_refresh_mids(changed_mids)
-            except Exception:
-                pass
         # 2026-10-25 即時同步：用戶撳嘅批量搞掂→即刻推上雲（唔使等 30 分鐘）
         _sync_push_now(force=True)
     except Exception:
@@ -2936,21 +2817,16 @@ def _fetch_batch_worker(hours, ids=None, recompute=True):
         worklog.end(conn, 'error' if _fbatch_state.get('error') else
                     ('stopped' if _fbatch_state.get('stop') else 'done'),
                     _fbatch_state.get('error') or
-                    ('爬取 %d/%d・成功 %d・失敗 %d；%s' %
+                    ('爬取 %d/%d・成功 %d・失敗 %d；只更新盤口賠率，未觸發資格重算' %
                      (_fbatch_state.get('done', 0), _fbatch_state.get('total', 0),
-                      _fbatch_state.get('ok', 0), _fbatch_state.get('fail', 0),
-                      '重算及工具頁推送工序完結' if recompute else
-                      '只更新盤口賠率，未觸發資格重算')))
+                      _fbatch_state.get('ok', 0), _fbatch_state.get('fail', 0))))
         conn.close()
         _fbatch_state['running'] = False
         _fbatch_state['phase'] = ''
 
 
-def do_fetch_batch(hours=0, ids=None, recompute=True):
-    """人手撳『⚡ 即時更新全部』：可見場次全部重抓最新盤口賠率（後台線程）。
-    2026-10-02 起雲端都用到：titan007 封嘅係 IP 段（屋企＋datacenter），
-    代理池嘅公共代理任何來源都行得通——proxy_pool.json 隨映像焗入，
-    Fetcher 自動行代理通道，所以唔再按 DISABLE_UPDATE 拒絕。
+def do_fetch_batch(hours=0, ids=None):
+    """只更新場次盤口賠率（後台線程）；工具重算由獨立按鈕執行。
     ids（2026-10-24）：指定場次清單（手機直爬 mismatch 通道），跳時間窗。"""
     if _fbatch_state['running']:
         return {'ok': False, 'running': True, 'error': '即時更新進行中'}
@@ -2958,7 +2834,7 @@ def do_fetch_batch(hours=0, ids=None, recompute=True):
         return {'ok': False, 'running': True, 'error': '另一個更新進行中，等佢完成先'}
     if _unified_scan['running']:
         return {'ok': False, 'running': True,
-                'error': '統一掃描進行中，等佢完成先（佢會順便重檢資格）'}
+                'error': '統一掃描進行中，等佢完成先'}
     hours = max(0, int(hours or 0))
     if ids:
         try:
@@ -2971,14 +2847,14 @@ def do_fetch_batch(hours=0, ids=None, recompute=True):
                          done=0, total=0, reval=None, ou_ok=0, x2_ok=0,
                          stop=False)
     _t = threading.Thread(target=_fetch_batch_worker, daemon=True,
-                          args=(hours, ids, recompute))
+                          args=(hours, ids))
     _JOB_THREADS['即時更新批量'] = _t
     _t.start()
     return {'ok': True, 'started': True}
 
 
 def do_update_odds():
-    return do_fetch_batch(hours=48, recompute=False)
+    return do_fetch_batch(hours=48)
 
 
 def do_recompute(hours=48):
@@ -3025,7 +2901,8 @@ def _tool_recompute_worker(tool, action):
     try:
         log_conn = db()
         try:
-            worklog.begin(log_conn, '獨立工具重算｜%s｜%s' % (tool, action))
+            job['worklog_job_id'] = worklog.begin(
+                log_conn, '獨立工具重算｜%s｜%s' % (tool, action))
         finally:
             log_conn.close()
         if tool == 'W':
@@ -5146,49 +5023,6 @@ def _featured_scan_job():
         _feat_scan['running'] = False
 
 
-def _recompute_featured_after_update():
-    """盤口／賠率更新後重算精選：清走未結算入選（歷史已結算保留做統計），
-    清數據池快取，再全量重新篩選。"""
-    try:
-        conn = db()
-        conn.execute('DELETE FROM featured WHERE match_id IN '
-                     '(SELECT id FROM matches WHERE home_score IS NULL)')
-        conn.execute('DELETE FROM featured_z WHERE match_id IN '
-                     '(SELECT id FROM matches WHERE home_score IS NULL)')
-        conn.execute('DELETE FROM v1_featured WHERE match_id IN '
-                     '(SELECT id FROM matches WHERE home_score IS NULL)')
-        conn.execute('DELETE FROM v1_featured_z WHERE match_id IN '
-                     '(SELECT id FROM matches WHERE home_score IS NULL)')
-        conn.execute('DELETE FROM v3_featured WHERE match_id IN '
-                     '(SELECT id FROM matches WHERE home_score IS NULL)')
-        conn.commit()
-        conn.close()
-        screen_engine._pool_cache['ts'] = 0   # 令 load_pool 重新載入新盤口
-        try:
-            import v2_engine
-            v2_engine.invalidate_pool()       # V2 池（30m/15m/10m/5m 時點）都要清
-            _v2_item_cache.clear()              # V2 單項快取一併清
-        except Exception:
-            pass
-        try:
-            import v3_engine
-            v3_engine.invalidate_pool()       # V3 池（對調欄）都要清
-            with _v3_item_cache_lock:
-                _v3_item_cache.clear()          # V3 單項／summary 快取一併清
-        except Exception:
-            pass
-        print('[update] 重算精選…', flush=True)
-        if not _feat_scan['running']:
-            _scan_thread(_featured_scan_job)
-        if not _v1_scan['running']:
-            threading.Thread(target=_v1_scan_job, daemon=True).start()
-        if not _v3_scan['running']:
-            _scan_thread(_v3_featured_scan_job)
-    except Exception:
-        import traceback
-        traceback.print_exc()
-
-
 _HIST_HIT_CACHE = {'ts': 0.0, 'data': {}}
 
 
@@ -6469,11 +6303,11 @@ def _home_dynamic_cards(conn):
 def api_v3_list(hours=48, fin_hours=24, fin_cat='all'):
     """主頁只顯示工具中選：未開賽、比賽中及完場24小時內。"""
     import v3_engine
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     up = upcoming(48)
     pl = played(24, fin_cat)
     now = v3_engine.hk_now_str()
-    stale = (datetime.now() + timedelta(hours=8 - _STALE_LIVE_HOURS)
+    stale = (datetime.now(timezone.utc) + timedelta(hours=8 - _STALE_LIVE_HOURS)
              ).strftime('%Y-%m-%d %H:%M')
     for m in up:
         m['state'] = 'scheduled'
@@ -6488,7 +6322,7 @@ def api_v3_list(hours=48, fin_hours=24, fin_cat='all'):
         tool_errors = dynamic['errors']
     finally:
         conn.close()
-    cutoff = (datetime.now() + timedelta(hours=8 - 24)).strftime(
+    cutoff = (datetime.now(timezone.utc) + timedelta(hours=8 - 24)).strftime(
         '%Y-%m-%d %H:%M')
     up = [m for m in up if m.get('tool_picks')]
     pl = [m for m in pl if m.get('tool_picks')
@@ -7342,7 +7176,7 @@ def _fw_grid_scan_job(g):
                     phc, pgv = _tgt_pick_line(conn, t, mid)
                     conn.execute(
                         'INSERT INTO fw_grid_featured(grid, match_id, direction, '
-                        'detail, added_at, hc, giver) VALUES(?,?,?,?,?,?) '
+                        'detail, added_at, hc, giver) VALUES(?,?,?,?,?,?,?) '
                         'ON CONFLICT(grid, match_id) DO UPDATE SET '
                         'direction=excluded.direction, detail=excluded.detail, '
                         'hc=excluded.hc, giver=excluded.giver',
@@ -9512,21 +9346,25 @@ def api_worklog(limit=30):
                       'done': state.get('done'), 'total': state.get('total'),
                       'ok': state.get('ok'), 'fail': state.get('fail')}
             break
-    progress = {p['tool']: p for p in data.pop('tools', [])}
+    progress = {(p.get('job_id'), p['tool']): p for p in data.pop('tools', [])}
     for job in _TOOL_JOBS.values():
         definition = home_tools._DEF_BY_KEY.get(
             job.get('tool'), {'name': job.get('tool')})
         name = definition['name']
         done, total = _tool_job_counts(job)
-        progress[name] = {
-            'tool': name, 'done': done, 'total': total,
+        job_id = job.get('worklog_job_id')
+        progress[(job_id, name)] = {
+            'job_id': job_id, 'tool': name, 'done': done, 'total': total,
+            'source': '獨立工具重算',
             'status': ('錯誤：' + job['error']) if job.get('error')
                       else ('進行中' if job.get('running') else '完成'),
             'match': '獨立工具重算', 'triggered_by': job.get('action')}
     current = _unified_scan.get('current_tool')
+    unified_job_id = _unified_scan.get('worklog_job_id')
     if _unified_scan.get('running') and current:
-        for name, state in progress.items():
-            if name == current or (name == '好波' and current == 'HB'):
+        for (job_id, name), state in progress.items():
+            if (job_id == unified_job_id
+                    and (name == current or (name == '好波' and current == 'HB'))):
                 state['status'] = '進行中'
     data.update({
         'ok': True,
@@ -10775,67 +10613,6 @@ def _feat_hourly_tick():
         _feat_hourly['running'] = False
 
 
-def _line_move_watch_loop():
-    """2026-10-24 盤口變動即時重算（用戶：『加快到即時更新！點解要 5 分鐘』）：
-    爬蟲一寫新盤（無論 APP 定 fleet 通道）就 append 場次去 _line_moves.txt；
-    呢度每 20 秒讀一次，對每場即刻 _reval_submit（同 after_odds_update 同一套
-    重檢：12 表資格剔走/新增＋推送＋快取清除）。工具表滯後由『最遲 20 分鐘
-    （後備 5 分鐘）』→『≤20 秒』。5 分鐘統一循環降後備（漏網/排名變化兜底）。
-    2026-10-25：600s/場節流已廢（用戶指示 100% 重算），此 docstring 同步更
-    正；路徑根治見下方註釋。"""
-    time.sleep(120)   # 等開機
-    import os as _os
-    # 2026-10-25 路徑根治（吹水審計第十輪捉到嘅假承諾管道）：crawler 嘅
-    # notify_line_move 用 __file__ 相對路徑寫——邊份 crawler.py copy 被
-    # import 就寫去邊（本機正本=倉庫根；雲端=/app）。舊制 watcher 淨讀
-    # engine/_line_moves.txt，寫入同讀取永遠打唔到：root 檔積壓過百場，
-    # APP 自動重抓/shenbo/crawl_mk 觸發嘅轉盤通知全部冇 20 秒重算，得 5
-    # 分鐘後備兜住（對用戶「任何變動 100% 重算」承諾係假嘅）。而家全部
-    # 可能寫入點行匀，邊個有貨讀邊個；冇貨先 fallback 舊 engine 路徑。
-    fpath = None
-    for _cand in (_os.path.join(PARENT_DIR, '_line_moves.txt'),
-                  _os.path.join(BASE_DIR, '_line_moves.txt'),
-                  _os.path.join(PARENT_DIR, 'engine', '_line_moves.txt'),
-                  _os.path.join(BASE_DIR, 'engine', '_line_moves.txt')):
-        if _os.path.exists(_cand):
-            fpath = _cand
-            break
-    if fpath is None:
-        fpath = _os.path.join(PARENT_DIR, '_line_moves.txt')
-    while True:
-        time.sleep(20)
-        try:
-            if not _os.path.exists(fpath):
-                continue
-            with open(fpath, 'r', encoding='ascii') as f:
-                mids = [int(x) for x in f.read().split() if x.strip().isdigit()]
-            if not mids:
-                continue
-            # 2026-10-25 修正（用戶：搵晒阻止重算嘅物件）：舊制「讀完即刻清空
-            # + 淨做前 40」會將超額通知**靜默丟棄**——批量 149 場時逾百場永遠
-            # 冇重算！而家：全做；單 tick 超過 300 先將剩餘寫返落檔下輪做，
-            # 一個通知都唔准失。
-            overflow = []
-            if len(mids) > 300:
-                overflow = mids[300:]
-                mids = mids[:300]
-            with open(fpath, 'w', encoding='ascii') as f:
-                for _m in overflow:
-                    f.write('%d\n' % _m)
-            seen = set()
-            for mid in mids:
-                if mid in seen:
-                    continue
-                seen.add(mid)
-                # 2026-10-25 用戶指示：**任何水位/盤口變動 100% 重算，冇節流**——
-                # 10 分鐘內第二次變動代表賽事真係郁緊，係更精確嘅資訊，跳過係傻。
-                # （舊制 600s/場節流同 after_odds_update 一併廢除；2 線池本身
-                #  已經係並發上限，RAM 有底。）
-                _reval_submit(mid)
-        except Exception:
-            pass
-
-
 _AOD_LOG = os.path.join(PARENT_DIR, 'logs', 'auto_odds.log')
 
 
@@ -10850,14 +10627,7 @@ def _aod_log(msg):
 
 
 def _auto_odds_refresh_loop():
-    """2026-10-25 補上自動化最後缺口：即將開賽場次嘅讓球賠率**週期自動重抓**。
-    舊制重抓幾乎全靠人手撳掣——撳完之後賠率擺到舊，5 分鐘統一掃描只能
-    用舊線重評（變動跳過＝全部略過），「盤轉咗但冇人撳掣＝永遠唔重算唔
-    出預測」嘅風險實際存在（用戶一語道中）。而家每 15 分鐘一輪：未來 24
-    小時內、讓球賠率舊過 30 分鐘（或從未抓到）嘅場，順開賽序重抓最多 40
-    場——crawl_odds_for_match 成功即 notify_line_move → watcher 20 秒內
-    重算 12 工具＋好波。本機＋雲端都開（雲端行代理池，單場順序輕量）。
-    連首飾都唔使撳：開賽前一日開始自動新鮮，資格自動浮現。"""
+    """定期重抓即將開賽場次嘅盤口賠率；只落庫，工具重算由獨立入口執行。"""
     time.sleep(300)
     import crawler as _cr
     while True:
@@ -13160,8 +12930,7 @@ if __name__ == '__main__':
                     print(f'[watchdog] titan007 數據主機已復活（曾中斷 '
                           f'{down_min} 分鐘），自動開始全量更新…', flush=True)
                     if _FBATCH_PEND['hours'] is not None:
-                        _scanlog('⚡ 主機復活——自動補跑您之前撳嘅'
-                                 '「更新賠率＋重算資格」')
+                        _scanlog('⚡ 主機復活——自動補跑您之前撳嘅「更新賠率」')
                         do_fetch_batch(_FBATCH_PEND['hours'])
                         _FBATCH_PEND['hours'] = None
                         _save_scan_state()
@@ -13189,11 +12958,6 @@ if __name__ == '__main__':
         threading.Thread(target=_feat_hourly_loop, daemon=True).start()
         threading.Thread(target=_result_settle_loop, daemon=True).start()
         threading.Thread(target=_sync_delta_loop, daemon=True).start()
-    # 2026-10-25：line-move watcher 改為兩邊都開——舊制淨本機開，雲端爬蟲
-    # 寫咗新盤冇人重檢（20 秒即時重算喺手機一直冇行過），要靠 20 分鐘
-    # 循環或者本機 sync。雲端 RAM 安全：_pick_revalidate 喺 DISABLE_UPDATE
-    # 自動行 light 模式（05ad3a8 實證 RAM 接近零），共用池 max_workers=1。
-    threading.Thread(target=_line_move_watch_loop, daemon=True).start()
     # 2026-10-25：即將開賽賠率週期自動重抓（兩邊都開——雲端代理池行得通）
     threading.Thread(target=_auto_odds_refresh_loop, daemon=True).start()
     if not DISABLE_UPDATE:

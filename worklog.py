@@ -108,14 +108,15 @@ def _json_list(value):
         return []
 
 
-def tool_progress(events):
+def tool_progress(events, job_status=None):
     states = {}
     for event in events:
         if event.get('kind') != 'recalc':
             continue
+        job_id = event.get('job_id')
         for name in str(event.get('tool') or '全部工具').split('／'):
-            state = states.setdefault(name, {
-                'tool': name, 'done': 0, 'total': None,
+            state = states.setdefault((job_id, name), {
+                'job_id': job_id, 'tool': name, 'done': 0, 'total': None,
                 'status': '等待', 'match': None, 'ts': None})
             if event.get('done') is not None:
                 state['done'] = max(state['done'], event['done'])
@@ -124,6 +125,14 @@ def tool_progress(events):
             state['status'] = event.get('status') or state['status']
             state['match'] = event.get('match_text')
             state['ts'] = event.get('ts')
+    job_status = job_status or {}
+    for state in states.values():
+        if (state['status'] == '完成' and state['total'] is not None
+                and state['done'] < state['total']):
+            status = job_status.get(state['job_id'])
+            state['status'] = ('進行中' if status == 'running' else
+                               '已結束（未完成全部）' if status == 'done' else
+                               '未完成全部')
     return list(states.values())
 
 
@@ -139,10 +148,10 @@ def latest(conn):
         "WHERE status='running' OR id=? ORDER BY id DESC", (job['id'],)).fetchall()
     ids = [row[0] for row in job_rows]
     rows = conn.execute(
-        'SELECT id,ts,kind,league,match_text,tool,direction,done,total,'
+        'SELECT id,job_id,ts,kind,league,match_text,tool,direction,done,total,'
         'markets,pages,status,message FROM work_log WHERE job_id IN (%s) ORDER BY id'
         % ','.join('?' * len(ids)), ids).fetchall()
-    keys = ('id', 'ts', 'kind', 'league', 'match_text', 'tool', 'direction',
+    keys = ('id', 'job_id', 'ts', 'kind', 'league', 'match_text', 'tool', 'direction',
             'done', 'total', 'markets', 'pages', 'status', 'message')
     events = []
     for row in rows:
@@ -152,5 +161,8 @@ def latest(conn):
         events.append(item)
     jobs = [dict(zip(('id', 'source', 'started_at', 'ended_at', 'status'), row))
             for row in job_rows]
-    return {'job': job, 'jobs': jobs, 'events': events,
-            'tools': tool_progress(events)}
+    sources = {row['id']: row['source'] for row in jobs}
+    tools = tool_progress(events, {row['id']: row['status'] for row in jobs})
+    for state in tools:
+        state['source'] = sources.get(state['job_id'], '')
+    return {'job': job, 'jobs': jobs, 'events': events, 'tools': tools}

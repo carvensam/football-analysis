@@ -800,10 +800,6 @@ def _ou_refresh_one(cfg, mid, kickoff, market='ou'):
             ok = task_hkjc(c2, f2, mid, ko, market) is True
         else:
             ok = task_odds_page(c2, f2, mid, ko, market) is True
-        if ok:
-            # 2026-10-24：大小線更新都通知 APP（好波規則用 OU 線）
-            import crawler as _cr
-            _cr.notify_line_move(mid)
         return mid, market, ok
     except Exception:
         log(c2, 'WARN', '預抓 %s 失敗 %d\n%s'

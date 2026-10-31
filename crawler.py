@@ -1233,17 +1233,6 @@ for _up in (_here, os.path.dirname(_here)):
             os.path.exists(os.path.join(_up, 'football.db')):
         _REPO_ROOT = _up
         break
-LINE_MOVE_FILE = os.path.join(_REPO_ROOT, '_line_moves.txt')
-
-
-def notify_line_move(match_id):
-    try:
-        with open(LINE_MOVE_FILE, 'a', encoding='ascii') as f:
-            f.write('%d\n' % match_id)
-    except OSError:
-        pass
-
-
 def crawl_odds_for_match(conn, fetcher, match_id, kickoff_str, company_id,
                          fallback_company=None):
     """fallback_company（2026-10-14 用戶指示：日聯杯冇易勝博 → 皇冠頂替，
@@ -1295,7 +1284,6 @@ def crawl_odds_for_match(conn, fetcher, match_id, kickoff_str, company_id,
              t.strftime('%Y-%m-%d %H:%M'), fetched_at))
     conn.execute('UPDATE matches SET odds_done=1 WHERE id=?', (match_id,))
     conn.commit()
-    notify_line_move(match_id)   # 2026-10-24：通知 APP 即時重算資格
     return True
 
 

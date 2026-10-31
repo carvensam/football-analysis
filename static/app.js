@@ -215,7 +215,8 @@ async function refreshWorkLog(){
   if (d.tools && d.tools.length) {
     live += d.tools.map(t => `<div class="wl-live">重算｜${esc(t.tool)}｜` +
       `${t.done == null ? '—' : t.done}/${t.total == null ? '—' : t.total}｜` +
-      `${esc(t.status || '')}${t.triggered_by ? '｜' + esc(t.triggered_by) : ''}</div>`).join('');
+      `${esc(t.status || '')}${t.source ? '｜' + esc(t.source) : ''}` +
+      `${t.triggered_by ? '｜' + esc(t.triggered_by) : ''}</div>`).join('');
   } else if (d.recalc && d.recalc.running) {
     const r = d.recalc;
     live += `<div class="wl-live">爬取後重算中：${esc(r.tool || '全部工具')}｜${esc(r.match || '')}｜` +
@@ -1370,7 +1371,7 @@ async function loadMatchTools(mid){
   try { d = await jget('/api/match/tools?id=' + mid); }
   catch (e) { box.innerHTML = '<div class="err">工具預測載入失敗：' + esc(String(e)) + '</div>'; return; }
   if (d.error || !d.tools || !d.tools.length){
-    box.innerHTML = '<div class="note">呢場暫時冇任何工具有預測。（撳「⚡ 更新賠率＋重算資格」即時重檢資格後再睇）</div>';
+    box.innerHTML = '<div class="note">呢場暫時冇任何工具有預測。（可先撳「更新賠率」，再按需要撳「重算資格」）</div>';
     return;
   }
   box.innerHTML = d.tools.map(_toolPredHtml).join('');
@@ -3370,7 +3371,7 @@ async function shareText(txt){
       else if (curPage === 'review') loadReview();
       else if (curPage === 'featlog') loadFeatlog();
       else if (['featw', 'v1', 'check', 'fw7', 'fw8', 'fw12', 'fw8s',
-                'picks', 'removed', 'oupred', 'feathourly', 'x8',
+                'picks', 'removed', 'oupred', 'x8',
                 // 2026-10-25 補齊「各版面即時」：iframe 工具頁一併自動刷新
                 // （好波/8s/88W/新精選——舊制驚閃爍剔走咗，但用戶原則係
                 // 精確度先：60 秒一次 reload 嘅閃爍係正確性應有嘅代價）
