@@ -3169,6 +3169,10 @@ def _open_data_signature():
 
 def _open_job_worker():
     try:
+        while (_update_state['running'] or _win_state['running']
+               or _unified_scan['running']):
+            _OPEN_JOB['stage'] = 'update48'
+            time.sleep(1)
         if not _fbatch_state['running']:
             started = do_update_odds()
             if started.get('error'):
@@ -3178,6 +3182,8 @@ def _open_job_worker():
         if _fbatch_state.get('error'):
             raise RuntimeError(_fbatch_state['error'])
         update_failures = _fbatch_state.get('fail', 0)
+        while any(job.get('running') for job in _TOOL_JOBS.values()):
+            time.sleep(1)
         _OPEN_JOB['stage'] = 'full_history'
         result = _start_unified_scan(full_history=True, tool='開啟工具全庫重算')
         if result.get('error'):
