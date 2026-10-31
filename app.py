@@ -12569,22 +12569,35 @@ def _featured_cache_refresher():
 
 def _warmup():
     """伺服器啟動時在背景預先載入歷史數據池，用戶第一擊唔使等。
-    2026-10-10：V3 池（內部即 V2 共享池）都要建好先好 set ready——否則
-    ready=true 之後主頁 /api/v3/list 喺 V3 池 build 嘅幾分鐘內全部排隊
-    窒住（本機記憶體緊絀實測 hang 超過 90 秒），用戶以為入唔到；重複雙擊
-    .cmd 仲會觸發舊 launcher 殺 server 重開，boot 永遠完唔成。"""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        screen_engine.load_pool(conn)
-        import v3_engine
-        v3_engine.load_v3_pool(conn)
-        conn.close()
-        _pool_ready['done'] = True
-        print('[warmup] 歷史數據池已就緒（V1+V2/V3）', flush=True)
-    except Exception:
-        import traceback
-        traceback.print_exc()
-        _pool_ready['err'] = traceback.format_exc(limit=3)
+    短暫鎖庫以有上限退避重試處理；成功先設 ready，連續失敗如實報錯。"""
+    _pool_ready['done'] = False
+    last_error = None
+    for attempt in range(8):
+        conn = None
+        try:
+            conn = sqlite3.connect(DB_PATH, timeout=120)
+            screen_engine.load_pool(conn)
+            import v3_engine
+            v3_engine.load_v3_pool(conn)
+            _pool_ready.update(done=True, err=None)
+            print('[warmup] 歷史數據池已就緒（V1+V2/V3）', flush=True)
+            return
+        except sqlite3.OperationalError as exc:
+            last_error = traceback.format_exc(limit=3)
+            if 'locked' not in str(exc).lower() and 'busy' not in str(exc).lower():
+                break
+            delay = min(15 * (2 ** attempt), 120)
+            print('[warmup] 資料庫暫時鎖住，%d 秒後重試（%d/8）' %
+                  (delay, attempt + 1), flush=True)
+            time.sleep(delay)
+        except Exception:
+            last_error = traceback.format_exc(limit=3)
+            break
+        finally:
+            if conn is not None:
+                conn.close()
+    _pool_ready['done'] = False
+    _pool_ready['err'] = last_error or '暖機失敗'
 
 
 def _seed_check_rows():
